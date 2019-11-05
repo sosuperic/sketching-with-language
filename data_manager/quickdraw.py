@@ -14,6 +14,7 @@ import os
 import random
 from shutil import copyfile
 import subprocess
+from time import sleep
 
 import cairocffi as cairo
 import numpy as np
@@ -28,20 +29,19 @@ CATEGORIES_FINAL_PATH = 'data/quickdraw/categories_final.txt'
 
 QUICKDRAW_DATA_PATH = 'data/quickdraw'
 QUICKDRAW_DRAWINGS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings')
-QUICKDRAW_DRAWINGS_FILTERED_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings_filtered')
 QUICKDRAW_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings_pairs')
 QUICKDRAW_PROGRESSIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progressions')
 FONT_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'ARIALBD.TTF')
-QUICKDRAW_PROGRESSIONS_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progression_pairs')
+QUICKDRAW_PROGRESSIONS_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progression_pairs_fullinput')
 
-S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions/{}/progress_filtered/{}'
-S3_PROGRESSIONS_PATH = 's3://hierarchical-learning/quickdraw/progressions/{}/progress_filtered/{}'
-S3_PROGRESSION_PAIRS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progression_pairs/{}/progress_filtered/{}'
-S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pairs/{}/progress_filtered/{}'
-# PROGRESSIONS_S3_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/subsegments_v2_beg/{}/progress_filtered/{}'
+S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
+S3_PROGRESSIONS_PATH = 's3://hierarchical-learning/quickdraw/progressions_fullinput/{}/progress/{}'
+S3_PROGRESSION_PAIRS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progression_pairs_fullinput/{}/progress/{}'
+S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pairs_fullinput/{}/progress/{}'
 
 SIDE = 112
 LINE = 6
+PAIRS_MIN_STROKES = 3
 
 
 ###################################################################
@@ -115,11 +115,6 @@ def final_categories():
     categories = open(CATEGORIES_FINAL_PATH).readlines()
     categories = [c.strip() for c in categories]
     return categories
-
-def turk_test_categories():
-    categories = ['bat', 'bear', 'bird', 'cat', 'crocodile', 'dog', 'elephant', 'flamingo', 'giraffe']
-    return categories
-
 
 ###################################################################
 #
@@ -201,8 +196,9 @@ def save_progressions(n=None):
             os.makedirs(dir, exist_ok=True)
 
         drawings = ndjson_drawings(cat)
-        for d_idx, d in enumerate(drawings):
-            if (n is not None) and (d_idx == n):
+        count = 0
+        for d in drawings:
+            if (n is not None) and (count == n):
                 break
 
             id, strokes = d['key_id'], d['drawing']
@@ -239,17 +235,11 @@ def save_progressions(n=None):
             with open(meta_fp, 'w') as f:
                 json.dump({'id': id, 'start': None, 'end': None, 'n_segments': len(strokes)}, f)
 
-def copy_drawings_to_filtered():
-    for cat in os.listdir('drawings'):
-        os.makedirs(os.path.join('drawings_filtered', cat, 'unseen'), exist_ok=True)
-        for fn in os.listdir(os.path.join('drawings', cat)):
-            fp1 = os.path.join('drawings', cat, fn)
-            fp2 = os.path.join('drawings_filtered', cat, 'unseen', fn)
-            copyfile(fp1, fp2)
+            count += 1
 
-def save_progression_pairs(n=None, min_strokes=3):
+def save_progression_pairs(n=None):
     """Save two images in progression"""
-    categories = animal_categories()
+    categories = final_categories()
     for cat in categories:
         print(cat)
 
@@ -261,14 +251,15 @@ def save_progression_pairs(n=None, min_strokes=3):
             os.makedirs(dir, exist_ok=True)
 
         drawings = ndjson_drawings(cat)
-        for d_idx, d in enumerate(drawings):
-            if (n is not None) and (d_idx == n):
+        count = 0
+        for d in drawings:
+            if (n is not None) and (count == n):
                 break
 
             id, strokes = d['key_id'], d['drawing']
 
             # this filters out a lot of incomplete drawings
-            if len(strokes) < min_strokes:
+            if len(strokes) < PAIRS_MIN_STROKES:
                 continue
 
             # get image representations of strokes
@@ -309,7 +300,9 @@ def save_progression_pairs(n=None, min_strokes=3):
             with open(strokes_fp, 'w') as f:
                 json.dump({'id': id, 'start': start, 'end': end, 'n_segments': len(strokes)}, f)
 
-def prep_progressions_data_for_turk(data, n=None):
+            count += 1
+
+def prep_progressions_data_for_turk(data, n):
     """
     After manually filtering based on subsegments_v2/<base>/final, keep only the corresponding progressions.
     Write to csv with Amazon bucket name, category, start, end strokes in csv
@@ -327,37 +320,33 @@ def prep_progressions_data_for_turk(data, n=None):
 
 def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
     """
-    TODO: progressions doesnt' have meta, directory sturcture is slightly different (doesn't have progress and meta dirs)
-    Option: save progresions in same structure...
+    Create the csv that will be input to MTurk
+    
+    :param data_dir: str, location of data to be annotated
+    :param s3_url: str, url of image
+    :param out_fn: str, filename of csv
+    :param n: int, number of data points per category
+    :return: None
     """
-    categories = animal_categories()
+    categories = final_categories()
     csv_data = []
-    for root, dirs, fns in os.walk(QUICKDRAW_DRAWINGS_FILTERED_PATH):
+    for root, dirs, fns in os.walk(data_dir):
         category = os.path.basename(root)
         if category in categories:
             prog_dir = os.path.join(data_dir, category, 'progress')
-            prog_filtered_dir = os.path.join(data_dir, category, 'progress_filtered')
             meta_dir = os.path.join(data_dir, category, 'meta')
-            meta_filtered_dir = os.path.join(data_dir, category, 'meta_filtered')
-            for dir in [prog_filtered_dir, meta_filtered_dir]:
-                os.makedirs(dir, exist_ok=True)
 
-            for fn in fns:
+            count = 0
+            for fn in os.listdir(prog_dir):
+                if n == count:
+                    break
                 if fn == '.DS_Store':
                     continue
 
-                # filtered progressions (and meta)
-                prog_fp = os.path.join(prog_dir, fn)
-                prog_filtered_fp = os.path.join(prog_filtered_dir, fn)
-                meta_fn = fn.replace('.jpg', '.json')
-                meta_fp = os.path.join(meta_dir, meta_fn)
-                meta_filtered_fp = os.path.join(meta_filtered_dir, meta_fn)
-
                 try:
-                    copyfile(prog_fp, prog_filtered_fp)
-                    copyfile(meta_fp, meta_filtered_fp)
-
                     # save data to csv
+                    meta_fn = fn.replace('.jpg', '.json')
+                    meta_fp = os.path.join(meta_dir, meta_fn)
                     url = s3_url.format(category, fn)
                     meta = json.load(open(meta_fp, 'r'))
                     csv_data.append([category, url, str(meta['id']),
@@ -367,28 +356,38 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
                     pass
 
     # Write to csv
-    # print(len(csv_data))
-    # csv_out_fp = os.path.join(data_dir, out_fn)
-    # with open(csv_out_fp, 'w') as f:
-    #     f.write('category,url,id,start,end,n_segments\n')
-    #     random.shuffle(csv_data)
-    #     for i, line in enumerate(csv_data):
-    #         if (n is not None) and (i == n):
-    #             break
-    #         f.write(','.join(line) + '\n')
+    csv_out_fp = os.path.join(data_dir, out_fn)
+    print(csv_out_fp)
+    with open(csv_out_fp, 'w') as f:
+        f.write('category,url,id,start,end,n_segments\n')
+        random.shuffle(csv_data)
+        for i, line in enumerate(csv_data):
+            f.write(','.join(line) + '\n')
 
-def count_filtered():
-    """Print number of filtered images per category"""
-    categories = animal_categories()
-    counts = {}
-    for category in sorted(os.listdir(QUICKDRAW_DRAWINGS_FILTERED_PATH)):
-        if category in categories:
-            fns = os.listdir(os.path.join(QUICKDRAW_DRAWINGS_FILTERED_PATH, category))
-            fns = [fn for fn in fns if fn.endswith('jpg')]
-            counts[category] = len(fns)
-    for cat, count in sorted(counts.items(), key=lambda x: x[1]):
-        print('{}: {}'.format(cat, count))
-    print('Total: {}'.format(sum(counts.values())))
+    # Calc stats
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({'font.size': 6})
+
+    df = pd.read_csv(csv_out_fp)
+    df.start = pd.to_numeric(df.start)
+    df.end = pd.to_numeric(df.end)
+    df.n_segments = pd.to_numeric(df.n_segments)
+    df['diff'] = df.end - df.start
+    df.start /= (df.n_segments + 1)
+    df.end /= (df.n_segments + 1)
+
+    out_dir = data_dir
+    for col, color in [('start', 'green'),
+                       ('end', 'red'),
+                       ('diff', 'black'),
+                       ('n_segments', 'orange')]:
+        plt.figure(dpi=1200)
+        df[col].hist(by=df.category, figsize=(10,8), alpha=0.8, color=color)
+        # plt.suptitle('Distribution of {}'.format(col), fontsize=24)
+        plt.tight_layout()
+        out_fp = os.path.join(out_dir, '{}.png'.format(col))
+        plt.savefig(out_fp)
+
 
 
 ###################################################################
@@ -398,20 +397,16 @@ def count_filtered():
 ###################################################################
 
 def push_to_aws():
-    AWS_BUCKET = 'hierarchical-learning'
     AWS_PROFILE = 'ericchu56'
-    AWS_EXISTS_CMD = 'aws --profile {} s3api head-object --bucket {} --key {}'
     AWS_CP_CMD = 'aws --profile {} s3 cp {} {}'
 
-    from time import sleep
-
-    categories = animal_categories()
-    for local_data_path, s3_path in [(QUICKDRAW_PROGRESSIONS_PATH, S3_PROGRESSIONS_PATH),
-                                     (QUICKDRAW_PROGRESSIONS_PAIRS_PATH, S3_PROGRESSION_PAIRS_PATH)]:
+    categories = final_categories()
+    for local_data_path, s3_path in [(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, S3_PROGRESSION_PAIRS_PATH)]:
         for root, dirs, fns in os.walk(local_data_path):
-            if os.path.basename(root) == 'progress_filtered':
+            if os.path.basename(root) == 'progress':
                 category = os.path.basename(os.path.dirname(root))
                 if category in categories:
+                    print(category)
                     for fn in fns:
                         local_fp = os.path.join(root, fn)
 
@@ -419,17 +414,7 @@ def push_to_aws():
                         cp_cmd = AWS_CP_CMD.format(AWS_PROFILE, local_fp, s3_fp)
                         subprocess.Popen(cp_cmd.split())
 
-                        # TODO: "sea turtle" gets split in cp_cmd: ',' breaks it
-
-
-                        # try:  # check if file exists on
-                        #     exists_cmd = AWS_EXISTS_CMD.format(AWS_PROFILE, AWS_BUCKET, local_fp.replace('data/', ''))
-                        #     subprocess.check_output(exists_cmd.split())
-                        # except Exception as e:
-                        #     s3_fp = s3_path.format(category, fn)
-                        #     cp_cmd = AWS_CP_CMD.format(AWS_PROFILE, local_fp, s3_fp)
-                        #     subprocess.Popen(cp_cmd.split())
-                    sleep(10)
+                    sleep(45)
 
 ###################################################################
 #
@@ -439,12 +424,10 @@ def push_to_aws():
 
 def convert_turk_results_to_html():
     """Convert csv from MTurk to """
-    RESULTS_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.csv'
-    HTML_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.html'
+    # RESULTS_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.csv'
+    # HTML_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.html'
 
 
-    # RESULTS_PATH = 'data/quickdraw/progressions/mturk_progressions_results_initial1.csv'
-    # HTML_PATH = 'data/quickdraw/progressions/mturk_progressions_results_initial1.html'
     with open(HTML_PATH, 'w') as out_f:
         out_f.write("""
         <html lang="en">
@@ -548,10 +531,9 @@ if __name__ == '__main__':
     parser.add_argument('--progressions', action='store_true')
     parser.add_argument('--progression_pairs', action='store_true')
     parser.add_argument('--prep_progressions_data', action='store_true')
-    parser.add_argument('--prep_data', type=str, default='progressions',
+    parser.add_argument('--prep_data', type=str, default='progression_pairs',
                         help='"progressions" or "progression_pairs"')
-    parser.add_argument('--prep_data_n', type=int, default=None, help='number of examples to get annotated')
-    parser.add_argument('--count_filtered', action='store_true')
+    parser.add_argument('--prep_data_n', type=int, default=250, help='number of examples to get annotated')
     parser.add_argument('--push_to_aws', action='store_true')
     parser.add_argument('--html', action='store_true')
     args = parser.parse_args()
@@ -563,11 +545,9 @@ if __name__ == '__main__':
     if args.progressions:
         save_progressions(n=1000)
     if args.progression_pairs:
-        save_progression_pairs(n=500)
+        save_progression_pairs(n=250)
     if args.prep_progressions_data:
         prep_progressions_data_for_turk(args.prep_data, args.prep_data_n)
-    if args.count_filtered:
-        count_filtered()
     if args.push_to_aws:
         push_to_aws()
     if args.html:
