@@ -424,9 +424,8 @@ def push_to_aws():
 
 def convert_turk_results_to_html():
     """Convert csv from MTurk to """
-    # RESULTS_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.csv'
-    # HTML_PATH = 'data/quickdraw/progression_pairs/mturk_progression_pairs_results_initial2.html'
-
+    RESULTS_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.csv')
+    HTML_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.html')
 
     with open(HTML_PATH, 'w') as out_f:
         out_f.write("""
@@ -455,7 +454,6 @@ def convert_turk_results_to_html():
                   <img src="{}" style="max-width:100%">
                   <div class="caption">
                     <p>{}</p>
-                    <p>{}</p>
                   </div>
               </div>
             </div>
@@ -467,7 +465,6 @@ def convert_turk_results_to_html():
                   <img src="{}" style="max-width:100%">
                   <div class="caption">
                     <p>{}</p>
-                    <p>{}</p>
                   </div>
               </div>
             </div>
@@ -478,7 +475,6 @@ def convert_turk_results_to_html():
                   </div>
                   <img src="{}" style="max-width:100%">
                   <div class="caption">
-                    <p>{}</p>
                     <p>{}</p>
                   </div>
               </div>
@@ -488,29 +484,19 @@ def convert_turk_results_to_html():
 
 
         df = pd.read_csv(RESULTS_PATH)
-        # keep only the rows that have duplicate urls (i.e. been annotated twice)
-        # doing this for now since turk job isn't finished and not every progression was annotated wice
-        df = df[df.duplicated('Input.url', keep=False)]
-        df = df.sort_values('Input.category')
-        df = df.sort_values('Input.url')
-
-        for i in range(0, len(df) - (len(df) % 6), 6):
-
+        for i in range(0, len(df) - (len(df) % 3), 3):
             row = ROW_TEMPLATE.format(
                 df.iloc[i]['Input.category'],
                 df.iloc[i]['Input.url'],
                 df.iloc[i]['Answer.annotation'].replace('\r', '<br>'),
+
+                df.iloc[i+1]['Input.category'],
+                df.iloc[i+1]['Input.url'],
                 df.iloc[i+1]['Answer.annotation'].replace('\r', '<br>'),
 
                 df.iloc[i+2]['Input.category'],
                 df.iloc[i+2]['Input.url'],
                 df.iloc[i+2]['Answer.annotation'].replace('\r', '<br>'),
-                df.iloc[i+3]['Answer.annotation'].replace('\r', '<br>'),
-
-                df.iloc[i+4]['Input.category'],
-                df.iloc[i+4]['Input.url'],
-                df.iloc[i+4]['Answer.annotation'].replace('\r', '<br>'),
-                df.iloc[i+5]['Answer.annotation'].replace('\r', '<br>'),
             )
             out_f.write(row)
 
