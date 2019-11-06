@@ -1,7 +1,11 @@
 
 .DS_Store
 .idea/
+*__pycache__
 
 data/
 papers/
 venv/
+runs/
+
+commit.txt
