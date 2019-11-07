@@ -1,18 +1,18 @@
 """
 Analyzing and preparing QuickDraw data
 
-
-https://github.com/googlecreativelab/quickdraw-dataset
+Original data obtained from: https://github.com/googlecreativelab/quickdraw-dataset
 """
 
 import argparse
-from collections import defaultdict
+from collections import defaultdict, Counter
 import csv
 import json
 import math
 import os
+import pickle
+from pprint import pprint
 import random
-from shutil import copyfile
 import subprocess
 from time import sleep
 
@@ -22,26 +22,41 @@ import pandas as pd
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
 
-# Config and params
-NDJSON_PATH = 'data/quickdraw/simplified_ndjson/{}.ndjson'
+###################################################################
+#
+# Config and paths
+#
+###################################################################
+
+# Original
+QUICKDRAW_DATA_PATH = 'data/quickdraw'
+NDJSON_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'simplified_ndjson', '{}.ndjson')
+
+# Selected categories
 CATEGORIES_ANIMAL_PATH = 'data/quickdraw/categories_animals.txt'
 CATEGORIES_FINAL_PATH = 'data/quickdraw/categories_final.txt'
 
-QUICKDRAW_DATA_PATH = 'data/quickdraw'
+# Params and paths for saving various images of drawings
+SIDE = 112
+LINE = 6
+PAIRS_MIN_STROKES = 3
+FONT_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'ARIALBD.TTF')
+
 QUICKDRAW_DRAWINGS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings')
 QUICKDRAW_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings_pairs')
 QUICKDRAW_PROGRESSIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progressions')
-FONT_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'ARIALBD.TTF')
 QUICKDRAW_PROGRESSIONS_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progression_pairs_fullinput')
 
+# For MTurk
 S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
 S3_PROGRESSIONS_PATH = 's3://hierarchical-learning/quickdraw/progressions_fullinput/{}/progress/{}'
 S3_PROGRESSION_PAIRS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progression_pairs_fullinput/{}/progress/{}'
 S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pairs_fullinput/{}/progress/{}'
 
-SIDE = 112
-LINE = 6
-PAIRS_MIN_STROKES = 3
+# MTurk annotated data
+ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = os.path.join(
+    QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.csv')
+LABELED_PROGRESSION_PAIRS_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'labeled_progression_pairs')
 
 
 ###################################################################
@@ -116,6 +131,45 @@ def final_categories():
     categories = [c.strip() for c in categories]
     return categories
 
+def ndjson_to_stroke3(sample):
+    """
+    Parse an ndjson sample and return ink (as np array) and classname.
+    
+    Taken from https://github.com/tensorflow/docs/blob/master/site/en/r1/tutorials/sequences/recurrent_quickdraw.md
+    
+    :param sample: drawing in ndjson format (list of x y points)
+    :return
+        np_ink: drawing in stroke3-format 
+        class_name: str (category, e.g. "cat")
+    """
+    # Think this converts ndjson format to stroke-3
+    #
+    # sample = json.loads(ndjson_line)
+    class_name = sample["word"]
+    inkarray = sample["drawing"]
+    stroke_lengths = [len(stroke[0]) for stroke in inkarray]
+    total_points = sum(stroke_lengths)
+    np_ink = np.zeros((total_points, 3), dtype=np.float32)
+    current_t = 0
+    for stroke in inkarray:
+        for i in [0, 1]:
+            np_ink[current_t:(current_t + len(stroke[0])), i] = stroke[i]
+        current_t += len(stroke[0])
+        np_ink[current_t - 1, 2] = 1  # stroke_end
+
+    # Size normalization
+    lower = np.min(np_ink[:, 0:2], axis=0)
+    upper = np.max(np_ink[:, 0:2], axis=0)
+    scale = upper - lower
+    scale[scale == 0] = 1
+    np_ink[:, 0:2] = (np_ink[:, 0:2] - lower) / scale
+
+    # Compute deltas
+    np_ink[1:, 0:2] -= np_ink[0:-1, 0:2]
+    np_ink = np_ink[1:, :]
+
+    return np_ink, class_name
+
 ###################################################################
 #
 # Saving and manipulating raw data
@@ -123,7 +177,9 @@ def final_categories():
 ###################################################################
 
 def save_pairs(n=None):
-    """Save random pairs of drawings"""
+    """
+    Save random pairs of drawings
+    """
     categories = animal_categories()
     for cat in categories:
         print(cat)
@@ -418,16 +474,16 @@ def push_to_aws():
 
 ###################################################################
 #
-# Analysis
+# Analyzing and saving annotated data
 #
 ###################################################################
 
 def convert_turk_results_to_html():
-    """Convert csv from MTurk to """
-    RESULTS_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.csv')
-    HTML_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.html')
-
-    with open(HTML_PATH, 'w') as out_f:
+    """
+    Convert csv from MTurk to a html file.
+    """
+    html_path = ANNOTATED_PROGRESSION_PAIRS_CSV_PATH.replace('.csv', '.html')
+    with open(html_path, 'w') as out_f:
         out_f.write("""
         <html lang="en">
             <head>
@@ -482,8 +538,7 @@ def convert_turk_results_to_html():
           </div>
         """
 
-
-        df = pd.read_csv(RESULTS_PATH)
+        df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
         for i in range(0, len(df) - (len(df) % 3), 3):
             row = ROW_TEMPLATE.format(
                 df.iloc[i]['Input.category'],
@@ -506,11 +561,111 @@ def convert_turk_results_to_html():
         </html>
         """)
 
+def save_annotated_progression_pairs_data():
+    """
+    Save <category>.pkl files that is a dictionary from id to data.
+    Data is a dictionary that contains:
+        url: S3 url of progression pair
+        annotation: instruction written by MTurker
+        
+        ndjson_strokes: drawing in ndjson format (list of subsegments, each subsegment is list of x y points)
+        ndjson_start: ndjson_strokes index of start of annotated segment
+            - Offset by 1 relative to ndjson_strokes 
+            - When 0, this is the start of the drawing (before any strokes)
+        ndjson_end: ndjson_strokes index of end of annotated segment
+            - Offset by 1 relative to ndjson_strokes
+            
+        stroke3: drawing in stroke-3 format: numpy array (x, y, pen_up)
+        stroke3_start: stroke3 index of start of annotated segment
+        stroke3_end: stroke3 index of end of annotated segment
+        stroke3_segment: segment that was annotated (drawing from _start to _end of progression pair)
+    """
+    os.makedirs(LABELED_PROGRESSION_PAIRS_PATH, exist_ok=True)
 
+    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+    for cat in df['Input.category'].unique():
+        df_cat = df[df['Input.category'] == cat]
+        print(cat, len(df_cat))
+
+        id_to_data = defaultdict(dict)
+
+        # get ndjson stroke data
+        drawings = ndjson_drawings(cat)
+        id_to_strokes = defaultdict(dict)
+        for data in drawings:
+            id = data['key_id']
+            id_to_strokes[id]['ndjson_strokes'] = data['drawing']
+            stroke3, class_name = ndjson_to_stroke3(data)
+            id_to_strokes[id]['stroke3'] = stroke3
+
+        # map annotations to strokes
+        for i in range(len(df_cat)):
+            id = df_cat.iloc[i]['Input.id']
+            id = str(id)
+            annotation = df_cat.iloc[i]['Answer.annotation'].replace('\r', '')
+            ndjson_start = df_cat.iloc[i]['Input.start']
+            ndjson_end = df_cat.iloc[i]['Input.end']
+            url = df_cat.iloc[i]['Input.url']
+
+            id_to_data[id]['ndjson_start'] = int(ndjson_start)
+            id_to_data[id]['ndjson_end'] = int(ndjson_end)
+            id_to_data[id]['url'] = url
+            id_to_data[id]['annotation'] = annotation
+
+            ndjson_strokes = id_to_strokes[id]
+            stroke3 = id_to_strokes[id]['stroke3']
+            id_to_data[id]['ndjson_strokes'] =  id_to_strokes[id]['ndjson_strokes']
+            id_to_data[id]['stroke3'] = stroke3
+
+            # save portion of stroke3 corresponding to start and end
+            pen_up = np.where(id_to_strokes[id]['stroke3'][:, 2] == 1)[0].tolist()
+            pen_up.insert(0,0)  #  insert to get indexing (when ndjson_start == 0) this is the beginning
+            stroke3_start = 0 if (ndjson_start == 0) else (pen_up[ndjson_start] + 1)
+            stroke3_end = pen_up[ndjson_end]
+            id_to_data[id]['stroke3_start'] = stroke3_start
+            id_to_data[id]['stroke3_end'] = stroke3_end
+            id_to_data[id]['stroke3_segment'] = stroke3[stroke3_start:stroke3_end+1, :]
+
+        # save
+        out_fn = '{}.pkl'.format(cat)
+        out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, out_fn)
+        with open(out_fp, 'wb') as f:
+            pickle.dump(id_to_data, f)
+
+def analyze_progression_pairs_annotations():
+    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+
+    words = Counter()
+    for i in range(len(df)):
+        id = df.iloc[i]['Input.id']
+        annotation = df.iloc[i]['Answer.annotation'].replace('\r', '')
+        for word in annotation.replace('.', '').lower().split():
+            if word not in ['the', 'a', 'an', 'of']:
+                words[word] += 1
+
+    pprint(sorted(words.items(), key=lambda x: x[1]))
+
+    # By category
+    for cat in df['Input.category'].unique():
+        df_cat = df[df['Input.category'] == cat]
+        words = Counter()
+        for i in range(len(df_cat)):
+            id = df_cat.iloc[i]['Input.id']
+            annotation = df_cat.iloc[i]['Answer.annotation'].replace('\r', '')
+            for word in annotation.replace('.', '').lower().split():
+                if word not in ['the', 'a', 'an', 'of']:
+                    words[word] += 1
+
+        print('-' * 100)
+        print
+        print('CATEGORY: {}'.format(cat))
+        pprint(sorted(words.items(), key=lambda x: x[1]))
+        print('CATEGORY: {}'.format(cat))
+        print
+
+    # TODO: calculate tfidf on annotaitons
 
 if __name__ == '__main__':
-    import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--pairs', action='store_true')
     parser.add_argument('--drawings', action='store_true')
@@ -522,6 +677,8 @@ if __name__ == '__main__':
     parser.add_argument('--prep_data_n', type=int, default=250, help='number of examples to get annotated')
     parser.add_argument('--push_to_aws', action='store_true')
     parser.add_argument('--html', action='store_true')
+    parser.add_argument('--save_annotated_progression_pairs_data', action='store_true')
+    parser.add_argument('--analyze_progression_pairs_annotations', action='store_true')
     args = parser.parse_args()
 
     if args.pairs:
@@ -538,3 +695,7 @@ if __name__ == '__main__':
         push_to_aws()
     if args.html:
         convert_turk_results_to_html()
+    if args.save_annotated_progression_pairs_data:
+        save_annotated_progression_pairs_data()
+    if args.analyze_progression_pairs_annotations:
+        analyze_progression_pairs_annotations()
