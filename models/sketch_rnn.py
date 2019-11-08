@@ -5,8 +5,10 @@ SketchRNN model is VAE with GMM in decoder
 """
 
 import argparse
+from collections import defaultdict
 from datetime import datetime
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +22,6 @@ from torch import optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
-
 
 NPZ_DATA_PATH = 'data/quickdraw/npz/'
 RUNS_PATH = 'runs/'
@@ -44,10 +45,10 @@ class HParams():
         self.max_epochs = 100
 
         # Model
-        self.enc_hidden_size = 256 # 512
-        self.dec_hidden_size = 512 # 2048
+        self.enc_dim = 256  # 512
+        self.dec_dim = 512  # 2048
         self.enc_num_layers = 1  # 2
-        self.Nz = 128  # dimension of z for VAE
+        self.z_dim = 128  # dimension of z for VAE
         self.M = 20  # number of mixtures
         self.dropout = 0.9  #
         self.wKL = 0.5  # weight for Kl-loss (eq. 11)
@@ -76,9 +77,10 @@ class SketchDataset(Dataset):
     Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
         one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
     """
+
     def __init__(self, category, dataset_split, hp):
         """
-        
+
         :param category: str ('cat', 'giraffe', etc.)
         :param dataset_split: str, ('train', 'valid', 'test')
         """
@@ -153,7 +155,6 @@ class SketchDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         sample, l = self._stroke3_to_stroke5(sample)
-
         return (sample, l)
 
     def _stroke3_to_stroke5(self, seq):  # to_big_strokes() in sketch_rnn/utils.py
@@ -204,42 +205,34 @@ def save_sequence_as_img(sequence, output_fp):
 #
 ##############################################################################
 class EncoderRNN(nn.Module):
-    """
-    Outputs:
-        z: fed to each step of decoder;                   [batch_size, Nz]
-        mu: used to calculate KL loss (eq. 10);           [batch_size, Nz]
-        sigma_hat: used to calculate KL loss (eq. 10);    [batch_size, Nz]
-    """
-
-    def __init__(self, hp):
+    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=1.0):
         super(EncoderRNN, self).__init__()
-        self.hp = hp
-        self.lstm = nn.LSTM(5, self.hp.enc_hidden_size,
-                            num_layers=self.hp.enc_num_layers, dropout=self.hp.dropout, bidirectional=True)
+        self.enc_dim = enc_dim
 
+        self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
         # Create mu and sigma by passing lstm's last output into fc layer (Eq. 2)
-        self.fc_mu = nn.Linear(2 * self.hp.enc_hidden_size, self.hp.Nz)  # 2 for bidirectional
-        self.fc_sigma = nn.Linear(2 * self.hp.enc_hidden_size, self.hp.Nz)
+        self.fc_mu = nn.Linear(2 * enc_dim, z_dim)  # 2 for bidirectional
+        self.fc_sigma = nn.Linear(2 * enc_dim, z_dim)
 
     def forward(self, inputs, hidden_cell=None):
         """
 
-        :param inputs: [max_len, bsz, isz] (input_size == isz == 5)
+        :param inputs: [max_len, bsz, input_dim] (input_size == isz == 5)
         :param batch_size: int
         :param hidden_cell:
-        
+
         :return:
-            z: [bsz, Nz]
-            mu: [bsz, Nz]
-            sigma_hat [bsz, Nz]
+            z: [bsz, z_dim]
+            mu: [bsz, z_dim]
+            sigma_hat [bsz, z_dim] (used to calculate KL loss, eq. 10)
         """
         bsz = inputs.size(1)
 
         # Initialize hidden state and cell state with zeros on first forward pass
         num_directions = 2 if self.lstm.bidirectional else 1
         if hidden_cell is None:
-            hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.hp.enc_hidden_size)
-            cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.hp.enc_hidden_size)
+            hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
+            cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
             if USE_CUDA:
                 hidden = hidden.cuda()
                 cell = cell.cuda()
@@ -247,17 +240,19 @@ class EncoderRNN(nn.Module):
 
         # Pass inputs, hidden, and cell into encoder's lstm
         # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
-        _, (hidden, cell) = self.lstm(inputs.float(), hidden_cell) # h and c: [n_layers * n_directions, bsz, hsz]
-        last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.hp.enc_hidden_size)[-1,:,:,:]
+        _, (hidden, cell) = self.lstm(inputs, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
+        # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
+        last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
         # [num_directions, bsz, hsz]
         last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
 
         # Get mu and sigma from hidden
-        mu = self.fc_mu(last_hidden)  # [bsz, Nz]
-        sigma_hat = self.fc_sigma(last_hidden)  # [bsz, Nz]
+        mu = self.fc_mu(last_hidden)  # [bsz, z_dim]
+        sigma_hat = self.fc_sigma(last_hidden)  # [bsz, z_dim]
 
         if (sigma_hat != sigma_hat).any():
-            import pdb; pdb.set_trace()
+            import pdb;
+            pdb.set_trace()
             print('Nans in encoder sigma_hat')
 
         # Get z for VAE using mu and sigma, N ~ N(0,1)
@@ -266,10 +261,11 @@ class EncoderRNN(nn.Module):
         N = torch.randn_like(sigma)
         if USE_CUDA:
             N = N.cuda()
-        z = mu + sigma * N  # [bsz, Nz]
+        z = mu + sigma * N  # [bsz, z_dim]
 
         # Note we return sigma_hat, not sigma to be used in KL-loss (eq. 10)
         return z, mu, sigma_hat
+
 
 ##############################################################################
 #
@@ -280,34 +276,29 @@ class DecoderRNN(nn.Module):
     """
     """
 
-    def __init__(self, hp):
+    def __init__(self, input_dim, dec_dim, M, dropout=1.0):
+        """
+
+        :param input_dim: int (size of input)
+        :param dec_dim: int (size of hidden states)
+        """
         super(DecoderRNN, self).__init__()
 
-        self.hp = hp
+        self.input_dim = input_dim
+        self.dec_dim = dec_dim
+        self.M = M
 
-        # Initialize decoder states
-        # Page 3: The initial hidden states h0, and optional cell states c0 (if applicable)
-        # of the decoder RNN is the output of a single layer network [h0; c0] = tanh(W*z + b)
-        self.fc_hc = nn.Linear(self.hp.Nz, 2 * self.hp.dec_hidden_size)  # 2: 1 for hidden, 1 for cell
-
-        # Plus 5 for
-        # TODO: is this the right equation / shoudl this comment be here
+        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=1, dropout=dropout)
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
-        self.lstm = nn.LSTM(self.hp.Nz + 5, self.hp.dec_hidden_size,
-                            num_layers=1, dropout=self.hp.dropout)
-                            # num_layers=self.hp.num_layers, dropout=self.hp.dropout)
+        self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
 
-        # Create mixture params and probs from hiddens
-        self.fc_params = nn.Linear(self.hp.dec_hidden_size, 6 * self.hp.M + 3)
-
-    def forward(self, inputs, z, output_all=True, hidden_cell=None):
+    def forward(self, inputs, output_all=True, hidden_cell=None):
         """
 
         :param inputs: [len, bsz, esz + 5]
-        :param z: [bsz, esz]
         :param output_all: boolean, return output at every timestep or just the last
-        :param hidden_cell: 
-        
+        :param hidden_cell: [n_layers, bsz, dec_dim]
+
         :returns:
             pi: weights for each mixture            [max_len + 1, bsz, M]
             mu_x: mean x for each mixture           [max_len + 1, bsz, M]
@@ -317,31 +308,35 @@ class DecoderRNN(nn.Module):
             rho_xy:  covariance for each mixture    [max_len + 1, bsz, M]
             q: [max_len + 1, bsz, 3]
                 models p (3 pen strokes in stroke-5) as categorical distribution (page 3);   
-            hidden: [1, bsz, dec_hidden_size]
+            hidden: [1, bsz, dec_dim]
                  last hidden state      
-            cell: [1, bsz, dec_hidden_size]
+            cell: [1, bsz, dec_dim]
                   last cell state
         """
-        # On first forward pass, initialize hidden state and cell state using z
-        if hidden_cell is None:
-            hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_hidden_size, 1)
-            # TODO: if we want multiple layers, we need to replicate hidden and cell n_layers times
-            hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
+        bsz = inputs.size(1)
+        if hidden_cell is None:  # init
+            hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+            cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+            if USE_CUDA:
+                hidden = hidden.cuda()
+                cell = cell.cuda()
+            hidden_cell = (hidden, cell)
 
         outputs, (hidden, cell) = self.lstm(inputs, hidden_cell)
 
         # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
         # Dimensions
-        #   outputs: [max_len + 1, bsz, dec_hsz]
-        #   view: [(max_len + 1) * bsz, dec_hsz]
+        #   outputs: [max_len + 1, bsz, dec_dim]
+        #   view: [(max_len + 1) * bsz, dec_dim]
         #   y: [(max_len + 1) * bsz, 6 * M + 3] (6 comes from 5 for params, 6th for weights; see page 3)
         if output_all:
-            y = self.fc_params(outputs.view(-1, self.hp.dec_hidden_size))
+            y = self.fc_params(outputs.view(-1, self.dec_dim))
         else:
-            y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
+            y = self.fc_params(hidden.view(-1, self.dec_dim))
 
         # Separate pen and mixture params
-        params = torch.split(y, 6, 1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * bsz, 6]'s, 1 [(max_len + 1) * bsz, 3]
+        params = torch.split(y, 6,
+                             1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * bsz, 6]'s, 1 [(max_len + 1) * bsz, 3]
         params_mixture = torch.stack(params[:-1])  # trajectories; [num_mixtures, (max_len + 1) * bsz, 6]
         params_pen = params[-1]  # pen up/down;  [(max_len + 1) * bsz, 3]
 
@@ -367,14 +362,14 @@ class DecoderRNN(nn.Module):
         # if len_out == 1:
         #     import pdb; pdb.set_trace()  # squeeze may be related to generation with len_out = 1
         # TODO: add dimensions
-        pi = F.softmax(pi.t().squeeze(), dim=-1).view(len_out, -1, self.hp.M)
-        mu_x = mu_x.t().squeeze().contiguous().view(len_out, -1, self.hp.M)
-        mu_y = mu_y.t().squeeze().contiguous().view(len_out, -1, self.hp.M)
+        pi = F.softmax(pi.t().squeeze(), dim=-1).view(len_out, -1, self.M)
+        mu_x = mu_x.t().squeeze().contiguous().view(len_out, -1, self.M)
+        mu_y = mu_y.t().squeeze().contiguous().view(len_out, -1, self.M)
 
         # Eq. 6
-        sigma_x = torch.exp(sigma_x.t().squeeze()).view(len_out, -1, self.hp.M)
-        sigma_y = torch.exp(sigma_y.t().squeeze()).view(len_out, -1, self.hp.M)
-        rho_xy = torch.tanh(rho_xy.t().squeeze()).view(len_out, -1, self.hp.M)
+        sigma_x = torch.exp(sigma_x.t().squeeze()).view(len_out, -1, self.M)
+        sigma_y = torch.exp(sigma_y.t().squeeze()).view(len_out, -1, self.M)
+        rho_xy = torch.tanh(rho_xy.t().squeeze()).view(len_out, -1, self.M)
 
         # Eq. 7
         q = F.softmax(params_pen, dim=-1).view(len_out, -1, 3)
@@ -393,6 +388,14 @@ class SketchRNN(nn.Module):
         super().__init__()
         self.hp = hp
 
+        # optimization -- ADAM plus annealing (supp eq. 4)
+        self.models = []
+        self.optimizers = []
+        self.eta_step = hp.eta_min
+
+    #
+    # Data
+    #
     def make_target(self, batch, lengths, M):
         """
         Create target vector out of stroke-5 data and lengths. Namely, use lengths
@@ -401,7 +404,7 @@ class SketchRNN(nn.Module):
         :param: batch: [max_len, bsz, 5]
         :param: lengths: list of ints 
         :param: M: int, number of mixtures
-        
+
         :returns: 
             mask: [max_len + 1, bsz]
             dx: [max_len + 1, bsz, num_mixtures]
@@ -436,17 +439,20 @@ class SketchRNN(nn.Module):
         """
         :param: batch TODO
         :param: lengths TODO
-        
+
         :returns:
             batch: [max_len, bsz, 5]
             lengths: list of ints
         """
-        batch.transpose_(0, 1).float()  # Dataloader returns batch in 1st dimension, rest of code expects it to be 2nd
+        batch = batch.transpose(0, 1).float()  # Dataloader returns batch in 1st dim, rest of code expects it to be 2nd
         if USE_CUDA:
             batch = batch.cuda()
         lengths = lengths.numpy().tolist()
         return batch, lengths
 
+    #
+    # Training
+    #
     def lr_decay(self, optimizer, min_lr, lr_decay):
         """
         Decay learning rate by a factor of lr_decay
@@ -455,6 +461,139 @@ class SketchRNN(nn.Module):
             if param_group['lr'] > min_lr:
                 param_group['lr'] *= lr_decay
         return optimizer
+
+    def one_forward_pass(self, batch, lengths):
+        """
+        Return loss and other items of interest for one forward pass
+
+        :param batch: [max_len, bsz, 5]
+        :param lengths: list of ints
+        :return: dict
+            'loss': float Tensor. Must exist
+             'loss_*': 
+        """
+        pass
+
+    def dataset_loop(self, data_loader, epoch, is_train=True, writer=None, tb_tag='train'):
+        """
+        Can be used with either different splits of the dataset (train, valid, test)
+
+        :return: dict
+            key: str
+            value: float
+        """
+        losses = defaultdict(list)
+        for i, (batch, lengths) in enumerate(data_loader):
+            # set up optimizers
+            if is_train:
+                for optimizer in self.optimizers:
+                    optimizer.zero_grad()
+                self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
+
+            # forward pass
+            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)  # [max_len, bsz, 5];
+            result = self.one_forward_pass(batch, lengths)
+            for k, v in result.items():
+                if k.startswith('loss'):
+                    losses[k].append(v.item())
+
+            # optimization
+            if is_train:
+                result['loss'].backward()
+                nn.utils.clip_grad_value_(self.parameters(), self.hp.grad_clip)
+                for optimizer in self.optimizers:
+                    optimizer.step()
+
+            # Logging
+            if i % 10 == 0:
+                step = epoch * data_loader.__len__() + i
+                for k, v in result.items():
+                    if k.startswith('loss'):
+                        writer.add_scalar('{}/{}'.format(tb_tag, k), v.item(), step)
+
+        mean_losses = {k: np.mean(values) for k, values in losses.items()}
+        return mean_losses
+
+    def get_log_str(self, epoch, dataset_split, mean_losses, runtime=None):
+        """
+        Create string to log to stdout
+        """
+        log_str = 'Epoch {} -- {}:'.format(epoch, dataset_split)
+        for k, v in mean_losses.items():
+            log_str += ' {}={:.4f}'.format(k, v)
+        if runtime is not None:
+            log_str += ' minutes={:.0f}'.format(runtime)
+        return log_str
+
+    def train_loop(self, model_name, category):
+        """Train and validate on multiple epochs"""
+
+        # Bookkeeping
+        model_name += '_' + category
+        run_datetime = datetime.now().strftime('%B%d_%H-%M-%S')
+        run_path = os.path.join(RUNS_PATH, model_name, run_datetime)
+        print(run_path)
+        tb_path = os.path.join(run_path, 'tensorboard')
+        output_imgs_path = os.path.join(run_path, 'output_imgs')
+        os.makedirs(output_imgs_path)
+        writer = SummaryWriter(tb_path)
+        stdout_fp = os.path.join(run_path, 'stdout.txt')
+        stdout_f = open(stdout_fp, 'w')
+
+        # Get data
+        tr_dataset = SketchDataset(category, 'train', self.hp)
+        val_dataset = SketchDataset(category, 'valid', self.hp)
+        tr_loader = DataLoader(tr_dataset, batch_size=hp.batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=hp.batch_size, shuffle=False)
+
+        gen_data_loader = DataLoader(tr_dataset, batch_size=1, shuffle=False)  # TODO: change to val_dataset
+
+        # Train
+        val_losses = []  # used for early stopping
+        min_val_loss = float('inf')  # used to save model
+        for epoch in range(self.hp.max_epochs):
+
+            # train
+            start_time = time.time()
+            for model in self.models:
+                model.train()
+            mean_losses = self.dataset_loop(tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
+            end_time = time.time()
+            min_elapsed = (end_time - start_time) / 60
+            log_str = self.get_log_str(epoch, 'train', mean_losses, runtime=min_elapsed)
+            print(log_str, file=stdout_f)
+            stdout_f.flush()
+
+            for optimizer in self.optimizers:
+                self.lr_decay(optimizer, self.hp.min_lr, self.hp.lr_decay)
+
+            # validate
+            for model in self.models:
+                model.eval()
+            mean_losses = self.dataset_loop(val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
+            val_loss = mean_losses['loss']
+            val_losses.append(val_loss)
+            # TODO: early stopping
+            log_str = self.get_log_str(epoch, 'valid', mean_losses)
+            print(log_str, file=stdout_f)
+            stdout_f.flush()
+
+            # Generate sequence to save image and show progress
+            self.save_generation(gen_data_loader, epoch, n_gens=1, output_imgs_path=output_imgs_path)
+
+            # Save model. TODO: only save best model (model.pt)
+            if val_loss < min_val_loss:
+                min_val_loss = val_loss
+                model_fn = 'e{}_loss{:.4f}.pt'.format(epoch, val_loss)  # val loss
+                torch.save(self.state_dict(), os.path.join(run_path, model_fn))
+
+        stdout_f.close()
+
+    #
+    # Generation
+    #
+    def save_generation(self, gen_data_loader, epoch, n_gens=1, output_imgs_path=None):
+        pass
 
     #
     # Reconstruction loss
@@ -481,11 +620,12 @@ class SketchRNN(nn.Module):
 
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
-        LS = -torch.sum(mask * torch.log(1e-5 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
+        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
 
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
-        LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
+        # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
+        LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
 
         return LS + LP
 
@@ -517,13 +657,49 @@ class SketchRNNDecoderOnly(SketchRNN):
         super().__init__(hp)
 
         # Model
-        self.decoder = DecoderRNN(hp)
+        self.decoder = DecoderRNN(5, hp.dec_dim, hp.M)
+        self.models.append(self.decoder)
         if USE_CUDA:
             self.decoder.cuda()
 
         # optimization -- ADAM plus annealing (supp eq. 4)
-        self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
-        self.eta_step = hp.eta_min
+        self.optimizers.append(optim.Adam(self.decoder.parameters(), hp.lr))
+
+    def one_forward_pass(self, batch, lengths):
+        """
+        Return loss and other items of interest for one forward pass
+
+        :param batch: [max_len, bsz, 5]
+        :param lengths: list of ints
+        :return: dict
+            'loss': float Tensor. Must exist
+             'loss_*': 
+        """
+        max_len, bsz, _ = batch.size()
+
+        # Create inputs to decoder
+        sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
+        if USE_CUDA:
+            sos = sos.cuda()
+        dec_inputs = torch.cat([sos, batch], 0)  # add sos at the begining of the batch; [max_len + 1, bsz, 5]
+
+        # Decode
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(dec_inputs, output_all=True)
+
+        # Calculate losses
+        mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
+        loss = self.reconstruction_loss(mask,
+                                        dx, dy, p,
+                                        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                                        q)
+        result = {'loss': loss, 'loss_R': loss}
+
+        return result
+
+    def save_generation(self, gen_data_loader, epoch, n_gens=1, output_imgs_path=None):
+        # TODO: generation not implemented yet (need to generalize the conditional generation of the VAE)
+        pass
+
 
 class SketchRNNVAE(SketchRNN):
     """
@@ -534,150 +710,61 @@ class SketchRNNVAE(SketchRNN):
         super().__init__(hp)
 
         # Model
-        self.encoder = EncoderRNN(hp)
-        self.decoder = DecoderRNN(hp)
+        self.encoder = EncoderRNN(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
+        self.fc_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
+        self.decoder = DecoderRNN(hp.z_dim + 5, hp.dec_dim, hp.M)
+        self.models.extend([self.encoder, self.fc_hc, self.decoder])
         if USE_CUDA:
             self.encoder.cuda()
+            self.fc_hc.cuda()
             self.decoder.cuda()
 
         # optimization -- ADAM plus annealing (supp eq. 4)
-        self.encoder_optimizer = optim.Adam(self.encoder.parameters(), hp.lr)
-        self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
-        self.eta_step = hp.eta_min
+        self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
-    def dataset_loop(self, data_loader, epoch, is_train=True, writer=None, tb_tag='train'):
-        """Can be used with either different splits of the dataset (train, valid, test)"""
+    def one_forward_pass(self, batch, lengths):
+        """
+        Return loss and other items of interest for one forward pass
 
-        losses = []
-        LRs = []
-        LKLs = []
-        for i, (batch, lengths) in enumerate(data_loader):
-            # Set up optimizers
-            if is_train:
-                self.encoder_optimizer.zero_grad()
-                self.decoder_optimizer.zero_grad()
-                self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
+        :param batch: [max_len, bsz, 5]
+        :param lengths: list of ints
+        :return: dict
+            'loss': float Tensor. Must exist
+             'loss_*': 
+        """
+        max_len, bsz, _ = batch.size()
 
-            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)  # [max_len, bsz, 5];
-            max_len, bsz, _ = batch.size()
+        # Encode
+        z, mu, sigma_hat = self.encoder(batch)  # each [bsz, z_dim]
 
-            # Encode
-            z, mu, sigma_hat = self.encoder(batch)  # each [bsz, Nz]
+        # Create inputs to decoder
+        sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
+        if USE_CUDA:
+            sos = sos.cuda()
+        batch_init = torch.cat([sos, batch], 0)  # add sos at the begining of the batch; [max_len + 1, bsz, 5]
+        z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
+        dec_inputs = torch.cat([batch_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
 
-            # Create inputs to decoder. First, create start of sequence
-            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)
-            if USE_CUDA:
-                sos = sos.cuda()
+        # init hidden and cell states is tanh(fc(z)) (Page 3)
+        hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_dim, 1)
+        hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
+        # TODO: if we want multiple layers, we need to replicate hidden and cell n_layers times
 
-            batch = batch.float()  # TODO: is this right? Also move to preprocess_batch()
-            batch_init = torch.cat([sos, batch],
-                                   0)  # add sos at the begining of the batch; [max_len + 1, bsz, 5]
-            z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, Nz]
-            inputs = torch.cat([batch_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, Nz + 5]
+        # Decode
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(dec_inputs, output_all=True,
+                                                                         hidden_cell=hidden_cell)
 
-            # Decode
-            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(inputs, z, output_all=True)
-
-            # Get targets
-            mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
-
-            # Calculate losses
-            LKL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
-            LR = self.reconstruction_loss(mask,
+        # Calculate losses
+        mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
+        loss_KL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
+        loss_R = self.reconstruction_loss(mask,
                                           dx, dy, p,
                                           pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                                           q)
-            loss = LR + LKL
-            losses.append(loss.item())
-            LKLs.append(LKL.item())
-            LRs.append(LR.item())
+        loss = loss_KL + loss_R
+        result = {'loss': loss, 'loss_KL': loss_KL, 'loss_R': loss_R}
 
-            # Gradient and optimization
-            if is_train:
-                loss.backward()
-                nn.utils.clip_grad_value_(self.encoder.parameters(), self.hp.grad_clip)
-                nn.utils.clip_grad_value_(self.decoder.parameters(), self.hp.grad_clip)
-                self.encoder_optimizer.step()
-                self.decoder_optimizer.step()
-
-            # Logging
-            if i % 10 == 0:
-                step = epoch * data_loader.__len__() + i
-                writer.add_scalar('{}/loss'.format(tb_tag), loss.item(), step)
-                writer.add_scalar('{}/KL_loss'.format(tb_tag), LKL.item(), step)
-                writer.add_scalar('{}/reconstruction_loss'.format(tb_tag), LR.item(), step)
-
-        mean_loss = np.mean(losses)
-        mean_LKL = np.mean(LKLs)
-        mean_LR = np.mean(LRs)
-
-        return mean_loss, mean_LKL, mean_LR
-
-    def train_loop(self, model_name, category):
-        """Train and validate on multiple epochs"""
-
-        # Bookkeeping
-        model_name += '_' + category
-        run_datetime = datetime.now().strftime('%B%d_%H-%M-%S')
-        run_path = os.path.join(RUNS_PATH, model_name, run_datetime)
-        print(run_path)
-        tb_path = os.path.join(run_path, 'tensorboard')
-        output_imgs_path = os.path.join(run_path, 'output_imgs')
-        os.makedirs(output_imgs_path)
-        writer = SummaryWriter(tb_path)
-        stdout_fp = os.path.join(run_path, 'stdout.txt')
-        stdout_f = open(stdout_fp, 'w')
-
-        # Get data
-        tr_dataset = SketchDataset(category, 'train', self.hp)
-        val_dataset = SketchDataset(category, 'valid', self.hp)
-        tr_loader = DataLoader(tr_dataset, batch_size=hp.batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=hp.batch_size, shuffle=False)
-
-        cond_gen_data_loader = DataLoader(tr_dataset, batch_size=1, shuffle=False)  # currently cond gen hard coded for bsz = 1
-        # cond_gen_data_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)  # currently cond gen hard coded for bsz = 1
-
-        # Train
-        val_losses = []  # used for early stopping
-        min_val_loss = float('inf')  # used to save model
-        for epoch in range(self.hp.max_epochs):
-
-            # train
-            start_time = time.time()
-            self.encoder.train()
-            self.decoder.train()
-            loss, LKL, LR = self.dataset_loop(tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
-            end_time = time.time()
-            min_elapsed = (end_time - start_time) / 60
-            print('Epoch {} -- train: loss={:.4f}, LKL={:.4f}, LR={:.4f}, time={:.0f}'\
-                  .format(epoch, loss, LKL, LR, min_elapsed), file=stdout_f)
-            stdout_f.flush()
-
-            self.encoder_optimizer = self.lr_decay(self.encoder_optimizer, self.hp.min_lr, self.hp.lr_decay)
-            self.decoder_optimizer = self.lr_decay(self.decoder_optimizer, self.hp.min_lr, self.hp.lr_decay)
-
-            # validate
-            self.encoder.eval()
-            self.decoder.eval()
-            loss, LKL, LR = self.dataset_loop(val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
-            val_losses.append(loss)
-            # if min(val_losses[-5:]) != loss:  # TODO: early stopping
-            #     break
-            print('Epoch {} -- valid: loss={:.4f}, LKL={:.4f}, LR={:.4f}'\
-                  .format(epoch, loss, LKL, LR), file=stdout_f)
-            stdout_f.flush()
-
-            # Generate sequence to save image and show progress
-            self.save_conditional_generation(cond_gen_data_loader, epoch, n_gens=1, output_imgs_path=output_imgs_path)
-
-            # Save model
-            # TODO: only save best model (model.pt)
-            if loss < min_val_loss:
-                min_val_loss = loss
-                model_fn = 'e{}_loss{:.4f}.pt'.format(epoch, loss)  # val loss
-                torch.save(self.state_dict(), os.path.join(run_path, model_fn))
-
-        stdout_f.close()
+        return result
 
     #
     # KL loss
@@ -685,19 +772,19 @@ class SketchRNNVAE(SketchRNN):
     def kullback_leibler_loss(self, sigma_hat, mu, KL_min, wKL, eta_step):
         """
         Calculate KL loss -- (eq. 10, 11)
-        
-        :param: sigma_hat: [bsz, Nz]
-        :param: mu: [bsz, Nz]
+
+        :param: sigma_hat: [bsz, z_dim]
+        :param: mu: [bsz, z_dim]
         :param: KL_min: float
         :param: wKL: float
         :param: eta_step: float
-        
+
         :returns: float Tensor
         """
-        bsz, Nz = sigma_hat.size()
+        bsz, z_dim = sigma_hat.size()
 
         LKL = -0.5 * torch.sum(1 + sigma_hat - mu ** 2 - torch.exp(sigma_hat)) \
-              / float(bsz * Nz)
+              / float(bsz * z_dim)
         KL_min = torch.Tensor([KL_min])
         if USE_CUDA:
             KL_min = KL_min.cuda()
@@ -709,7 +796,7 @@ class SketchRNNVAE(SketchRNN):
     ##############################################################################
     # Conditional generation
     ##############################################################################
-    def save_conditional_generation(self, data_loader, epoch, n_gens=1, output_imgs_path=None):
+    def save_generation(self, data_loader, epoch, n_gens=1, output_imgs_path=None):
         """
         Generate sequence conditioned on output of encoder
         """
@@ -731,13 +818,15 @@ class SketchRNNVAE(SketchRNN):
             seq_x = []  # delta-x
             seq_y = []  # delta-y
             seq_pen = []  # pen-down
-            hidden_cell = None
+            # init hidden and cell states is tanh(fc(z)) (Page 3)
+            hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_dim, 1)
+            hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
             for _ in range(max_len):
                 input = torch.cat([s, z.unsqueeze(0)], 2)  # [1,1,133]
 
                 # decode
                 pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
-                    self.decoder(input, z, output_all=False, hidden_cell=hidden_cell)
+                    self.decoder(input, output_all=False, hidden_cell=hidden_cell)
                 hidden_cell = (hidden, cell)
 
                 # sample next state
@@ -766,14 +855,14 @@ class SketchRNNVAE(SketchRNN):
         """
         Return state using current mixture parameters etc. set from decoder call.
         Note that this state is different from the stroke-5 format.
-        
+
         :param: pi: [len, bsz, M]
             # TODO!! This is currently hardcoded with save_conditional_generation
             # When we do pi.data[0,0,:] down below,
                 The 0-th index 0: Currently, pi is being calculated with output_all=False, which means it's just ouputting the last pi.
                 The 1-th index 0: first in batch
         # TODO: refactor so that the above isn't the case.
-        
+
         :returns:
             # TODO: what does it return exactly?
             s, dx, dy, pen_down, eos
@@ -849,7 +938,6 @@ class SketchRNNVAE(SketchRNN):
         x = np.random.multivariate_normal(mean, cov, 1)
 
         return x[0][0], x[0][1]
-
 
 
 if __name__ == "__main__":
