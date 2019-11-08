@@ -72,8 +72,6 @@ class SketchDataset(Dataset):
     """
     Dataset to load sketches
 
-    Notes
-    -----
     Stroke-3 format: (delta-x, delta-y, binary for if pen is lifted)
     Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
         one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
@@ -185,7 +183,7 @@ class SketchDataset(Dataset):
 def save_sequence_as_img(sequence, output_fp):
     """
 
-    :param sequence: 
+    :param sequence: [delta_x, delta_y, pen up / down]  # TODO: is it up or down
     :param output_fp: str
     """
     strokes = np.split(sequence, np.where(sequence[:, 2] > 0)[0] + 1)
@@ -223,20 +221,25 @@ class EncoderRNN(nn.Module):
         self.fc_mu = nn.Linear(2 * self.hp.enc_hidden_size, self.hp.Nz)  # 2 for bidirectional
         self.fc_sigma = nn.Linear(2 * self.hp.enc_hidden_size, self.hp.Nz)
 
-    def forward(self, inputs, batch_size, hidden_cell=None):
+    def forward(self, inputs, hidden_cell=None):
         """
 
         :param inputs: [max_len, bsz, isz] (input_size == isz == 5)
         :param batch_size: int
         :param hidden_cell:
+        
         :return:
+            z: [bsz, Nz]
+            mu: [bsz, Nz]
+            sigma_hat [bsz, Nz]
         """
+        bsz = inputs.size(1)
 
         # Initialize hidden state and cell state with zeros on first forward pass
         num_directions = 2 if self.lstm.bidirectional else 1
         if hidden_cell is None:
-            hidden = torch.zeros(self.lstm.num_layers * num_directions, batch_size, self.hp.enc_hidden_size)
-            cell = torch.zeros(self.lstm.num_layers * num_directions, batch_size, self.hp.enc_hidden_size)
+            hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.hp.enc_hidden_size)
+            cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.hp.enc_hidden_size)
             if USE_CUDA:
                 hidden = hidden.cuda()
                 cell = cell.cuda()
@@ -245,9 +248,9 @@ class EncoderRNN(nn.Module):
         # Pass inputs, hidden, and cell into encoder's lstm
         # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
         _, (hidden, cell) = self.lstm(inputs.float(), hidden_cell) # h and c: [n_layers * n_directions, bsz, hsz]
-        last_hidden = hidden.view(self.lstm.num_layers, num_directions, batch_size, self.hp.enc_hidden_size)[-1,:,:,:]
+        last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.hp.enc_hidden_size)[-1,:,:,:]
         # [num_directions, bsz, hsz]
-        last_hidden = last_hidden.transpose(0, 1).reshape(batch_size, -1)  # [bsz, num_directions * hsz]
+        last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
 
         # Get mu and sigma from hidden
         mu = self.fc_mu(last_hidden)  # [bsz, Nz]
@@ -275,16 +278,6 @@ class EncoderRNN(nn.Module):
 ##############################################################################
 class DecoderRNN(nn.Module):
     """
-    Outputs:
-        pi: weights for each mixture        [max_len + 1, batch_size, num_mixtures]
-        mu_x: mean x for each mixture;      [max_len + 1, batch_size, num_mixtures]
-        mu_y: mean y for each mixture;      [max_len + 1, batch_size, num_mixtures]
-        sigma_x: var x for each mixture;    [max_len + 1, batch_size, num_mixtures]
-        sigma_y: var y for each mixture;    [max_len + 1, batch_size, num_mixtures]
-        rho_xy:  covariance ''         ;    [max_len + 1, batch_size, num_mixtures]
-        q: models p (3 pen strokes in stroke-5) as categorical distribution (page 3);   [max_len + 1, batch_size, 3]
-        hidden: last hidden state;          [1, batch_size, dec_hidden_size]
-        cell:   last cell state;            [1, batch_size, dec_hidden_size]
     """
 
     def __init__(self, hp):
@@ -314,7 +307,20 @@ class DecoderRNN(nn.Module):
         :param z: [bsz, esz]
         :param output_all: boolean, return output at every timestep or just the last
         :param hidden_cell: 
-        :return: 
+        
+        :returns:
+            pi: weights for each mixture            [max_len + 1, bsz, M]
+            mu_x: mean x for each mixture           [max_len + 1, bsz, M]
+            mu_y: mean y for each mixture           [max_len + 1, bsz, M]
+            sigma_x: var x for each mixture         [max_len + 1, bsz, M]
+            sigma_y: var y for each mixture         [max_len + 1, bsz, M]
+            rho_xy:  covariance for each mixture    [max_len + 1, bsz, M]
+            q: [max_len + 1, bsz, 3]
+                models p (3 pen strokes in stroke-5) as categorical distribution (page 3);   
+            hidden: [1, bsz, dec_hidden_size]
+                 last hidden state      
+            cell: [1, bsz, dec_hidden_size]
+                  last cell state
         """
         # On first forward pass, initialize hidden state and cell state using z
         if hidden_cell is None:
@@ -324,22 +330,20 @@ class DecoderRNN(nn.Module):
 
         outputs, (hidden, cell) = self.lstm(inputs, hidden_cell)
 
-        # Pass hidden state at each step to fully connected layer
-        # Fig. 2, Eq. 4
+        # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
         # Dimensions
-        #   outputs: [max_len + 1, batch_size, dec_hidden_size]
-        #   view: [(max_len + 1) * batch_size, dec_hidden_size]
-        #   y: [(max_len + 1) * batch_size, 6 * num_mixtures + 3] (6 comes from 5 for params, 6th for weights; see page 3)
+        #   outputs: [max_len + 1, bsz, dec_hsz]
+        #   view: [(max_len + 1) * bsz, dec_hsz]
+        #   y: [(max_len + 1) * bsz, 6 * M + 3] (6 comes from 5 for params, 6th for weights; see page 3)
         if output_all:
             y = self.fc_params(outputs.view(-1, self.hp.dec_hidden_size))
         else:
             y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
 
         # Separate pen and mixture params
-        params = torch.split(y, 6,
-                             1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * batch_size, 6]'s, 1 [(max_len + 1) * batch_size, 3]
-        params_mixture = torch.stack(params[:-1])  # trajectories; [num_mixtures, (max_len + 1) * batch_size, 6]
-        params_pen = params[-1]  # pen up/down;  [(max_len + 1) * batch_size, 3]
+        params = torch.split(y, 6, 1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * bsz, 6]'s, 1 [(max_len + 1) * bsz, 3]
+        params_mixture = torch.stack(params[:-1])  # trajectories; [num_mixtures, (max_len + 1) * bsz, 6]
+        params_pen = params[-1]  # pen up/down;  [(max_len + 1) * bsz, 3]
 
         # Split trajectories into each mixture param
         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, 2)
@@ -359,12 +363,10 @@ class DecoderRNN(nn.Module):
         else:
             len_out = 1
 
-
-        # pi torch.Size([20, 8320])
-
         # TODO: don't think I actually need the squeeze's
         # if len_out == 1:
         #     import pdb; pdb.set_trace()  # squeeze may be related to generation with len_out = 1
+        # TODO: add dimensions
         pi = F.softmax(pi.t().squeeze(), dim=-1).view(len_out, -1, self.hp.M)
         mu_x = mu_x.t().squeeze().contiguous().view(len_out, -1, self.hp.M)
         mu_y = mu_y.t().squeeze().contiguous().view(len_out, -1, self.hp.M)
@@ -385,14 +387,151 @@ class DecoderRNN(nn.Module):
 # MODEL
 #
 ##############################################################################
-class SketchModel(nn.Module):
+
+class SketchRNN(nn.Module):
+    def __init__(self, hp):
+        super().__init__()
+        self.hp = hp
+
+    def make_target(self, batch, lengths, M):
+        """
+        Create target vector out of stroke-5 data and lengths. Namely, use lengths
+        to create mask for each sequence
+
+        :param: batch: [max_len, bsz, 5]
+        :param: lengths: list of ints 
+        :param: M: int, number of mixtures
+        
+        :returns: 
+            mask: [max_len + 1, bsz]
+            dx: [max_len + 1, bsz, num_mixtures]
+            dy: [max_len + 1, bsz, num_mixtures]
+            p:  [max_len + 1, bsz, 3]
+        """
+        max_len, bsz, _ = batch.size()
+
+        # add eos
+        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
+        if USE_CUDA:
+            eos = eos.cuda()
+        batch = torch.cat([batch, eos], 0)  # [max_len + 1, bsz, 5]
+
+        # calculate mask for each sequence using lengths
+        mask = torch.zeros(max_len + 1, bsz)
+        for idx, length in enumerate(lengths):
+            mask[:length, idx] = 1
+        if USE_CUDA:
+            mask = mask.cuda()
+        mask = mask.detach()
+        dx = torch.stack([batch.data[:, :, 0]] * M, 2).detach()
+        dy = torch.stack([batch.data[:, :, 1]] * M, 2).detach()
+        p1 = batch.data[:, :, 2].detach()
+        p2 = batch.data[:, :, 3].detach()
+        p3 = batch.data[:, :, 4].detach()
+        p = torch.stack([p1, p2, p3], 2)
+
+        return mask, dx, dy, p
+
+    def preprocess_batch_from_data_loader(self, batch, lengths):
+        """
+        :param: batch TODO
+        :param: lengths TODO
+        
+        :returns:
+            batch: [max_len, bsz, 5]
+            lengths: list of ints
+        """
+        batch.transpose_(0, 1).float()  # Dataloader returns batch in 1st dimension, rest of code expects it to be 2nd
+        if USE_CUDA:
+            batch = batch.cuda()
+        lengths = lengths.numpy().tolist()
+        return batch, lengths
+
+    def lr_decay(self, optimizer, min_lr, lr_decay):
+        """
+        Decay learning rate by a factor of lr_decay
+        """
+        for param_group in optimizer.param_groups:
+            if param_group['lr'] > min_lr:
+                param_group['lr'] *= lr_decay
+        return optimizer
+
+    #
+    # Reconstruction loss
+    #
+    def reconstruction_loss(self,
+                            mask,
+                            dx, dy, p,  # ground truth
+                            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                            q):
+        """
+        Eq. 9
+
+        Params
+        ------
+        These are outputs from make_targets(batch, lengths)
+            mask: [max_len + 1, bsz]
+            dx: [max_len + 1, bsz, num_mixtures]
+            dy: [max_len + 1, bsz, num_mixtures]
+            p:  [max_len + 1, bsz, 3]
+            pi: [max_len + 1, bsz, M] 
+        + 1 because end of sequence stroke appended in make_targets()
+        """
+        max_len, batch_size = mask.size()
+
+        # Loss w.r.t pen offset
+        prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
+        LS = -torch.sum(mask * torch.log(1e-5 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
+
+        # Loss of pen parameters (cross entropy between ground truth pen params p
+        # and predicted categorical distribution q)
+        LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
+
+        return LS + LP
+
+    def bivariate_normal_pdf(self, dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy):
+        """
+        Get probability of dx, dy using mixture parameters. 
+
+        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with 
+        Recurrent Neural Networks)
+        """
+        # Eq. 25
+        # Reminder: mu's here are calculated for mixture model on the stroke data, which
+        # models delta-x's and delta-y's. So z_x just comparing actual ground truth delta (dx)
+        # to the prediction from the mixture model (mu_x). Then normalizing etc.
+        z_x = ((dx - mu_x) / sigma_x) ** 2
+        z_y = ((dy - mu_y) / sigma_y) ** 2
+        z_xy = (dx - mu_x) * (dy - mu_y) / (sigma_x * sigma_y)
+        z = z_x + z_y - 2 * rho_xy * z_xy
+
+        # Eq. 24
+        norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
+        exp = torch.exp(-z / (2 * (1 - rho_xy ** 2)))
+
+        return exp / norm
+
+
+class SketchRNNDecoderOnly(SketchRNN):
+    def __init__(self, hp):
+        super().__init__(hp)
+
+        # Model
+        self.decoder = DecoderRNN(hp)
+        if USE_CUDA:
+            self.decoder.cuda()
+
+        # optimization -- ADAM plus annealing (supp eq. 4)
+        self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
+        self.eta_step = hp.eta_min
+
+class SketchRNNVAE(SketchRNN):
     """
     Create entire sketch model by combining encoder and decoder. Training, generation, etc.
     """
 
     def __init__(self, hp):
-        super(SketchModel, self).__init__()
-        self.hp = hp
+        super().__init__(hp)
 
         # Model
         self.encoder = EncoderRNN(hp)
@@ -405,87 +544,6 @@ class SketchModel(nn.Module):
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), hp.lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
         self.eta_step = hp.eta_min
-
-        # Attributes added in train_loop
-        self.writer = None
-
-    ##############################################################################
-    # Data
-    ##############################################################################
-    def make_target(self, batch, lengths):
-        """
-        Create target vector out of stroke-5 data and lengths. Namely, use lengths
-        to create mask for each sequence. Detach "detaches" from computational graph
-        so that backprop stops.
-
-        Inputs
-        ------
-            batch:  [max_len, batch_size, 5]
-            lengths: list of ints 
-
-        Params
-        ------
-            batch: Variable with Tensor that has data of size: [max_len, batch_size, 5]
-            lengths: list of ints, number of strokes for each sequence in batch
-
-        Outputs
-        -------
-            mask: [max_len + 1, batch_size]
-            dx: [max_len + 1, batch_size, num_mixtures]
-            dy: [max_len + 1, batch_size, num_mixtures]
-            p:  [max_len + 1, batch_size, 3]
-
-        """
-        # Add eos
-        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * batch.size()[1]).unsqueeze(0)  # ([1, batch_size, 5])
-        if USE_CUDA:
-            eos = eos.cuda()
-
-        batch = torch.cat([batch, eos], 0)  # [max_len + 1, batch_size, 5]
-
-        # Calculate mask for each sequence using lengths
-        # Detach
-        mask = torch.zeros(batch.size(0), batch.size(1))
-        for indice, length in enumerate(lengths):
-            mask[:length, indice] = 1
-        if USE_CUDA:
-            mask = mask.cuda()
-        mask = mask.detach()
-        dx = torch.stack([batch.data[:, :, 0]] * self.hp.M, 2).detach()
-        dy = torch.stack([batch.data[:, :, 1]] * self.hp.M, 2).detach()
-        p1 = batch.data[:, :, 2].detach()
-        p2 = batch.data[:, :, 3].detach()
-        p3 = batch.data[:, :, 4].detach()
-        p = torch.stack([p1, p2, p3], 2)
-
-        return mask, dx, dy, p
-
-    def preprocess_batch_from_data_loader(self, batch, lengths):
-        """
-        Get in right dimension / format, Variablize, etc.
-
-        Returns
-        -------
-        batch:  [max_len, batch_size, 5]
-        lengths: list of ints 
-        """
-        batch.transpose_(0, 1).float()  # Dataloader returns batch in 1st dimension, rest of code expects it to be 2nd
-        if USE_CUDA:
-            batch = batch.cuda()
-        lengths = lengths.numpy().tolist()
-        return batch, lengths
-
-    ##############################################################################
-    # Training
-    ##############################################################################
-    def lr_decay(self, optimizer):
-        """
-        Decay learning rate by a factor of lr_decay
-        """
-        for param_group in optimizer.param_groups:
-            if param_group['lr'] > self.hp.min_lr:
-                param_group['lr'] *= self.hp.lr_decay
-        return optimizer
 
     def dataset_loop(self, data_loader, epoch, is_train=True, writer=None, tb_tag='train'):
         """Can be used with either different splits of the dataset (train, valid, test)"""
@@ -500,16 +558,14 @@ class SketchModel(nn.Module):
                 self.decoder_optimizer.zero_grad()
                 self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
 
-            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)
-            max_len = batch.size(0)
-            # batch = [max_len, bsz, 5]
+            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)  # [max_len, bsz, 5];
+            max_len, bsz, _ = batch.size()
 
             # Encode
-            z, self.mu, self.sigma_hat = self.encoder(batch, self.hp.batch_size)  # each [bsz, Nz]
+            z, mu, sigma_hat = self.encoder(batch)  # each [bsz, Nz]
 
-            # Create inputs to decoder
-            # First, create start of sequence
-            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * self.hp.batch_size).unsqueeze(0)
+            # Create inputs to decoder. First, create start of sequence
+            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)
             if USE_CUDA:
                 sos = sos.cuda()
 
@@ -520,15 +576,17 @@ class SketchModel(nn.Module):
             inputs = torch.cat([batch_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, Nz + 5]
 
             # Decode
-            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
-                self.rho_xy, self.q, _, _ = self.decoder(inputs, z, output_all=True)
+            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(inputs, z, output_all=True)
 
             # Get targets
-            mask, dx, dy, p = self.make_target(batch, lengths)
+            mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
 
             # Calculate losses
-            LKL = self.kullback_leibler_loss()
-            LR = self.reconstruction_loss(mask, dx, dy, p)
+            LKL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
+            LR = self.reconstruction_loss(mask,
+                                          dx, dy, p,
+                                          pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                                          q)
             loss = LR + LKL
             losses.append(loss.item())
             LKLs.append(LKL.item())
@@ -595,8 +653,8 @@ class SketchModel(nn.Module):
                   .format(epoch, loss, LKL, LR, min_elapsed), file=stdout_f)
             stdout_f.flush()
 
-            self.encoder_optimizer = self.lr_decay(self.encoder_optimizer)
-            self.decoder_optimizer = self.lr_decay(self.decoder_optimizer)
+            self.encoder_optimizer = self.lr_decay(self.encoder_optimizer, self.hp.min_lr, self.hp.lr_decay)
+            self.decoder_optimizer = self.lr_decay(self.decoder_optimizer, self.hp.min_lr, self.hp.lr_decay)
 
             # validate
             self.encoder.eval()
@@ -621,105 +679,55 @@ class SketchModel(nn.Module):
 
         stdout_f.close()
 
-    ##############################################################################
-    # Losses
-    ##############################################################################
-    #
-    # Reconstruction loss
-    #
-    def reconstruction_loss(self, mask, dx, dy, p):
-        """
-        Eq. 9
-
-        Params
-        ------
-        These are outputs from make_targets(batch, lengths)
-            mask: [max_len + 1, batch_size]
-            dx: [max_len + 1, batch_size, num_mixtures]
-            dy: [max_len + 1, batch_size, num_mixtures]
-            p:  [max_len + 1, batch_size, 3]
-
-        + 1 because end of sequence stroke appended in make_targets()
-        """
-        max_len = mask.size(0)
-
-        # Loss w.r.t pen offset
-        prob = self.bivariate_normal_pdf(dx, dy)
-        LS = -torch.sum(mask * torch.log(1e-5 + torch.sum(self.pi * prob, 2))) \
-             / float(max_len * self.hp.batch_size)
-
-        # Loss of pen parameters (cross entropy between ground truth pen params p
-        # and predicted categorical distribution q)
-        LP = -torch.sum(p * torch.log(self.q)) / float(max_len * self.hp.batch_size)
-
-        return LS + LP
-
-    def bivariate_normal_pdf(self, dx, dy):
-        """
-        Get probability of dx, dy using mixture parameters. 
-
-        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with 
-        Recurrent Neural Networks)
-        """
-        # Eq. 25
-        # Reminder: mu's here are calculated for mixture model on the stroke data, which
-        # models delta-x's and delta-y's. So z_x just comparing actual ground truth delta (dx)
-        # to the prediction from the mixture model (mu_x). Then normalizing etc.
-        z_x = ((dx - self.mu_x) / self.sigma_x) ** 2
-        z_y = ((dy - self.mu_y) / self.sigma_y) ** 2
-        z_xy = (dx - self.mu_x) * (dy - self.mu_y) / (self.sigma_x * self.sigma_y)
-        z = z_x + z_y - 2 * self.rho_xy * z_xy
-
-        # Eq. 24
-        norm = 2 * np.pi * self.sigma_x * self.sigma_y * torch.sqrt(1 - self.rho_xy ** 2)
-        exp = torch.exp(-z / (2 * (1 - self.rho_xy ** 2)))
-
-        return exp / norm
-
     #
     # KL loss
     #
-    def kullback_leibler_loss(self):
+    def kullback_leibler_loss(self, sigma_hat, mu, KL_min, wKL, eta_step):
         """
-        Calcualte KL loss -- (eq. 10, 11)
+        Calculate KL loss -- (eq. 10, 11)
+        
+        :param: sigma_hat: [bsz, Nz]
+        :param: mu: [bsz, Nz]
+        :param: KL_min: float
+        :param: wKL: float
+        :param: eta_step: float
+        
+        :returns: float Tensor
         """
-        LKL = -0.5 * torch.sum(1 + self.sigma_hat - self.mu ** 2 - torch.exp(self.sigma_hat)) \
-              / float(self.hp.Nz * self.hp.batch_size)
-        KL_min = torch.Tensor([self.hp.KL_min])
+        bsz, Nz = sigma_hat.size()
+
+        LKL = -0.5 * torch.sum(1 + sigma_hat - mu ** 2 - torch.exp(sigma_hat)) \
+              / float(bsz * Nz)
+        KL_min = torch.Tensor([KL_min])
         if USE_CUDA:
             KL_min = KL_min.cuda()
         KL_min = KL_min.detach()
 
-        return self.hp.wKL * self.eta_step * torch.max(LKL, KL_min)
+        LKL = wKL * eta_step * torch.max(LKL, KL_min)
+        return LKL
 
     ##############################################################################
     # Conditional generation
     ##############################################################################
-    def save_conditional_generation(self, data_loader, epoch, n_gens=1,
-                                    output_imgs_path=None):
+    def save_conditional_generation(self, data_loader, epoch, n_gens=1, output_imgs_path=None):
         """
         Generate sequence conditioned on output of encoder
         """
         n = 0
         for batch, lengths in data_loader:
             batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)
-            # batch = [max_len, bsz, 5]
-            max_len = batch.size(0)
-
-            # TODO: save original image here (this is conditional reconstruction)
+            max_len, bsz, _ = batch.size()
 
             # Encode
-            # should remove dropouts
-            z, _, _ = self.encoder(batch, 1)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
+            z, _, _ = self.encoder(batch)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
 
-
-            # Initialize state with start of sequence stroke-5 stroke
+            # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
             if USE_CUDA:
                 sos = sos.cuda()
 
+            # generate until end of sequence or maximum sequence length
             s = sos
-            # Generate until end of sequence or maximum sequence length
             seq_x = []  # delta-x
             seq_y = []  # delta-y
             seq_pen = []  # pen-down
@@ -727,22 +735,21 @@ class SketchModel(nn.Module):
             for _ in range(max_len):
                 input = torch.cat([s, z.unsqueeze(0)], 2)  # [1,1,133]
 
-                # Decode
-                self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
-                self.rho_xy, self.q, hidden, cell = self.decoder(input, z, hidden_cell=hidden_cell, output_all=False)
+                # decode
+                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
+                    self.decoder(input, z, output_all=False, hidden_cell=hidden_cell)
                 hidden_cell = (hidden, cell)
 
-                # Sample next state
-                s, dx, dy, pen_down, eos = self.sample_next_state()  # not quite stroke-5
+                # sample next state
+                s, dx, dy, pen_down, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
                 seq_x.append(dx)
                 seq_y.append(dy)
                 seq_pen.append(pen_down)
 
-                # Done drawing
-                if eos:
+                if eos:  # done drawing
                     break
 
-            # Get in format to draw image
+            # get in format to draw image
             # Cumulative sum because seq_x and seq_y are deltas, so get x (or y) at each stroke
             sample_x = np.cumsum(seq_x, 0)
             sample_y = np.cumsum(seq_y, 0)
@@ -755,17 +762,23 @@ class SketchModel(nn.Module):
             if n == n_gens:
                 break
 
-    def sample_next_state(self):
+    def sample_next_state(self, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q):
         """
         Return state using current mixture parameters etc. set from decoder call.
         Note that this state is different from the stroke-5 format.
-        State is [x, y, 
-
-        NOTE: sampling is done on the first sequence in batch (hence the 0 indexing)
-
-        # TODO: make this method functional
-        (take in pi, q, mu_ux, mu_y, sigma_x, sigma_y, rho_xy instead of using the self.)
+        
+        :param: pi: [len, bsz, M]
+            # TODO!! This is currently hardcoded with save_conditional_generation
+            # When we do pi.data[0,0,:] down below,
+                The 0-th index 0: Currently, pi is being calculated with output_all=False, which means it's just ouputting the last pi.
+                The 1-th index 0: first in batch
+        # TODO: refactor so that the above isn't the case.
+        
+        :returns:
+            # TODO: what does it return exactly?
+            s, dx, dy, pen_down, eos
         """
+        M = pi.size(-1)
 
         def adjust_temp(pi_pdf):
             """Not super sure why this instead of just dividing by temperauture as in eq. 8, but
@@ -778,38 +791,38 @@ class SketchModel(nn.Module):
 
         # Get mixture index
         # pi is weights for mixtures
-        # This is only taking the pi for the first (seq_len, batch_size, num_mixtures)
-        pi = self.pi.data[0, 0, :].cpu().numpy()
+        pi = pi.data[0, 0, :].cpu().numpy()
         pi = adjust_temp(pi)
 
-        pi_idx = np.random.choice(self.hp.M, p=pi)  # choose Gaussian weighted by pi
-
-        # Get pen state
-        q = self.q.data[0, 0, :].cpu().numpy()
-        # q = adjust_temp(q)
-        q_idx = np.random.choice(3, p=q)
-        # print(q_idx)
+        pi_idx = np.random.choice(M, p=pi)  # choose Gaussian weighted by pi
 
         # Get mixture params
-        mu_x = self.mu_x.data[0, 0, pi_idx]
-        mu_y = self.mu_y.data[0, 0, pi_idx]
-        sigma_x = self.sigma_x.data[0, 0, pi_idx]
-        sigma_y = self.sigma_y.data[0, 0, pi_idx]
-        rho_xy = self.rho_xy.data[0, 0, pi_idx]
+        mu_x = mu_x.data[0, 0, pi_idx]
+        mu_y = mu_y.data[0, 0, pi_idx]
+        sigma_x = sigma_x.data[0, 0, pi_idx]
+        sigma_y = sigma_y.data[0, 0, pi_idx]
+        rho_xy = rho_xy.data[0, 0, pi_idx]
 
         # Get next x andy by using mixture params and sampling from bivariate normal
-        x, y = self.sample_bivariate_normal(mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False)
+        dx, dy = self.sample_bivariate_normal(mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False)
+
+        # Get pen state
+        q = q.data[0, 0, :].cpu().numpy()
+        q_idx = np.random.choice(3, p=q)
 
         # Create next_state vector
         next_state = torch.zeros(5)
-        next_state[0] = x
-        next_state[1] = y
+        next_state[0] = dx
+        next_state[1] = dy
         next_state[q_idx + 2] = 1
-
         if USE_CUDA:
             next_state = next_state.cuda()
+        s = next_state.view(1, 1, -1)
 
-        return next_state.view(1, 1, -1), x, y, q_idx == 1, q_idx == 2
+        pen_down = q_idx == 1  # TODO: isn't this pen up?
+        eos = q_idx == 2
+
+        return s, dx, dy, pen_down, eos
 
     def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False):
         """
@@ -822,7 +835,7 @@ class SketchModel(nn.Module):
 
         mean = [mu_x, mu_y]
 
-        # Randomness controlled by temperature (eq. 8)
+        # randomness controlled by temperature (eq. 8)
         sigma_x *= np.sqrt(self.hp.temperature)
         sigma_y *= np.sqrt(self.hp.temperature)
 
@@ -838,14 +851,20 @@ class SketchModel(nn.Module):
         return x[0][0], x[0][1]
 
 
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--decoder_only', action='store_true')
     parser.add_argument('-c', '--category', type=str, default='cat')
     parser.add_argument('-n', '--model_name', type=str, default='sketchrnn')
     args = parser.parse_args()
 
     hp = HParams()
-    model = SketchModel(hp)
+
+    if args.decoder_only:
+        model = SketchRNNDecoderOnly(hp)
+    else:
+        model = SketchRNNVAE(hp)
 
     model.train_loop(args.model_name, args.category)
