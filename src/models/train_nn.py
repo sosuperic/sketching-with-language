@@ -123,10 +123,12 @@ class TrainNN(nn.Module):
         writer = SummaryWriter(tb_path)
         stdout_fp = os.path.join(self.save_dir, 'stdout.txt')
         stdout_f = open(stdout_fp, 'w')
+        model_fp = os.path.join(self.save_dir, 'model.pt')
 
         # Train
         val_losses = []  # used for early stopping
         min_val_loss = float('inf')  # used to save model
+        last_model_fp = None
         for epoch in range(self.hp.max_epochs):
 
             # train
@@ -149,7 +151,6 @@ class TrainNN(nn.Module):
             mean_losses = self.dataset_loop(self.val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
             val_loss = mean_losses['loss']
             val_losses.append(val_loss)
-            # TODO: early stopping
             log_str = self.get_log_str(epoch, 'valid', mean_losses)
             print(log_str, file=stdout_f)
             stdout_f.flush()
@@ -157,11 +158,27 @@ class TrainNN(nn.Module):
             # Generate sequence to save image and show progress
             self.end_of_epoch_hook(epoch, outputs_path=outputs_path)
 
-            # Save model. TODO: only save best model (model.pt)
+            # Save best model
             if val_loss < min_val_loss:
+                #  remove old model and symlink
+                if last_model_fp is not None:
+                    os.remove(last_model_fp)
+                if os.path.exists(model_fp):
+                    os.remove(model_fp)
+
+                # save a file with epoch and loss in name, as well as a file named model.pt
+                cur_fn = 'e{}_loss{:.4f}.pt'.format(epoch, val_loss)  # val loss
+                cur_fp = os.path.join(self.save_dir, cur_fn)
+                torch.save(self.state_dict(), cur_fp)
+                torch.save(self.state_dict(), model_fp)
+
+                # update,
                 min_val_loss = val_loss
-                model_fn = 'e{}_loss{:.4f}.pt'.format(epoch, val_loss)  # val loss
-                torch.save(self.state_dict(), os.path.join(self.save_dir, model_fn))
+                last_model_fp = cur_fp
+
+            # Early stopping
+            if min_val_loss not in val_losses[-10:]:  # hasn't been an improvement in last 10 epochs
+                break
 
         stdout_f.close()
 
