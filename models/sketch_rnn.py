@@ -69,6 +69,55 @@ class HParams():
 # DATASET
 #
 ##############################################################################
+
+def normalize_data(data):
+    """
+    Normalize entire dataset (delta_x, delta_y) by the scaling factor.
+
+    :param: data is [delta_x, delta_y, ...]  array
+    """
+    scale_factor = calculate_normalizing_scale_factor(data)
+    print(scale_factor)
+    normalized = []
+    for seq in data:
+        seq[:, 0:2] /= scale_factor
+        normalized.append(seq)
+    return normalized
+
+def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_factor() in sketch_rnn/utils.py
+    """
+    Calculate the normalizing factor in Appendix of paper
+
+    :param: data is [delta_x, delta_y, ...]  array
+    """
+    delta_data = []
+    for i in range(len(data)):
+        for j in range(len(data[i])):
+            delta_data.append(data[i][j, 0])
+            delta_data.append(data[i][j, 1])
+    delta_data = np.array(delta_data)
+    scale_factor = np.std(delta_data)
+    return scale_factor
+
+def stroke3_to_stroke5(seq, max_len):  # to_big_strokes() in sketch_rnn/utils.py
+    """
+    Convert from stroke-3 to stroke-5 format
+
+    :param seq: [len, 3] float array
+
+    :returns
+        result: [max_len, 5] float array
+        l: int, length of sequence
+    """
+    result = np.zeros((max_len, 5), dtype=float)
+    l = len(seq)
+    assert l <= max_len
+    result[0:l, 0:2] = seq[:, 0:2]  # 1st and 2nd values are same
+    result[0:l, 3] = seq[:, 2]  # stroke-5[3] = pen-up, same as stroke-3[2]
+    result[0:l, 2] = 1 - result[0:l, 3]  # stroke-5[2] = pen-down, stroke-3[2] = pen-up (so inverse)
+    result[l:, 4] = 1  # last "stroke" has stroke5[4] equal to 1, all other values 0 (see Figure 4); hence l
+    return result
+
 class SketchDataset(Dataset):
     """
     Dataset to load sketches
@@ -97,7 +146,7 @@ class SketchDataset(Dataset):
         """
         # Filter first so that normalizing scale factor doesn't use filtered out sequences
         preprocessed = self._filter_and_clean_data(data)
-        preprocessed = self._normalize_data(preprocessed)
+        preprocessed = normalize_data(preprocessed)
         preprocessed = self._filter_to_multiple_of_batch_size(preprocessed)
         return preprocessed
 
@@ -117,34 +166,12 @@ class SketchDataset(Dataset):
                 filtered.append(seq)
         return filtered
 
-    def _normalize_data(self, data):
-        """
-        Normalize entire dataset (delta_x, delta_y) by the scaling factor.
-        """
-        scale_factor = self._calculate_normalizing_scale_factor(data)
-        normalized = []
-        for seq in data:
-            seq[:, 0:2] /= scale_factor
-            normalized.append(seq)
-        return normalized
-
-    def _calculate_normalizing_scale_factor(self, data):  # calculate_normalizing_scale_factor() in sketch_rnn/utils.py
-        """
-        Calculate the normalizing factor in Appendix of paper
-        """
-        delta_data = []
-        for i in range(len(data)):
-            for j in range(len(data[i])):
-                delta_data.append(data[i][j, 0])
-                delta_data.append(data[i][j, 1])
-        delta_data = np.array(delta_data)
-        scale_factor = np.std(delta_data)
-        return scale_factor
-
     def _filter_to_multiple_of_batch_size(self, data):
         """
         Code requires fixed batch size for some reason
         """
+        # TODO: this is probably not necessary anymore now that there's no more hp.batch_size hardcoded in
+        # (instead it's calculated based on the batch tensor in that particular forward pass
         n_batches = len(data) // self.hp.batch_size
         filtered = data[:n_batches * self.hp.batch_size]
         return filtered
@@ -154,25 +181,10 @@ class SketchDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.data[idx]
-        sample, l = self._stroke3_to_stroke5(sample)
-        return (sample, l)
+        orig_len = len(sample)
+        sample = stroke3_to_stroke5(sample, self.max_len)
+        return (sample, orig_len)
 
-    def _stroke3_to_stroke5(self, seq):  # to_big_strokes() in sketch_rnn/utils.py
-        """
-        Convert from stroke-3 to stroke-5 format 
-
-        :returns
-            result: [max_len, 5] float array
-            l: int, length of sequence
-        """
-        result = np.zeros((self.max_len, 5), dtype=float)
-        l = len(seq)
-        assert l <= self.max_len
-        result[0:l, 0:2] = seq[:, 0:2]  # 1st and 2nd values are same
-        result[0:l, 3] = seq[:, 2]  # stroke-5[3] = pen-up, same as stroke-3[2]
-        result[0:l, 2] = 1 - result[0:l, 3]  # stroke-5[2] = pen-down, stroke-3[2] = pen-up (so inverse)
-        result[l:, 4] = 1  # last "stroke" has stroke5[4] equal to 1, all other values 0 (see Figure 4); hence l
-        return result, l
 
 
 ##############################################################################
@@ -383,72 +395,25 @@ class DecoderRNN(nn.Module):
 #
 ##############################################################################
 
-class SketchRNN(nn.Module):
+class TrainNN(nn.Module):
+
+    """
+    Base class for this project that covers train-eval loop.
+    """
+
     def __init__(self, hp):
         super().__init__()
+
         self.hp = hp
 
-        # optimization -- ADAM plus annealing (supp eq. 4)
         self.models = []
         self.optimizers = []
-        self.eta_step = hp.eta_min
 
-    #
-    # Data
-    #
-    def make_target(self, batch, lengths, M):
-        """
-        Create target vector out of stroke-5 data and lengths. Namely, use lengths
-        to create mask for each sequence
+        self.tr_loader = None
+        self.val_loader = None
 
-        :param: batch: [max_len, bsz, 5]
-        :param: lengths: list of ints 
-        :param: M: int, number of mixtures
-
-        :returns: 
-            mask: [max_len + 1, bsz]
-            dx: [max_len + 1, bsz, num_mixtures]
-            dy: [max_len + 1, bsz, num_mixtures]
-            p:  [max_len + 1, bsz, 3]
-        """
-        max_len, bsz, _ = batch.size()
-
-        # add eos
-        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
-        if USE_CUDA:
-            eos = eos.cuda()
-        batch = torch.cat([batch, eos], 0)  # [max_len + 1, bsz, 5]
-
-        # calculate mask for each sequence using lengths
-        mask = torch.zeros(max_len + 1, bsz)
-        for idx, length in enumerate(lengths):
-            mask[:length, idx] = 1
-        if USE_CUDA:
-            mask = mask.cuda()
-        mask = mask.detach()
-        dx = torch.stack([batch.data[:, :, 0]] * M, 2).detach()
-        dy = torch.stack([batch.data[:, :, 1]] * M, 2).detach()
-        p1 = batch.data[:, :, 2].detach()
-        p2 = batch.data[:, :, 3].detach()
-        p3 = batch.data[:, :, 4].detach()
-        p = torch.stack([p1, p2, p3], 2)
-
-        return mask, dx, dy, p
-
-    def preprocess_batch_from_data_loader(self, batch, lengths):
-        """
-        :param: batch TODO
-        :param: lengths TODO
-
-        :returns:
-            batch: [max_len, bsz, 5]
-            lengths: list of ints
-        """
-        batch = batch.transpose(0, 1).float()  # Dataloader returns batch in 1st dim, rest of code expects it to be 2nd
-        if USE_CUDA:
-            batch = batch.cuda()
-        lengths = lengths.numpy().tolist()
-        return batch, lengths
+    def get_data_loader(self):
+        pass
 
     #
     # Training
@@ -462,16 +427,17 @@ class SketchRNN(nn.Module):
                 param_group['lr'] *= lr_decay
         return optimizer
 
-    def one_forward_pass(self, batch, lengths):
-        """
-        Return loss and other items of interest for one forward pass
+    def preprocess_batch_from_data_loader(self, batch):
+        return batch
 
-        :param batch: [max_len, bsz, 5]
-        :param lengths: list of ints
-        :return: dict
-            'loss': float Tensor. Must exist
-             'loss_*': 
+    def one_forward_pass(self, batch):
         """
+        Return dict where values are float Tensors. Key 'loss' must exist.
+        """
+        pass
+
+    def pre_forward_train_hook(self):
+        """Called before one forward pass when training"""
         pass
 
     def dataset_loop(self, data_loader, epoch, is_train=True, writer=None, tb_tag='train'):
@@ -483,16 +449,16 @@ class SketchRNN(nn.Module):
             value: float
         """
         losses = defaultdict(list)
-        for i, (batch, lengths) in enumerate(data_loader):
+        for i, batch in enumerate(data_loader):
             # set up optimizers
             if is_train:
+                self.pre_forward_train_hook()
                 for optimizer in self.optimizers:
                     optimizer.zero_grad()
-                self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
 
             # forward pass
-            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)  # [max_len, bsz, 5];
-            result = self.one_forward_pass(batch, lengths)
+            batch = self.preprocess_batch_from_data_loader(batch)  # [max_len, bsz, 5];
+            result = self.one_forward_pass(batch)
             for k, v in result.items():
                 if k.startswith('loss'):
                     losses[k].append(v.item())
@@ -522,31 +488,24 @@ class SketchRNN(nn.Module):
         for k, v in mean_losses.items():
             log_str += ' {}={:.4f}'.format(k, v)
         if runtime is not None:
-            log_str += ' minutes={:.0f}'.format(runtime)
+            log_str += ' minutes={:.1f}'.format(runtime)
         return log_str
 
-    def train_loop(self, model_name, category):
+    def train_loop(self, model_name, category=None):
         """Train and validate on multiple epochs"""
 
         # Bookkeeping
-        model_name += '_' + category
+        if category is not None:  # TODO: category shouldn't be here
+            model_name += '_' + category
         run_datetime = datetime.now().strftime('%B%d_%H-%M-%S')
         run_path = os.path.join(RUNS_PATH, model_name, run_datetime)
         print(run_path)
         tb_path = os.path.join(run_path, 'tensorboard')
-        output_imgs_path = os.path.join(run_path, 'output_imgs')
-        os.makedirs(output_imgs_path)
+        outputs_path = os.path.join(run_path, 'outputs')
+        os.makedirs(outputs_path)
         writer = SummaryWriter(tb_path)
         stdout_fp = os.path.join(run_path, 'stdout.txt')
         stdout_f = open(stdout_fp, 'w')
-
-        # Get data
-        tr_dataset = SketchDataset(category, 'train', self.hp)
-        val_dataset = SketchDataset(category, 'valid', self.hp)
-        tr_loader = DataLoader(tr_dataset, batch_size=hp.batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=hp.batch_size, shuffle=False)
-
-        gen_data_loader = DataLoader(tr_dataset, batch_size=1, shuffle=False)  # TODO: change to val_dataset
 
         # Train
         val_losses = []  # used for early stopping
@@ -557,7 +516,7 @@ class SketchRNN(nn.Module):
             start_time = time.time()
             for model in self.models:
                 model.train()
-            mean_losses = self.dataset_loop(tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
+            mean_losses = self.dataset_loop(self.tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
             end_time = time.time()
             min_elapsed = (end_time - start_time) / 60
             log_str = self.get_log_str(epoch, 'train', mean_losses, runtime=min_elapsed)
@@ -570,7 +529,7 @@ class SketchRNN(nn.Module):
             # validate
             for model in self.models:
                 model.eval()
-            mean_losses = self.dataset_loop(val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
+            mean_losses = self.dataset_loop(self.val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
             val_loss = mean_losses['loss']
             val_losses.append(val_loss)
             # TODO: early stopping
@@ -579,7 +538,7 @@ class SketchRNN(nn.Module):
             stdout_f.flush()
 
             # Generate sequence to save image and show progress
-            self.save_generation(gen_data_loader, epoch, n_gens=1, output_imgs_path=output_imgs_path)
+            self.end_of_epoch_hook(epoch, outputs_path=outputs_path)
 
             # Save model. TODO: only save best model (model.pt)
             if val_loss < min_val_loss:
@@ -589,10 +548,99 @@ class SketchRNN(nn.Module):
 
         stdout_f.close()
 
+    def end_of_epoch_hook(self, epoch, outputs_path=None):  # TODO: is this how to use **kwargs
+        pass
+
+
+
+class SketchRNN(TrainNN):
+    def __init__(self, hp, category):
+        super().__init__(hp)
+
+        self.eta_step = hp.eta_min
+
+        self.tr_loader, self.val_loader, self.gen_data_loader = self.get_data_loaders(category)
+
     #
-    # Generation
+    # Data
     #
-    def save_generation(self, gen_data_loader, epoch, n_gens=1, output_imgs_path=None):
+    def get_data_loaders(self, category):
+        tr_dataset = SketchDataset(category, 'train', self.hp)
+        val_dataset = SketchDataset(category, 'valid', self.hp)
+        tr_loader = DataLoader(tr_dataset, batch_size=self.hp.batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=self.hp.batch_size, shuffle=False)
+
+        gen_data_loader = DataLoader(tr_dataset, batch_size=1, shuffle=False)  # TODO: change to val_dataset
+
+        return tr_loader, val_loader, gen_data_loader
+
+    def make_target(self, inputs, lengths, M):
+        """
+        Create target vector out of stroke-5 data and lengths. Namely, use lengths
+        to create mask for each sequence
+
+        :param: inputs: [max_len, bsz, 5]
+        :param: lengths: list of ints 
+        :param: M: int, number of mixtures
+
+        :returns: 
+            mask: [max_len + 1, bsz]
+            dx: [max_len + 1, bsz, num_mixtures]
+            dy: [max_len + 1, bsz, num_mixtures]
+            p:  [max_len + 1, bsz, 3]
+        """
+        max_len, bsz, _ = inputs.size()
+
+        # add eos
+        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
+        if USE_CUDA:
+            eos = eos.cuda()
+        inputs = torch.cat([inputs, eos], 0)  # [max_len + 1, bsz, 5]
+
+        # calculate mask for each sequence using lengths
+        mask = torch.zeros(max_len + 1, bsz)
+        for idx, length in enumerate(lengths):
+            mask[:length, idx] = 1
+        if USE_CUDA:
+            mask = mask.cuda()
+        mask = mask.detach()
+        dx = torch.stack([inputs.data[:, :, 0]] * M, 2).detach()
+        dy = torch.stack([inputs.data[:, :, 1]] * M, 2).detach()
+        p1 = inputs.data[:, :, 2].detach()
+        p2 = inputs.data[:, :, 3].detach()
+        p3 = inputs.data[:, :, 4].detach()
+        p = torch.stack([p1, p2, p3], 2)
+
+        return mask, dx, dy, p
+
+    def preprocess_batch_from_data_loader(self, batch):
+        """
+        :param batch: [bsz, max_len, 5] Tensor
+        :param lengths: [bsz] Tensor
+
+        :returns:
+            batch: [max_len, bsz, 5]
+            lengths: list of ints
+        """
+        inputs, lengths = batch
+        inputs = inputs.transpose(0, 1).float()  # Dataloader returns inputs in 1st dim, rest of code expects it to be 2nd
+        if USE_CUDA:
+            inputs = inputs.cuda()
+        lengths = lengths.numpy().tolist()
+        batch = (inputs, lengths)
+        return batch
+
+    #
+    # Training, Generation
+    #
+
+    def pre_forward_train_hook(self):
+        self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
+
+    def end_of_epoch_hook(self, epoch, outputs_path=None):  # TODO: is this how to use **kwargs
+        self.save_generation(self.gen_data_loader, epoch, n_gens=1, outputs_path=outputs_path)
+
+    def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
         pass
 
     #
@@ -653,8 +701,8 @@ class SketchRNN(nn.Module):
 
 
 class SketchRNNDecoderOnly(SketchRNN):
-    def __init__(self, hp):
-        super().__init__(hp)
+    def __init__(self, hp, category):
+        super().__init__(hp, category)
 
         # Model
         self.decoder = DecoderRNN(5, hp.dec_dim, hp.M)
@@ -665,29 +713,31 @@ class SketchRNNDecoderOnly(SketchRNN):
         # optimization -- ADAM plus annealing (supp eq. 4)
         self.optimizers.append(optim.Adam(self.decoder.parameters(), hp.lr))
 
-    def one_forward_pass(self, batch, lengths):
+    def one_forward_pass(self, batch):
         """
         Return loss and other items of interest for one forward pass
 
-        :param batch: [max_len, bsz, 5]
-        :param lengths: list of ints
+        :param batch: tuple of
+            inputs: [max_len, bsz, 5]
+            lengths: list of ints
         :return: dict
             'loss': float Tensor. Must exist
              'loss_*': 
         """
-        max_len, bsz, _ = batch.size()
+        inputs, lengths = batch
+        max_len, bsz, _ = inputs.size()
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
         if USE_CUDA:
             sos = sos.cuda()
-        dec_inputs = torch.cat([sos, batch], 0)  # add sos at the begining of the batch; [max_len + 1, bsz, 5]
+        dec_inputs = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
 
         # Decode
         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(dec_inputs, output_all=True)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
+        mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
         loss = self.reconstruction_loss(mask,
                                         dx, dy, p,
                                         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
@@ -696,7 +746,7 @@ class SketchRNNDecoderOnly(SketchRNN):
 
         return result
 
-    def save_generation(self, gen_data_loader, epoch, n_gens=1, output_imgs_path=None):
+    def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
         # TODO: generation not implemented yet (need to generalize the conditional generation of the VAE)
         pass
 
@@ -706,8 +756,8 @@ class SketchRNNVAE(SketchRNN):
     Create entire sketch model by combining encoder and decoder. Training, generation, etc.
     """
 
-    def __init__(self, hp):
-        super().__init__(hp)
+    def __init__(self, hp, category):
+        super().__init__(hp, category)
 
         # Model
         self.encoder = EncoderRNN(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
@@ -722,28 +772,30 @@ class SketchRNNVAE(SketchRNN):
         # optimization -- ADAM plus annealing (supp eq. 4)
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
-    def one_forward_pass(self, batch, lengths):
+    def one_forward_pass(self, batch):
         """
         Return loss and other items of interest for one forward pass
 
-        :param batch: [max_len, bsz, 5]
-        :param lengths: list of ints
+        :param batch: tuple of
+            inputs: [max_len, bsz, 5]
+            lengths: list of ints
         :return: dict
             'loss': float Tensor. Must exist
              'loss_*': 
         """
-        max_len, bsz, _ = batch.size()
+        inputs, lengths = batch
+        max_len, bsz, _ = inputs.size()
 
         # Encode
-        z, mu, sigma_hat = self.encoder(batch)  # each [bsz, z_dim]
+        z, mu, sigma_hat = self.encoder(inputs)  # each [bsz, z_dim]
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
         if USE_CUDA:
             sos = sos.cuda()
-        batch_init = torch.cat([sos, batch], 0)  # add sos at the begining of the batch; [max_len + 1, bsz, 5]
+        inputs_init = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
         z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
-        dec_inputs = torch.cat([batch_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
+        dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
 
         # init hidden and cell states is tanh(fc(z)) (Page 3)
         hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_dim, 1)
@@ -755,7 +807,7 @@ class SketchRNNVAE(SketchRNN):
                                                                          hidden_cell=hidden_cell)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(batch, lengths, self.hp.M)
+        mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
         loss_KL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
         loss_R = self.reconstruction_loss(mask,
                                           dx, dy, p,
@@ -796,17 +848,19 @@ class SketchRNNVAE(SketchRNN):
     ##############################################################################
     # Conditional generation
     ##############################################################################
-    def save_generation(self, data_loader, epoch, n_gens=1, output_imgs_path=None):
+    def save_generation(self, data_loader, epoch, n_gens=1, outputs_path=None):
         """
         Generate sequence conditioned on output of encoder
         """
         n = 0
-        for batch, lengths in data_loader:
-            batch, lengths = self.preprocess_batch_from_data_loader(batch, lengths)
-            max_len, bsz, _ = batch.size()
+        for i, batch in enumerate(data_loader):
+            batch = self.preprocess_batch_from_data_loader(batch)
+            inputs, lengths = batch
+
+            max_len, bsz, _ = inputs.size()
 
             # Encode
-            z, _, _ = self.encoder(batch)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
+            z, _, _ = self.encoder(inputs)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
@@ -844,7 +898,7 @@ class SketchRNNVAE(SketchRNN):
             sample_y = np.cumsum(seq_y, 0)
             sample_pen = np.array(seq_pen)
             sequence = np.stack([sample_x, sample_y, sample_pen]).T
-            output_fp = os.path.join(output_imgs_path, '{}-{}.jpg'.format(epoch, n))
+            output_fp = os.path.join(outputs_path, '{}-{}.jpg'.format(epoch, n))
             save_sequence_as_img(sequence, output_fp)
 
             n += 1
@@ -951,8 +1005,8 @@ if __name__ == "__main__":
     hp = HParams()
 
     if args.decoder_only:
-        model = SketchRNNDecoderOnly(hp)
+        model = SketchRNNDecoderOnly(hp, args.category)
     else:
-        model = SketchRNNVAE(hp)
+        model = SketchRNNVAE(hp, args.category)
 
     model.train_loop(args.model_name, args.category)

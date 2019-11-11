@@ -10,7 +10,6 @@ import csv
 import json
 import math
 import os
-import pickle
 from pprint import pprint
 import random
 import subprocess
@@ -21,6 +20,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
+from utils import save, load
 
 ###################################################################
 #
@@ -57,6 +57,7 @@ S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pa
 ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = os.path.join(
     QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.csv')
 LABELED_PROGRESSION_PAIRS_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'labeled_progression_pairs')
+LABELED_PROGRESSION_PAIRS_DATA_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'labeled_progression_pairs', 'data')
 
 
 ###################################################################
@@ -580,7 +581,7 @@ def save_annotated_progression_pairs_data():
         stroke3_end: stroke3 index of end of annotated segment
         stroke3_segment: segment that was annotated (drawing from _start to _end of progression pair)
     """
-    os.makedirs(LABELED_PROGRESSION_PAIRS_PATH, exist_ok=True)
+    os.makedirs(LABELED_PROGRESSION_PAIRS_DATA_PATH, exist_ok=True)
 
     df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
     for cat in df['Input.category'].unique():
@@ -626,11 +627,17 @@ def save_annotated_progression_pairs_data():
             id_to_data[id]['stroke3_end'] = stroke3_end
             id_to_data[id]['stroke3_segment'] = stroke3[stroke3_start:stroke3_end+1, :]
 
+        # flatten
+        result = []
+        for id, data in id_to_data.items():
+            data['id'] = id
+            data['category'] = cat
+            result.append(data)
+
         # save
         out_fn = '{}.pkl'.format(cat)
         out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, out_fn)
-        with open(out_fp, 'wb') as f:
-            pickle.dump(id_to_data, f)
+        save(result, out_fp)
 
 def analyze_progression_pairs_annotations():
     df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
