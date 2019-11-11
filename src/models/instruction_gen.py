@@ -1,4 +1,4 @@
-
+# instruction_gen.py
 
 import argparse
 import matplotlib
@@ -13,10 +13,10 @@ from torch import optim
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
-from data_manager.quickdraw import LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH
-from models.sketch_rnn import normalize_data, calculate_normalizing_scale_factor, stroke3_to_stroke5, TrainNN
-from utils import save, load
-
+from src.data_manager.quickdraw import LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH
+from src.models.sketch_rnn import normalize_data, calculate_normalizing_scale_factor, stroke3_to_stroke5, TrainNN
+from src.models.train_nn import TrainNN, RUNS_PATH
+import src.utils as utils
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
 LABELED_PROGRESSION_PAIRS_VALID_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'valid.pkl')
@@ -48,8 +48,8 @@ class HParams():
 
         # Model
         self.dim = 256
-        self.n_enc_layers = 4  # 2
-        self.n_dec_layers = 4  # 2
+        self.n_enc_layers = 4
+        self.n_dec_layers = 4
         # dropout
 
 
@@ -110,7 +110,7 @@ def save_progression_pair_dataset_splits_and_vocab():
     for fn in os.listdir(LABELED_PROGRESSION_PAIRS_DATA_PATH):
         category = os.path.splitext(fn)[0]  # cat.pkl
         fp = os.path.join(LABELED_PROGRESSION_PAIRS_DATA_PATH, fn)
-        data = load(fp)
+        data = utils.load_file(fp)
         category_to_data[category] = data
 
     # split
@@ -130,19 +130,19 @@ def save_progression_pair_dataset_splits_and_vocab():
     for data, fp in [(train, LABELED_PROGRESSION_PAIRS_TRAIN_PATH),
                      (valid, LABELED_PROGRESSION_PAIRS_VALID_PATH),
                      (test, LABELED_PROGRESSION_PAIRS_TEST_PATH)]:
-        save(data, fp)
+        utils.save_file(data, fp)
 
     # build and save vocab
     idx2token, token2idx = build_vocab(train + valid + test)
     for data, fp in [(idx2token, LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH),
                      (token2idx, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)]:
-        save(data, fp)
+        utils.save_file(data, fp)
 
     # build and save category to index map (in case our model conditions on category)
     idx2cat, cat2idx = build_category_index(train + valid + test)
     for data, fp, in [(idx2cat, LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH),
                       (cat2idx, LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)]:
-        save(data, fp)
+        utils.save_file(data, fp)
 
 def map_str_to_index(s, token2idx):
     return [token2idx[tok] for tok in normalize(s)]
@@ -180,15 +180,15 @@ class ProgressionPairDataset(Dataset):
             fp = LABELED_PROGRESSION_PAIRS_TEST_PATH
         if not os.path.exists(fp):  # create splits and vocab first time
             save_progression_pair_dataset_splits_and_vocab()
-        data = load(fp)
+        data = utils.load_file(fp)
 
         # Load vocab and category mappings
-        self.idx2token = load(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
-        self.token2idx = load(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
+        self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
+        self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
         self.vocab_size = len(self.idx2token)
 
-        self.idx2cat = load(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
-        self.cat2idx = load(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
+        self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
+        self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
 
         # TODO: need to modify normalize_data because data in sketch_rnn is stroke-5 format,
         # here split_data is a list of dicts with stroke3_
@@ -304,10 +304,9 @@ def create_transformer_padding_masks(src_lens, tgt_lens):
 
     memory_key_padding_mask = src_key_padding_mask
 
-    if USE_CUDA:
-        src_key_padding_mask = src_key_padding_mask.cuda()
-        tgt_key_padding_mask = tgt_key_padding_mask.cuda()
-        memory_key_padding_mask = memory_key_padding_mask.cuda()
+    src_key_padding_mask = utils.move_to_cuda(src_key_padding_mask)
+    tgt_key_padding_mask = utils.move_to_cuda(tgt_key_padding_mask)
+    memory_key_padding_mask = utils.move_to_cuda(memory_key_padding_mask)
 
     return src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask
 
@@ -320,9 +319,7 @@ def generate_square_subsequent_mask(size):
     """
     mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-
-    if USE_CUDA:
-        mask = mask.cuda()
+    mask = utils.move_to_cuda(mask)
 
     return mask
 
@@ -336,8 +333,8 @@ def generate_square_subsequent_mask(size):
 
 
 class InstructionRNN(TrainNN):
-    def __init__(self, hp):
-        super().__init__(hp)
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
 
         self.tr_loader, self.val_loader = self.get_data_loaders()
 
@@ -353,6 +350,7 @@ class InstructionRNN(TrainNN):
                                      num_encoder_layers=self.hp.n_enc_layers,
                                      num_decoder_layers=self.hp.n_dec_layers)
         self.vocab_out_fc = nn.Linear(d_model, self.tr_loader.dataset.vocab_size)
+
         if USE_CUDA:
             self.pos_enc.cuda()
             self.strokes_input_fc.cuda()
@@ -378,9 +376,8 @@ class InstructionRNN(TrainNN):
     def preprocess_batch_from_data_loader(self, batch):
         """Convert tensors to cuda"""
         strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx = batch
-        if USE_CUDA:
-            strokes = strokes.cuda()
-            text_indices = text_indices.cuda()
+        strokes = utils.move_to_cuda(strokes)
+        text_indices = utils.move_to_cuda(text_indices)
         batch = (strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx)
         return batch
 
@@ -451,13 +448,15 @@ class InstructionRNN(TrainNN):
         return result
 
 
-
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-n', '--model_name', type=str, default='instruction')
-    args = parser.parse_args()
-
     hp = HParams()
-    model = InstructionRNN(hp)
-    model.train_loop(args.model_name)
+    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    # Add additional arguments to parser
+    opt = parser.parse_args()
+    utils.setup_seeds()
+
+    save_dir = os.path.join(RUNS_PATH, 'instructionrnn', run_name)
+    utils.save_run_data(save_dir, hp)
+
+    model = InstructionRNN(hp, save_dir)
+    model.train_loop()

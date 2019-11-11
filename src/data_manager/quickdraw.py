@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
-from utils import save, load
+from src.utils import save_file, load_file
 
 ###################################################################
 #

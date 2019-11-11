@@ -23,8 +23,10 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 
+from src.models.train_nn import TrainNN, RUNS_PATH
+import src.utils as utils
+
 NPZ_DATA_PATH = 'data/quickdraw/npz/'
-RUNS_PATH = 'runs/'
 
 USE_CUDA = torch.cuda.is_available()
 
@@ -36,6 +38,9 @@ USE_CUDA = torch.cuda.is_available()
 ##############################################################################
 class HParams():
     def __init__(self):
+        # Data
+        self.category = 'cat'
+
         # Training
         self.batch_size = 64  # 100
         self.lr = 0.001  # 0.0001
@@ -45,6 +50,7 @@ class HParams():
         self.max_epochs = 100
 
         # Model
+        self.model_type = 'vae'  # 'vae', 'decoder'
         self.enc_dim = 256  # 512
         self.dec_dim = 512  # 2048
         self.enc_num_layers = 1  # 2
@@ -245,9 +251,7 @@ class EncoderRNN(nn.Module):
         if hidden_cell is None:
             hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
             cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
-            if USE_CUDA:
-                hidden = hidden.cuda()
-                cell = cell.cuda()
+            hidden, cell = utils.move_to_cuda(hidden), utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
         # Pass inputs, hidden, and cell into encoder's lstm
@@ -271,8 +275,7 @@ class EncoderRNN(nn.Module):
         # Turn sigma_hat vector into non-negative std parameter
         sigma = torch.exp(sigma_hat / 2.)
         N = torch.randn_like(sigma)
-        if USE_CUDA:
-            N = N.cuda()
+        N = utils.move_to_cuda(N)
         z = mu + sigma * N  # [bsz, z_dim]
 
         # Note we return sigma_hat, not sigma to be used in KL-loss (eq. 10)
@@ -329,9 +332,7 @@ class DecoderRNN(nn.Module):
         if hidden_cell is None:  # init
             hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
             cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            if USE_CUDA:
-                hidden = hidden.cuda()
-                cell = cell.cuda()
+            hidden, cell = utils.move_to_cuda(hidden), utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
         outputs, (hidden, cell) = self.lstm(inputs, hidden_cell)
@@ -389,177 +390,12 @@ class DecoderRNN(nn.Module):
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
 
 
-##############################################################################
-#
-# MODEL
-#
-##############################################################################
-
-class TrainNN(nn.Module):
-
-    """
-    Base class for this project that covers train-eval loop.
-    """
-
-    def __init__(self, hp):
-        super().__init__()
-
-        self.hp = hp
-
-        self.models = []
-        self.optimizers = []
-
-        self.tr_loader = None
-        self.val_loader = None
-
-    def get_data_loader(self):
-        pass
-
-    #
-    # Training
-    #
-    def lr_decay(self, optimizer, min_lr, lr_decay):
-        """
-        Decay learning rate by a factor of lr_decay
-        """
-        for param_group in optimizer.param_groups:
-            if param_group['lr'] > min_lr:
-                param_group['lr'] *= lr_decay
-        return optimizer
-
-    def preprocess_batch_from_data_loader(self, batch):
-        return batch
-
-    def one_forward_pass(self, batch):
-        """
-        Return dict where values are float Tensors. Key 'loss' must exist.
-        """
-        pass
-
-    def pre_forward_train_hook(self):
-        """Called before one forward pass when training"""
-        pass
-
-    def dataset_loop(self, data_loader, epoch, is_train=True, writer=None, tb_tag='train'):
-        """
-        Can be used with either different splits of the dataset (train, valid, test)
-
-        :return: dict
-            key: str
-            value: float
-        """
-        losses = defaultdict(list)
-        for i, batch in enumerate(data_loader):
-            # set up optimizers
-            if is_train:
-                self.pre_forward_train_hook()
-                for optimizer in self.optimizers:
-                    optimizer.zero_grad()
-
-            # forward pass
-            batch = self.preprocess_batch_from_data_loader(batch)  # [max_len, bsz, 5];
-            result = self.one_forward_pass(batch)
-            for k, v in result.items():
-                if k.startswith('loss'):
-                    losses[k].append(v.item())
-
-            # optimization
-            if is_train:
-                result['loss'].backward()
-                nn.utils.clip_grad_value_(self.parameters(), self.hp.grad_clip)
-                for optimizer in self.optimizers:
-                    optimizer.step()
-
-            # Logging
-            if i % 10 == 0:
-                step = epoch * data_loader.__len__() + i
-                for k, v in result.items():
-                    if k.startswith('loss'):
-                        writer.add_scalar('{}/{}'.format(tb_tag, k), v.item(), step)
-
-        mean_losses = {k: np.mean(values) for k, values in losses.items()}
-        return mean_losses
-
-    def get_log_str(self, epoch, dataset_split, mean_losses, runtime=None):
-        """
-        Create string to log to stdout
-        """
-        log_str = 'Epoch {} -- {}:'.format(epoch, dataset_split)
-        for k, v in mean_losses.items():
-            log_str += ' {}={:.4f}'.format(k, v)
-        if runtime is not None:
-            log_str += ' minutes={:.1f}'.format(runtime)
-        return log_str
-
-    def train_loop(self, model_name, category=None):
-        """Train and validate on multiple epochs"""
-
-        # Bookkeeping
-        if category is not None:  # TODO: category shouldn't be here
-            model_name += '_' + category
-        run_datetime = datetime.now().strftime('%B%d_%H-%M-%S')
-        run_path = os.path.join(RUNS_PATH, model_name, run_datetime)
-        print(run_path)
-        tb_path = os.path.join(run_path, 'tensorboard')
-        outputs_path = os.path.join(run_path, 'outputs')
-        os.makedirs(outputs_path)
-        writer = SummaryWriter(tb_path)
-        stdout_fp = os.path.join(run_path, 'stdout.txt')
-        stdout_f = open(stdout_fp, 'w')
-
-        # Train
-        val_losses = []  # used for early stopping
-        min_val_loss = float('inf')  # used to save model
-        for epoch in range(self.hp.max_epochs):
-
-            # train
-            start_time = time.time()
-            for model in self.models:
-                model.train()
-            mean_losses = self.dataset_loop(self.tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
-            end_time = time.time()
-            min_elapsed = (end_time - start_time) / 60
-            log_str = self.get_log_str(epoch, 'train', mean_losses, runtime=min_elapsed)
-            print(log_str, file=stdout_f)
-            stdout_f.flush()
-
-            for optimizer in self.optimizers:
-                self.lr_decay(optimizer, self.hp.min_lr, self.hp.lr_decay)
-
-            # validate
-            for model in self.models:
-                model.eval()
-            mean_losses = self.dataset_loop(self.val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
-            val_loss = mean_losses['loss']
-            val_losses.append(val_loss)
-            # TODO: early stopping
-            log_str = self.get_log_str(epoch, 'valid', mean_losses)
-            print(log_str, file=stdout_f)
-            stdout_f.flush()
-
-            # Generate sequence to save image and show progress
-            self.end_of_epoch_hook(epoch, outputs_path=outputs_path)
-
-            # Save model. TODO: only save best model (model.pt)
-            if val_loss < min_val_loss:
-                min_val_loss = val_loss
-                model_fn = 'e{}_loss{:.4f}.pt'.format(epoch, val_loss)  # val loss
-                torch.save(self.state_dict(), os.path.join(run_path, model_fn))
-
-        stdout_f.close()
-
-    def end_of_epoch_hook(self, epoch, outputs_path=None):  # TODO: is this how to use **kwargs
-        pass
-
-
-
 class SketchRNN(TrainNN):
-    def __init__(self, hp, category):
-        super().__init__(hp)
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
 
         self.eta_step = hp.eta_min
-
-        self.tr_loader, self.val_loader, self.gen_data_loader = self.get_data_loaders(category)
+        self.tr_loader, self.val_loader, self.gen_data_loader = self.get_data_loaders(hp.category)
 
     #
     # Data
@@ -593,16 +429,14 @@ class SketchRNN(TrainNN):
 
         # add eos
         eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
-        if USE_CUDA:
-            eos = eos.cuda()
+        eos = utils.move_to_cuda(eos)
         inputs = torch.cat([inputs, eos], 0)  # [max_len + 1, bsz, 5]
 
         # calculate mask for each sequence using lengths
         mask = torch.zeros(max_len + 1, bsz)
         for idx, length in enumerate(lengths):
             mask[:length, idx] = 1
-        if USE_CUDA:
-            mask = mask.cuda()
+        mask = utils.move_to_cuda(mask)
         mask = mask.detach()
         dx = torch.stack([inputs.data[:, :, 0]] * M, 2).detach()
         dy = torch.stack([inputs.data[:, :, 1]] * M, 2).detach()
@@ -624,8 +458,7 @@ class SketchRNN(TrainNN):
         """
         inputs, lengths = batch
         inputs = inputs.transpose(0, 1).float()  # Dataloader returns inputs in 1st dim, rest of code expects it to be 2nd
-        if USE_CUDA:
-            inputs = inputs.cuda()
+        inputs = utils.move_to_cuda(inputs)
         lengths = lengths.numpy().tolist()
         batch = (inputs, lengths)
         return batch
@@ -701,8 +534,8 @@ class SketchRNN(TrainNN):
 
 
 class SketchRNNDecoderOnly(SketchRNN):
-    def __init__(self, hp, category):
-        super().__init__(hp, category)
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
 
         # Model
         self.decoder = DecoderRNN(5, hp.dec_dim, hp.M)
@@ -729,8 +562,7 @@ class SketchRNNDecoderOnly(SketchRNN):
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
-        if USE_CUDA:
-            sos = sos.cuda()
+        sos = utils.move_to_cuda(sos)
         dec_inputs = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
 
         # Decode
@@ -756,8 +588,8 @@ class SketchRNNVAE(SketchRNN):
     Create entire sketch model by combining encoder and decoder. Training, generation, etc.
     """
 
-    def __init__(self, hp, category):
-        super().__init__(hp, category)
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
 
         # Model
         self.encoder = EncoderRNN(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
@@ -791,8 +623,7 @@ class SketchRNNVAE(SketchRNN):
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
-        if USE_CUDA:
-            sos = sos.cuda()
+        sos = utils.move_to_cuda(sos)
         inputs_init = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
         z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
         dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
@@ -838,8 +669,7 @@ class SketchRNNVAE(SketchRNN):
         LKL = -0.5 * torch.sum(1 + sigma_hat - mu ** 2 - torch.exp(sigma_hat)) \
               / float(bsz * z_dim)
         KL_min = torch.Tensor([KL_min])
-        if USE_CUDA:
-            KL_min = KL_min.cuda()
+        KL_min = utils.move_to_cuda(KL_min)
         KL_min = KL_min.detach()
 
         LKL = wKL * eta_step * torch.max(LKL, KL_min)
@@ -864,8 +694,7 @@ class SketchRNNVAE(SketchRNN):
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
-            if USE_CUDA:
-                sos = sos.cuda()
+            sos = utils.move_to_cuda(sos)
 
             # generate until end of sequence or maximum sequence length
             s = sos
@@ -958,8 +787,7 @@ class SketchRNNVAE(SketchRNN):
         next_state[0] = dx
         next_state[1] = dy
         next_state[q_idx + 2] = 1
-        if USE_CUDA:
-            next_state = next_state.cuda()
+        next_state = utils.move_to_cuda(next_state)
         s = next_state.view(1, 1, -1)
 
         pen_down = q_idx == 1  # TODO: isn't this pen up?
@@ -995,18 +823,19 @@ class SketchRNNVAE(SketchRNN):
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--decoder_only', action='store_true')
-    parser.add_argument('-c', '--category', type=str, default='cat')
-    parser.add_argument('-n', '--model_name', type=str, default='sketchrnn')
-    args = parser.parse_args()
-
     hp = HParams()
+    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    # Add additional arguments to parser
+    opt = parser.parse_args()
+    utils.setup_seeds()
 
-    if args.decoder_only:
-        model = SketchRNNDecoderOnly(hp, args.category)
-    else:
-        model = SketchRNNVAE(hp, args.category)
+    save_dir = os.path.join(RUNS_PATH, 'sketchrnn', run_name)
+    utils.save_run_data(save_dir, hp)
 
-    model.train_loop(args.model_name, args.category)
+    model = None
+    if hp.model_type == 'vae':
+        model = SketchRNNVAE(hp, save_dir)
+    elif hp.model_type == 'decoder':
+        model = SketchRNNDecoderOnly(hp, save_dir)
+
+    model.train_loop()
