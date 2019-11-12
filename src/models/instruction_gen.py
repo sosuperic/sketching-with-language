@@ -482,15 +482,16 @@ class InstructionDecoderLSTM(nn.Module):
             prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
             ids = ids[:, 0]  # get top k; [bsz]
 
-            # If sequence (row) has already produced an eos_id, replace id with pad (and the prob with pad_prob)
-            rows_with_eos = rows_with_eos | (ids == eos_id).long()
+            # Update generated sequence so far
+            # If sequence (row) has already produced an eos_id *earlier*, replace id/prob with pad
+            # TODO: I don't think decoded_probs is being filled with pad_prob for some reason
             prob = torch.where((rows_with_eos == 1).unsqueeze(1), pad_prob, prob)  # unsqueeze to broadcast
             ids = torch.where(rows_with_eos == 1, pad_ids, ids)
-
-            # Update generated sequence so far
             decoded_probs[:, t, :] = prob
             decoded_ids[:, t] = ids
 
+            # Update for next iteration in loop
+            rows_with_eos = rows_with_eos | (ids == eos_id).long()
             cur_input_id = ids.unsqueeze(0)  # [1, bsz]
 
             # Terminate early if all sequences have generated eos
@@ -514,6 +515,8 @@ class InstructionDecoderLSTM(nn.Module):
                     tokens.append(idx2token[id])
                 text = ' '.join(tokens)
                 decoded_texts.append(text)
+
+        # import pdb; pdb.set_trace()
 
         return decoded_probs, decoded_ids, decoded_texts
 
@@ -539,7 +542,7 @@ class StrokeToInstructionModel(TrainNN):
 
             if self.hp.use_prestrokes:
                 print('Using prestrokes not implemented for Transformer')
-                raise NotImplementedError('Using prestrokes not implemented for Transformer')
+                # raise NotImplementedError('Using prestrokes not implemented for Transformer')
 
         elif self.hp.model_type == 'lstm':
             n_categories = 35 if self.hp.use_categories else 0

@@ -172,14 +172,16 @@ def transformer_generate(
         prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
         ids = ids[:,0]  # get top k
 
-        # If sequence (row) has already produced an EOS_ID, replace id with pad (and the prob with pad_prob)
-        rows_with_eos = rows_with_eos | (ids == eos_id).long()
+        # Update generated sequence so far
+        # If sequence (row) has already produced an eos_id *earlier*, replace id/prob with pad
+        # TODO: I don't think decoded_probs is being filled with pad_prob for some reason
         prob = torch.where((rows_with_eos == 1).unsqueeze(1), pad_prob, prob)  # unsqueeze to broadcast
         ids = torch.where(rows_with_eos == 1, pad_ids, ids)
+        decoded_probs[t, :, :] = prob
+        decoded_ids[t, :] = ids
 
-        # Update generated sequence so far
-        decoded_probs[t,:,:] = prob
-        decoded_ids[t,:] = ids
+        # Update for next iteration in loop
+        rows_with_eos = rows_with_eos | (ids == eos_id).long()
 
         # Terminate early if all sequences have generated eos
         if rows_with_eos.sum().item() == bsz:
@@ -200,11 +202,13 @@ def transformer_generate(
             tokens = []
             for j in range(decoded_ids.size(1)):
                 id = decoded_ids[i][j].item()
-                import pdb; pdb.set_trace()  # TODO: Saw an example that was EOS EOS EOS... why isn't this being caught by the following equality statement?
+                # import pdb; pdb.set_trace()  # TODO: Saw an example that was EOS EOS EOS... why isn't this being caught by the following equality statement?
                 if id == eos_id:
                     break
                 tokens.append(idx2token[id])
             text = ' '.join(tokens)
             decoded_texts.append(text)
+
+    import pdb; pdb.set_trace()
 
     return decoded_probs, decoded_ids, decoded_texts
