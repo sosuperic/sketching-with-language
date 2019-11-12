@@ -579,7 +579,8 @@ def save_annotated_progression_pairs_data():
         stroke3: drawing in stroke-3 format: numpy array of shape [len, 3] (x, y, pen_up)
         stroke3_start: stroke3 index of start of annotated segment
         stroke3_end: stroke3 index of end of annotated segment
-        stroke3_segment: segment that was annotated (drawing from _start to _end of progression pair)
+        stroke3_segment: numpy array of shape [len, 3] (x, y, pen_up)
+            segment that was annotated (drawing from _start to _end of progression pair)
     """
     os.makedirs(LABELED_PROGRESSION_PAIRS_DATA_PATH, exist_ok=True)
 
