@@ -51,6 +51,7 @@ class HParams():
         self.dim = 256
         self.n_enc_layers = 4
         self.n_dec_layers = 4
+        self.use_pre_strokes = True
         # dropout
 
         # inference
@@ -65,7 +66,7 @@ class HParams():
 #
 ##############################################################################
 
-PAD_ID, OOV_ID, EOS_ID, SOS_ID = 0, 1, 2, 3  # TODO: this should be a part of dataset maybe?
+PAD_ID, OOV_ID, SOS_ID, EOS_ID = 0, 1, 2, 3 # TODO: this should be a part of dataset maybe?
 
 def normalize(sentence):
     """Tokenize"""
@@ -84,7 +85,7 @@ def build_vocab(data):
             tokens.add(token)
 
     idx2token = {}
-    tokens = ['PAD', 'OOV', 'EOS', 'SOS'] + list(tokens)
+    tokens = ['PAD', 'OOV', 'SOS', 'EOS'] + list(tokens)
     for i, token in enumerate(tokens):
         idx2token[i] = token
     token2idx = {v:k for k, v in idx2token.items()}
@@ -235,19 +236,25 @@ class ProgressionPairDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.data[idx]
+
+        # Get subsequence of drawing that was annotated
         stroke3_seg = sample['stroke3_segment']
         stroke5_seg = stroke3_to_stroke5(stroke3_seg, len(stroke3_seg))
+        # Get subsequence that precedes the annotated
+        stroke3_pre_seg = sample['stroke3'][:sample['stroke3_start'],:]
+        stroke5_pre_seg = stroke3_to_stroke5(stroke3_pre_seg, len(stroke3_pre_seg))
 
+        # Map
         text = sample['annotation']
         text_indices = map_str_to_index(text, self.token2idx)
-
         text_indices = [SOS_ID] + text_indices + [EOS_ID]
 
+        # Additional metadata
         cat = sample['category']
         cat_idx = self.cat2idx[cat]
         url = sample['url']
 
-        return (stroke5_seg, text, text_indices, cat, cat_idx, url)
+        return (stroke5_seg, stroke5_pre_seg, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn(batch):
@@ -256,7 +263,7 @@ class ProgressionPairDataset(Dataset):
         
         :param: batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        strokes, pre_strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
@@ -268,6 +275,14 @@ class ProgressionPairDataset(Dataset):
             l = stroke.shape[0]
             batch_strokes[i,:l,:] = stroke
 
+        # Create array of strokes, zeros for padding
+        pre_stroke_lens = [prestroke.shape[0] for prestroke in pre_strokes]
+        max_pre_stroke_len = max(pre_stroke_lens)
+        batch_pre_strokes = np.zeros((bsz, max_pre_stroke_len, sample_dim))
+        for i, pre_stroke in enumerate(pre_strokes):
+            l = pre_stroke.shape[0]
+            batch_pre_strokes[i, :l, :] = pre_stroke
+
         # Create array of text indices, zeros for padding
         text_lens = [len(t) for t in texts_indices]
         max_text_len = max(text_lens)
@@ -278,9 +293,11 @@ class ProgressionPairDataset(Dataset):
 
         # Convert to Tensors
         batch_strokes = torch.FloatTensor(batch_strokes)
+        batch_pre_strokes = torch.FloatTensor(batch_pre_strokes)
         batch_text_indices = torch.LongTensor(batch_text_indices)
 
-        return batch_strokes, stroke_lens, texts, text_lens, batch_text_indices, cats, cats_idx, urls
+        return batch_strokes, stroke_lens, batch_pre_strokes, pre_stroke_lens,\
+               texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
 
 
@@ -337,19 +354,22 @@ class InstructionRNN(TrainNN):
 
     def preprocess_batch_from_data_loader(self, batch):
         """Convert tensors to cuda"""
-        strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls = batch
-        strokes = utils.move_to_cuda(strokes)
-        text_indices = utils.move_to_cuda(text_indices)
-        batch = (strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls)
-        return batch
+        preprocessed = []
+        for item in batch:
+            if type(item) == torch.Tensor:
+                item = utils.move_to_cuda(item)
+            preprocessed.append(item)
+        return preprocessed
 
     def one_forward_pass(self, batch):
         """
         Return loss and other items of interest for one forward pass
 
         :param batch:
-            strokes: [bsz, max_stroke_len, 3 or 5] FloatTensor
+            strokes: [bsz, max_stroke_len, 5] FloatTensor
             stroke_lens: list of ints
+            pre_strokes: [bsz, max_pre_stroke_len, 5] FloatTensor
+            pre_stroke_lens: list of ints
             texts: list of strs
             text_lens: list of ints
             text_indices_w_sos_eos: [bsz, max_text_len + 2] LongTensor (+2 for SOS and EOS)
@@ -358,7 +378,8 @@ class InstructionRNN(TrainNN):
         
         :return: dict: 'loss': float Tensor must exist
         """
-        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
+            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
         bsz = strokes.size(0)
 
         # Embed strokes and text
@@ -379,7 +400,6 @@ class InstructionRNN(TrainNN):
         src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask = \
             create_transformer_padding_masks(stroke_lens, text_lens)
         tgt_mask = generate_square_subsequent_mask(dec_inputs.size(0))  # [max_text_len + 2, max_text_len + 2]
-
         dec_outputs = self.transformer(enc_inputs, dec_inputs, # [max_text_len + 2, bsz, dim]
                                        src_key_padding_mask=src_key_padding_mask,
                                        # tgt_key_padding_mask=tgt_key_padding_mask,
@@ -418,7 +438,8 @@ class InstructionRNN(TrainNN):
             generated = []
             for i, batch in enumerate(self.val_loader):
                 batch = self.preprocess_batch_from_data_loader(batch)
-                strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+                strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
+                    texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
                 bsz = strokes.size(0)
 
                 strokes_emb = self.strokes_input_fc(strokes)                    # [bsz, max_stroke_len, dim]
@@ -468,5 +489,5 @@ if __name__ == '__main__':
     #                         collate_fn=ProgressionPairDataset.collate_fn)
     # idx2token = val_loader.dataset.idx2token
     # for batch in val_loader:
-    #     strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+    #     strokes, stroke_lens, pre_strokes, pre_stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
     #     import pdb; pdb.set_trace()

@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
-from src.utils import save_file, load_file
+import src.utils as utils
 
 ###################################################################
 #
@@ -576,7 +576,7 @@ def save_annotated_progression_pairs_data():
         ndjson_end: ndjson_strokes index of end of annotated segment
             - Offset by 1 relative to ndjson_strokes
             
-        stroke3: drawing in stroke-3 format: numpy array (x, y, pen_up)
+        stroke3: drawing in stroke-3 format: numpy array of shape [len, 3] (x, y, pen_up)
         stroke3_start: stroke3 index of start of annotated segment
         stroke3_end: stroke3 index of end of annotated segment
         stroke3_segment: segment that was annotated (drawing from _start to _end of progression pair)
@@ -637,7 +637,7 @@ def save_annotated_progression_pairs_data():
         # save
         out_fn = '{}.pkl'.format(cat)
         out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, out_fn)
-        save(result, out_fp)
+        utils.save_file(result, out_fp)
 
 def analyze_progression_pairs_annotations():
     df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
