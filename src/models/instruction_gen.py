@@ -246,6 +246,10 @@ class ProgressionPairDataset(Dataset):
         stroke5_seg = stroke3_to_stroke5(stroke3_seg, len(stroke3_seg))
         # Get subsequence that precedes the annotated
         stroke3_pre_seg = sample['stroke3'][:sample['stroke3_start'],:]
+
+        # Insert element so that all presegments have length at least 1
+        stroke3_pre_seg = np.vstack([np.array([0, 0, 1]), stroke3_pre_seg])  # 1 for penup
+
         stroke5_pre_seg = stroke3_to_stroke5(stroke3_pre_seg, len(stroke3_pre_seg))
 
         # Map
