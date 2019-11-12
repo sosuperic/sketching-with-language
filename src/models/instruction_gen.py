@@ -52,9 +52,9 @@ class HParams():
         self.dim = 256
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.use_prestrokes = False
         self.model_type = 'lstm'  # 'lstm', 'transformer'
         self.condition_on_hc = True  # With 'lstm', input to decoder also contains last hidden cell
+        self.use_prestrokes = True
         self.dropout = 0.2
 
         # inference
@@ -311,6 +311,42 @@ class ProgressionPairDataset(Dataset):
 #
 ##############################################################################
 
+class StrokeEncoderLSTM(nn.Module):
+    def __init__(self,
+                 input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
+                 use_prestrokes=False):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim,
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.batch_first = batch_first
+        self.use_prestrokes = use_prestrokes
+
+        self.lstm = nn.LSTM(input_dim, hidden_dim,
+                            num_layers=num_layers, dropout=dropout, batch_first=batch_first)
+
+    def forward(self, strokes, pre_strokes=None):
+        """
+        Args:
+            strokes:  [max_stroke_len, bsz]
+            pre_strokes:  [max_prestroke_len, bsz]
+
+        Returns:
+            stroke_outputs: [max_stroke_len, bsz, dim]
+            prestroke_outputs: [max_prestroke_len, bsz, dim]
+            hidden: [layers * direc, bsz, dim]
+            cell:  [bsz, max_stroke_len, dim]
+        """
+        if self.use_prestrokes:
+            pre_outputs, (pre_h, pre_c) = self.lstm(pre_strokes)  # [max_pre_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+            strokes_outputs, (strokes_h, strokes_c) = self.lstm(strokes, (pre_h, pre_c))  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+            hidden, cell = strokes_h, strokes_c
+        else:
+            strokes_outputs, (hidden, cell) = self.lstm(strokes)
+
+        return strokes_outputs, (hidden, cell)
+
 class InstructionDecoderLSTM(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
@@ -322,7 +358,7 @@ class InstructionDecoderLSTM(nn.Module):
         self.dropout = dropout
         self.batch_first = batch_first
         self.condition_on_hc = condition_on_hc
-        self.use_prestrokes = use_prestrokes
+        self.use_prestrokes = use_prestrokes  # currently not used. only in STrokeEncoderLSTM
 
         self.lstm =  nn.LSTM(input_dim, hidden_dim,
                              num_layers=num_layers, dropout=dropout, batch_first= batch_first)
@@ -475,13 +511,25 @@ class StrokeToInstructionModel(TrainNN):
                     nn.init.xavier_uniform_(p)
             self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
 
+            if self.hp.use_prestrokes:
+                print('Using prestrokes not implemented for Transformer')
+                raise NotImplementedError('Using prestrokes not implemented for Transformer')
+
         elif self.hp.model_type == 'lstm':
-            self.enc = nn.LSTM(5, self.hp.dim, self.hp.n_enc_layers, dropout=self.hp.dropout, batch_first=False)
-            dec_input_dim = self.hp.dim * 2 if self.hp.condition_on_hc else self.hp.dim
+
+            self.enc = StrokeEncoderLSTM(
+                5, self.hp.dim, num_layers=self.hp.n_enc_layers,
+                dropout=self.hp.dropout, batch_first=False,
+                use_prestrokes=self.hp.use_prestrokes)
+
+            dec_input_dim = self.hp.dim
+            if self.hp.condition_on_hc:
+                dec_input_dim += self.hp.dim
             self.dec = InstructionDecoderLSTM(
                 dec_input_dim, self.hp.dim, num_layers=self.hp.n_dec_layers,
                 dropout=self.hp.dropout, batch_first=False,
                 condition_on_hc=self.hp.condition_on_hc, use_prestrokes=self.hp.use_prestrokes)
+
             self.models.extend([self.enc, self.dec])
 
         self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, self.hp.dim)
@@ -560,7 +608,7 @@ class StrokeToInstructionModel(TrainNN):
             texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
-        _, (hidden, cell) = self.enc(strokes)  # [bsz, max_stroke_len, dim]; h/c = [layers * direc, bsz, dim]
+        _, (hidden, cell) = self.enc(strokes, pre_strokes=pre_strokes)  # [bsz, max_stroke_len, dim]; h/c = [layers * direc, bsz, dim]
 
         # Decode
         texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [max_text_len + 2, bsz, dim]
@@ -631,7 +679,7 @@ class StrokeToInstructionModel(TrainNN):
                 bsz = strokes.size(1)
 
                 # Encode
-                _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+                _, (hidden, cell) = self.enc(strokes, pre_strokes=pre_strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
 
                 # Create init input
                 init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]

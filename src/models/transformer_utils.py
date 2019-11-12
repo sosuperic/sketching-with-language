@@ -200,6 +200,7 @@ def transformer_generate(
             tokens = []
             for j in range(decoded_ids.size(1)):
                 id = decoded_ids[i][j].item()
+                import pdb; pdb.set_trace()  # TODO: Saw an example that was EOS EOS EOS... why isn't this being caught by the following equality statement?
                 if id == eos_id:
                     break
                 tokens.append(idx2token[id])
