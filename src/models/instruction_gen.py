@@ -63,6 +63,9 @@ class HParams():
         self.tau = 1.0  # sampling text
         self.k = 5      # sampling text
 
+        # Other
+        self.notes = ''
+
 
 
 ##############################################################################

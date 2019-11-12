@@ -124,11 +124,14 @@ def create_argparse_and_update_hp(hp):
     # Update hp if any command line arguments passed
     # Also create description of run
     run_name = []
-    for param, value in vars(opt).items():
+    for param, value in sorted(vars(opt).items()):
         if value is not None:
             setattr(hp, param, value)
-            run_name.append('{}_{}'.format(param, value))
-    run_name = '-'.join(sorted(run_name))
+            if param == 'notes':
+                run_name = [value] + run_name
+            else:
+                run_name.append('{}_{}'.format(param, value))
+    run_name = '-'.join(run_name)
     run_name = ('default_' + str(uuid.uuid4())[:8]) if (run_name == '') else run_name
 
     return hp, run_name, parser
