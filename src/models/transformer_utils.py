@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 import src.utils as utils
+import src.models.nn_utils as nn_utils
 
 
 class PositionalEncoder(nn.Module):
@@ -75,8 +76,8 @@ def create_transformer_padding_masks(src_lens=None, tgt_lens=None):
 
         memory_key_padding_mask = src_key_padding_mask
 
-        src_key_padding_mask = utils.move_to_cuda(src_key_padding_mask)
-        memory_key_padding_mask = utils.move_to_cuda(memory_key_padding_mask)
+        src_key_padding_mask = nn_utils.move_to_cuda(src_key_padding_mask)
+        memory_key_padding_mask = nn_utils.move_to_cuda(memory_key_padding_mask)
 
     # Tgt mask
     if tgt_lens is not None:
@@ -86,7 +87,7 @@ def create_transformer_padding_masks(src_lens=None, tgt_lens=None):
         for i, seq_len in enumerate(tgt_lens):
             tgt_key_padding_mask[i, seq_len:] = 1
 
-        tgt_key_padding_mask = utils.move_to_cuda(tgt_key_padding_mask)
+        tgt_key_padding_mask = nn_utils.move_to_cuda(tgt_key_padding_mask)
 
     return src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask
 
@@ -99,14 +100,14 @@ def generate_square_subsequent_mask(size):
     """
     mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)  # True's in lower left half
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-    mask = utils.move_to_cuda(mask)
+    mask = nn_utils.move_to_cuda(mask)
 
     return mask
 
-def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
+def transformer_generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
              input_embs=None, input_lens=None,
              init_ids=None, init_embs=None,
-             PAD_ID=None, EOS_ID=None,
+             pad_id=None, eos_id=None,
              max_len=100,
              decode_method=None, tau=None, k=None,
              idx2token=None,
@@ -123,7 +124,8 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
         input_lens: list of ints
         init_ids: [bsz, init_len]  (e.g. SOS ids)
         init_embs: [bsz, init_len, emb] (e.g. embedded SOS ids)
-        EOS_ID: int (id for EOS_ID token)
+        pad_id: int 
+        eos_id: int (id for EOS_ID token)
         decode_method: str (how to sample words given probabilities; 'greedy', 'sample')
         tau: float (temperature for softmax)
         k: int (for sampling or beam search)
@@ -143,13 +145,13 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
     memory = transformer.encoder(input_embs, src_key_padding_mask=src_key_padding_mask)  # [input_len, bsz, dim]
 
     # Track which sequences have generated eos_id
-    rows_with_eos = utils.move_to_cuda(torch.zeros(bsz).long())
-    pad_ids = utils.move_to_cuda(torch.Tensor(bsz).fill_(PAD_ID)).long()
-    pad_prob = utils.move_to_cuda(torch.zeros(bsz, vocab_size))  # one hot for pad id
-    pad_prob[:, PAD_ID] = 1
+    rows_with_eos = nn_utils.move_to_cuda(torch.zeros(bsz).long())
+    pad_ids = nn_utils.move_to_cuda(torch.Tensor(bsz).fill_(pad_id)).long()
+    pad_prob = nn_utils.move_to_cuda(torch.zeros(bsz, vocab_size))  # one hot for pad id
+    pad_prob[:, pad_id] = 1
 
     # Generate
-    decoded_probs = utils.move_to_cuda(torch.zeros(bsz, max_len, vocab_size))
+    decoded_probs = nn_utils.move_to_cuda(torch.zeros(bsz, max_len, vocab_size))
     decoded_ids = init_ids
     for i in range(max_len):
         # pass through TransformerDecoder
@@ -167,12 +169,12 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
         logits = vocab_out_fc(dec_outputs)  # [cur_len, bsz, vocab]
         logits.transpose_(0,1)      # [bsz, cur_len, vocab]
         logits = logits[:,-1,:]  # last output; [bsz, vocab]
-        prob = utils.logits_to_prob(logits, tau=tau)  # [bsz, vocab]
-        prob, ids = utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
+        prob = nn_utils.logits_to_prob(logits, tau=tau)  # [bsz, vocab]
+        prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
         ids = ids[:,0]  # get top k
 
         # If sequence (row) has already produced an EOS_ID, replace id with pad (and the prob with pad_prob)
-        rows_with_eos = rows_with_eos | (ids == EOS_ID).long()
+        rows_with_eos = rows_with_eos | (ids == eos_id).long()
         prob = torch.where((rows_with_eos == 1).unsqueeze(1), pad_prob, prob)  # unsqueeze to broadcast
         ids = torch.where(rows_with_eos == 1, pad_ids, ids)
 
@@ -185,6 +187,7 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
             break
 
     # Remove initial input to decoder
+    # TODO: should this be here? decoded_probs and decoded_ids isn't init_len + max_len
     decoded_probs = decoded_probs[:, init_embs.size(1):, :]
     decoded_ids = decoded_ids[:, init_embs.size(1):]
 
@@ -195,7 +198,7 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
             tokens = []
             for j in range(decoded_ids.size(1)):
                 id = decoded_ids[i][j].item()
-                if id == EOS_ID:
+                if id == eos_id:
                     break
                 tokens.append(idx2token[id])
             text = ' '.join(tokens)

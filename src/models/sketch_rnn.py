@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 from src.models.train_nn import TrainNN, RUNS_PATH
 import src.utils as utils
+import src.models.nn_utils as nn_utils
 
 NPZ_DATA_PATH = 'data/quickdraw/npz/'
 
@@ -251,7 +252,7 @@ class EncoderRNN(nn.Module):
         if hidden_cell is None:
             hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
             cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
-            hidden, cell = utils.move_to_cuda(hidden), utils.move_to_cuda(cell)
+            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
         # Pass inputs, hidden, and cell into encoder's lstm
@@ -275,7 +276,7 @@ class EncoderRNN(nn.Module):
         # Turn sigma_hat vector into non-negative std parameter
         sigma = torch.exp(sigma_hat / 2.)
         N = torch.randn_like(sigma)
-        N = utils.move_to_cuda(N)
+        N = nn_utils.move_to_cuda(N)
         z = mu + sigma * N  # [bsz, z_dim]
 
         # Note we return sigma_hat, not sigma to be used in KL-loss (eq. 10)
@@ -332,7 +333,7 @@ class DecoderRNN(nn.Module):
         if hidden_cell is None:  # init
             hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
             cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            hidden, cell = utils.move_to_cuda(hidden), utils.move_to_cuda(cell)
+            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
         outputs, (hidden, cell) = self.lstm(inputs, hidden_cell)
@@ -429,14 +430,14 @@ class SketchRNN(TrainNN):
 
         # add eos
         eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
-        eos = utils.move_to_cuda(eos)
+        eos = nn_utils.move_to_cuda(eos)
         inputs = torch.cat([inputs, eos], 0)  # [max_len + 1, bsz, 5]
 
         # calculate mask for each sequence using lengths
         mask = torch.zeros(max_len + 1, bsz)
         for idx, length in enumerate(lengths):
             mask[:length, idx] = 1
-        mask = utils.move_to_cuda(mask)
+        mask = nn_utils.move_to_cuda(mask)
         mask = mask.detach()
         dx = torch.stack([inputs.data[:, :, 0]] * M, 2).detach()
         dy = torch.stack([inputs.data[:, :, 1]] * M, 2).detach()
@@ -458,7 +459,7 @@ class SketchRNN(TrainNN):
         """
         inputs, lengths = batch
         inputs = inputs.transpose(0, 1).float()  # Dataloader returns inputs in 1st dim, rest of code expects it to be 2nd
-        inputs = utils.move_to_cuda(inputs)
+        inputs = nn_utils.move_to_cuda(inputs)
         lengths = lengths.numpy().tolist()
         batch = (inputs, lengths)
         return batch
@@ -563,7 +564,7 @@ class SketchRNNDecoderOnly(SketchRNN):
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
-        sos = utils.move_to_cuda(sos)
+        sos = nn_utils.move_to_cuda(sos)
         dec_inputs = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
 
         # Decode
@@ -624,7 +625,7 @@ class SketchRNNVAE(SketchRNN):
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
-        sos = utils.move_to_cuda(sos)
+        sos = nn_utils.move_to_cuda(sos)
         inputs_init = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
         z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
         dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
@@ -670,7 +671,7 @@ class SketchRNNVAE(SketchRNN):
         LKL = -0.5 * torch.sum(1 + sigma_hat - mu ** 2 - torch.exp(sigma_hat)) \
               / float(bsz * z_dim)
         KL_min = torch.Tensor([KL_min])
-        KL_min = utils.move_to_cuda(KL_min)
+        KL_min = nn_utils.move_to_cuda(KL_min)
         KL_min = KL_min.detach()
 
         LKL = wKL * eta_step * torch.max(LKL, KL_min)
@@ -695,7 +696,7 @@ class SketchRNNVAE(SketchRNN):
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
-            sos = utils.move_to_cuda(sos)
+            sos = nn_utils.move_to_cuda(sos)
 
             # generate until end of sequence or maximum sequence length
             s = sos
@@ -788,7 +789,7 @@ class SketchRNNVAE(SketchRNN):
         next_state[0] = dx
         next_state[1] = dy
         next_state[q_idx + 2] = 1
-        next_state = utils.move_to_cuda(next_state)
+        next_state = nn_utils.move_to_cuda(next_state)
         s = next_state.view(1, 1, -1)
 
         pen_down = q_idx == 1  # TODO: isn't this pen up?
@@ -828,7 +829,7 @@ if __name__ == "__main__":
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
     # Add additional arguments to parser
     opt = parser.parse_args()
-    utils.setup_seeds()
+    nn_utils.setup_seeds()
 
     save_dir = os.path.join(RUNS_PATH, 'sketchrnn', run_name)
     utils.save_run_data(save_dir, hp)

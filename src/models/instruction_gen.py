@@ -18,6 +18,7 @@ from src.models.sketch_rnn import stroke3_to_stroke5, TrainNN
 from src.models.train_nn import TrainNN, RUNS_PATH
 from src.models.transformer_utils import *
 import src.utils as utils
+import src.models.nn_utils as nn_utils
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
 LABELED_PROGRESSION_PAIRS_VALID_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'valid.pkl')
@@ -52,7 +53,8 @@ class HParams():
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.use_pre_strokes = False
-        # dropout
+        self.model_type = 'rnn'  # 'rnn', 'transformer'
+        self.dropout = 0.2
 
         # inference
         self.decode_method = 'greedy'  # 'sample', 'greedy'
@@ -317,25 +319,33 @@ class InstructionRNN(TrainNN):
 
         # Model
         d_model = self.hp.dim
-        self.pos_enc = PositionalEncoder(d_model, max_seq_len=250)  # [1, max_seq_len, dim]  (1 for broadcasting with bsz)
-        self.strokes_input_fc = nn.Linear(5, d_model)
+        if self.hp.model_type == 'transformer':
+            self.strokes_input_fc = nn.Linear(5, d_model)
+            self.pos_enc = PositionalEncoder(d_model, max_seq_len=250)
+            self.transformer = nn.Transformer(
+                d_model=d_model, dim_feedforward=d_model * 4,
+                nhead=2,
+                activation='relu',
+                num_encoder_layers=self.hp.n_enc_layers,
+                num_decoder_layers=self.hp.n_dec_layers,
+                dropout=hp.dropout,
+            )
+            for p in self.transformer.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
+            self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
+
+        elif self.hp.model_type == 'rnn':
+            self.enc = nn.LSTM(5, d_model, self.hp.n_enc_layers, batch_first=False, dropout=self.hp.dropout)
+            self.dec = nn.LSTM(d_model, d_model, self.hp.n_dec_layers, batch_first=False, dropout=self.hp.dropout)
+            self.models.extend([self.enc, self.dec])
+
         self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, d_model)
-        self.transformer = nn.Transformer(
-            d_model=d_model, dim_feedforward=d_model * 4,
-            nhead=2,
-            activation='relu',
-            num_encoder_layers=self.hp.n_enc_layers,
-            num_decoder_layers=self.hp.n_dec_layers)
         self.vocab_out_fc = nn.Linear(d_model, self.tr_loader.dataset.vocab_size)
 
-        self.models = [self.pos_enc, self.strokes_input_fc, self.tokens_embedding, self.transformer, self.vocab_out_fc]
+        self.models.extend([self.tokens_embedding, self.vocab_out_fc])
         for model in self.models:
             model.cuda()
-
-        # init transformer
-        for p in self.transformer.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
 
         # Optimizers
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
@@ -357,9 +367,10 @@ class InstructionRNN(TrainNN):
         preprocessed = []
         for item in batch:
             if type(item) == torch.Tensor:
-                item = utils.move_to_cuda(item)
+                item = nn_utils.move_to_cuda(item)
             preprocessed.append(item)
         return preprocessed
+
 
     def one_forward_pass(self, batch):
         """
@@ -378,6 +389,42 @@ class InstructionRNN(TrainNN):
         
         :return: dict: 'loss': float Tensor must exist
         """
+        if self.hp.model_type == 'transformer':
+            return self.one_forward_pass_transformer(batch)
+        elif self.hp.model_type == 'rnn':
+            return self.one_forward_pass_rnn(batch)
+
+    def one_forward_pass_rnn(self, batch):
+        strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
+            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        bsz = strokes.size(0)
+
+        # Encode strokes
+        strokes.transpose_(0,1)  # [max_stroke_len, bsz, dim]
+        _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+        # assuming unidirectional:
+        # last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]
+
+        # Decode
+        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
+        texts_emb.transpose_(0,1)  # [max_text_len + 2, bsz, dim]
+        dec_outputs, _ = self.dec(texts_emb, (hidden, cell))  # [max_text_len + 2, bsz, dim]; h/c
+
+        # Compute logits and loss
+        logits = self.vocab_out_fc(dec_outputs)  # [max_text_len + 2, bsz, vocab]
+        logits = logits.transpose(0, 1)  # [bsz, max_text_len + 2, vocab]
+        logits = logits[:, :-1, :]  # [bsz, max_text_len + 1, vocab]; Last input is EOS, output would be EOS -> <token>. Should be ignored.
+        vocab_size = logits.size(-1)
+        text_indices_w_eos = text_indices_w_sos_eos[:, 1:]  # remove sos; [bsz, max_text_len + 1]
+        loss = F.cross_entropy(logits.reshape(-1, vocab_size),  # [bsz * max_text_len + 1, vocab]
+                               text_indices_w_eos.reshape(-1),  # [bsz * max_text_len + 1]
+                               ignore_index=PAD_ID)
+
+        result = {'loss': loss}
+
+        return result
+
+    def one_forward_pass_transformer(self, batch):
         strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
             texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
         bsz = strokes.size(0)
@@ -429,7 +476,68 @@ class InstructionRNN(TrainNN):
 
         return result
 
+
+
+    #
+    # End of epoch hook
+    #
     def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):
+        if self.hp.model_type == 'transformer':
+            self.end_of_epoch_hook_transformer(epoch, outputs_path, writer)
+        elif self.hp.model_type == 'rnn':
+            self.end_of_epoch_hook_rnn(epoch, outputs_path, writer)
+
+    def end_of_epoch_hook_rnn(self, epoch, outputs_path=None, writer=None):
+        for model in self.models:
+            model.eval()
+
+        with torch.no_grad():
+
+            # Generate texts on validation set
+            generated = []
+            for i, batch in enumerate(self.val_loader):
+                batch = self.preprocess_batch_from_data_loader(batch)
+                strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
+                    texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+                bsz = strokes.size(0)
+
+                # Encode
+                strokes.transpose_(0, 1)  # [max_stroke_len, bsz, dim]
+                _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+                # assuming unidirectional:
+                # last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]
+
+                # Create init input
+                init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
+
+                init_ids.transpose_(0,1)   # [1, bsz]
+                init_embs.transpose_(0,1)  # [1, bsz, dim]
+
+                decoded_probs, decoded_ids, decoded_texts = nn_utils.lstm_generate(
+                    self.dec, self.vocab_out_fc, self.tokens_embedding,
+                    init_ids=init_ids, hidden=hidden, cell=cell,
+                    pad_id=PAD_ID, eos_id=EOS_ID,
+                    max_len=25,
+                    decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
+                    idx2token=self.tr_loader.dataset.idx2token,
+                    )
+
+                for j, instruction in enumerate(texts):
+                    generated.append({
+                        'ground_truth': instruction,
+                        'generated': decoded_texts[j],
+                        'url': urls[j]
+                    })
+                    text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
+                        instruction, decoded_texts[j], urls[j])
+                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
+
+            out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
+            utils.save_file(generated, out_fp, verbose=True)
+
+
+    def end_of_epoch_hook_transformer(self, epoch, outputs_path=None, writer=None):
 
         for model in self.models:
             model.eval()
@@ -447,14 +555,15 @@ class InstructionRNN(TrainNN):
                 strokes_emb = self.strokes_input_fc(strokes)                    # [bsz, max_stroke_len, dim]
                 input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)    # [bsz, max_stroke_len, dim]
 
-                init_ids = utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
                 init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
-                decoded_probs, decoded_ids, decoded_texts = generate(
+
+                decoded_probs, decoded_ids, decoded_texts = transformer_generate(
                     # TODO: probably should just pass in strokes_input_fc as well..
                     self.transformer, self.vocab_out_fc, self.tokens_embedding, self.pos_enc,
                     input_embs=input_embs, input_lens=stroke_lens,
                     init_ids=init_ids, init_embs=init_embs,
-                    PAD_ID=PAD_ID, EOS_ID=EOS_ID,
+                    pad_id=PAD_ID, eos_id=EOS_ID,
                     max_len=100,
                     decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
                     idx2token=self.tr_loader.dataset.idx2token)
@@ -478,7 +587,7 @@ if __name__ == '__main__':
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
     # Add additional arguments to parser
     opt = parser.parse_args()
-    utils.setup_seeds()
+    nn_utils.setup_seeds()
 
     save_dir = os.path.join(RUNS_PATH, 'instructionrnn', run_name)
     utils.save_run_data(save_dir, hp)
