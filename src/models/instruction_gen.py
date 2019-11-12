@@ -51,12 +51,13 @@ class HParams():
         self.dim = 256
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.use_pre_strokes = True
+        self.use_pre_strokes = False
         # dropout
 
         # inference
         self.decode_method = 'greedy'  # 'sample', 'greedy'
         self.tau = 1.0  # sampling text
+        self.k = 5      # sampling text
 
 
 
@@ -315,27 +316,26 @@ class InstructionRNN(TrainNN):
         self.tr_loader, self.val_loader = self.get_data_loaders()
 
         # Model
-        d_model = self.hp.dim 
-        
+        d_model = self.hp.dim
         self.pos_enc = PositionalEncoder(d_model, max_seq_len=250)  # [1, max_seq_len, dim]  (1 for broadcasting with bsz)
         self.strokes_input_fc = nn.Linear(5, d_model)
         self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, d_model)
         self.transformer = nn.Transformer(
             d_model=d_model, dim_feedforward=d_model * 4,
             nhead=2,
-            activation='gelu',
+            activation='relu',
             num_encoder_layers=self.hp.n_enc_layers,
             num_decoder_layers=self.hp.n_dec_layers)
         self.vocab_out_fc = nn.Linear(d_model, self.tr_loader.dataset.vocab_size)
 
-        if USE_CUDA:
-            self.pos_enc.cuda()
-            self.strokes_input_fc.cuda()
-            self.tokens_embedding.cuda()
-            self.transformer.cuda()
-            self.vocab_out_fc.cuda()
-
         self.models = [self.pos_enc, self.strokes_input_fc, self.tokens_embedding, self.transformer, self.vocab_out_fc]
+        for model in self.models:
+            model.cuda()
+
+        # init transformer
+        for p in self.transformer.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
         # Optimizers
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
@@ -390,8 +390,8 @@ class InstructionRNN(TrainNN):
         # Encode decode with transformer
         #
         # Scaling and positional encoding
-        enc_inputs = scale_add_pos_emb(strokes_emb, self.pos_enc.pe)
-        dec_inputs = scale_add_pos_emb(texts_emb, self.pos_enc.pe)
+        enc_inputs = scale_add_pos_emb(strokes_emb, self.pos_enc)
+        dec_inputs = scale_add_pos_emb(texts_emb, self.pos_enc)
 
         # transpose because transformer expects length dimension first
         enc_inputs.transpose_(0, 1)  # [max_stroke_len, bsz, dim]
@@ -402,12 +402,14 @@ class InstructionRNN(TrainNN):
         tgt_mask = generate_square_subsequent_mask(dec_inputs.size(0))  # [max_text_len + 2, max_text_len + 2]
         dec_outputs = self.transformer(enc_inputs, dec_inputs, # [max_text_len + 2, bsz, dim]
                                        src_key_padding_mask=src_key_padding_mask,
-                                       # tgt_key_padding_mask=tgt_key_padding_mask,
-                                       #  TODO: why does adding this result in Nans? Technically don't need it anyway though probably given that we have tgt_mask?
+                                       # tgt_key_padding_mask=tgt_key_padding_mask, #  TODO: why does adding this result in Nans?
                                        memory_key_padding_mask=memory_key_padding_mask,
                                        tgt_mask=tgt_mask
                                        )
         # src_mask and memory_mask: don't think there should be one
+        if (dec_outputs != dec_outputs).any():
+            import pdb; pdb.set_trace()
+            return {'loss': dec_inputs.sum()}  # dummy for now
 
         #
         # Compute logits and loss
@@ -443,18 +445,18 @@ class InstructionRNN(TrainNN):
                 bsz = strokes.size(0)
 
                 strokes_emb = self.strokes_input_fc(strokes)                    # [bsz, max_stroke_len, dim]
-                input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc.pe)    # [bsz, max_stroke_len, dim]
+                input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)    # [bsz, max_stroke_len, dim]
 
                 init_ids = utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
                 init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
                 decoded_probs, decoded_ids, decoded_texts = generate(
                     # TODO: probably should just pass in strokes_input_fc as well..
-                    self.transformer, self.vocab_out_fc, self.tokens_embedding, self.pos_enc.pe,
+                    self.transformer, self.vocab_out_fc, self.tokens_embedding, self.pos_enc,
                     input_embs=input_embs, input_lens=stroke_lens,
                     init_ids=init_ids, init_embs=init_embs,
                     PAD_ID=PAD_ID, EOS_ID=EOS_ID,
                     max_len=100,
-                    decode_method=self.hp.decode_method, tau=self.hp.tau,
+                    decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
                     idx2token=self.tr_loader.dataset.idx2token)
 
                 for j, instruction in enumerate(texts):

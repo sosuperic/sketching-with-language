@@ -88,7 +88,7 @@ def logits_to_prob(logits, method='softmax',
         prob = F.softmax(logits / tau, dim=1)
     return prob
 
-def prob_to_vocab_id(prob, method, k=1):
+def prob_to_vocab_id(prob, method, k=10):
     """
     Produce vocab id given probability distribution over vocab
     Args:
@@ -108,9 +108,9 @@ def prob_to_vocab_id(prob, method, k=1):
         ids: [batch_size, k] LongTensor
     """
     if method == 'greedy':
-        _, ids = torch.topk(prob, k, dim=1)
+        _, ids = torch.topk(prob, 1, dim=1)
     elif method == 'sample':
-        raise NotImplementedError('Implement top-k sampling')
+        ids = torch.multinomial(prob, k)
     return prob, ids
 
 

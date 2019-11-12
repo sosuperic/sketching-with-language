@@ -91,7 +91,8 @@ class TrainNN(nn.Module):
             # optimization
             if is_train:
                 result['loss'].backward()
-                nn.utils.clip_grad_value_(self.parameters(), self.hp.grad_clip)
+                # nn.utils.clip_grad_value_(self.parameters(), self.hp.grad_clip)
+                nn.utils.clip_grad_norm_(self.parameters(), self.hp.grad_clip)
                 for optimizer in self.optimizers:
                     optimizer.step()
 

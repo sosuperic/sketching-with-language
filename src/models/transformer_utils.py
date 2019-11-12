@@ -13,29 +13,41 @@ Additional utils found here
 import math
 
 import torch
+import torch.nn as nn
 
 import src.utils as utils
 
 
-class PositionalEncoder(torch.nn.Module):
-    def __init__(self, d_model, max_seq_len=250):
-        super().__init__()
-        self.d_model = d_model
+class PositionalEncoder(nn.Module):
+
+    def __init__(self, d_model, max_seq_len=500, dropout=0.1):
+        super(PositionalEncoder, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
         pe = torch.zeros(max_seq_len, d_model)
-        for pos in range(max_seq_len):
-            for i in range(0, d_model, 2):
-                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i) / d_model)))
-                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1)) / d_model)))
-        pe = pe.unsqueeze(0)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0,1)  # [len, 1, dim]
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        with torch.no_grad():
-            x = x * math.sqrt(self.d_model)
-            seq_len = x.size(1)
-            pe = self.pe[:, :seq_len]
-            x = x + pe
-            return x
+        # x: [len, bsz, dim]
+        x = x + self.pe[:x.size(0), :, :]
+        return self.dropout(x)
+
+def scale_add_pos_emb(input_emb, pos_enc):
+    """
+    Scale input embs and add position encoding.
+
+    :param input_emb: [bsz, seq_len, dim]
+    :param pos_enc: [bsz, pos_len, dim] (pos_len must be greater than seq_len)
+    :return: [bsz, seq_len, dim]
+    """
+    input_emb *= math.sqrt(input_emb.size(-1))
+    input_emb += pos_enc(input_emb)
+    return input_emb
 
 def create_transformer_padding_masks(src_lens=None, tgt_lens=None):
     """
@@ -68,6 +80,7 @@ def create_transformer_padding_masks(src_lens=None, tgt_lens=None):
 
     # Tgt mask
     if tgt_lens is not None:
+        bsz = len(tgt_lens)
         max_tgt_len = max(tgt_lens)
         tgt_key_padding_mask = torch.zeros(bsz, max_tgt_len).bool()
         for i, seq_len in enumerate(tgt_lens):
@@ -84,30 +97,18 @@ def generate_square_subsequent_mask(size):
     The masked positions are filled with float('-inf').
     Unmasked positions are filled with float(0.0).
     """
-    mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)
+    mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)  # True's in lower left half
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     mask = utils.move_to_cuda(mask)
 
     return mask
-
-def scale_add_pos_emb(input_emb, pos_enc):
-    """
-    Scale input embs and add position encoding.
-    
-    :param input_emb: [bsz, seq_len, dim]
-    :param pos_enc: [bsz, pos_len, dim] (pos_len must be greater than seq_len)
-    :return: [bsz, seq_len, dim]
-    """
-    input_emb *= math.sqrt(input_emb.size(-1))
-    input_emb += pos_enc[:, :input_emb.size(1), :]
-    return input_emb
 
 def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
              input_embs=None, input_lens=None,
              init_ids=None, init_embs=None,
              PAD_ID=None, EOS_ID=None,
              max_len=100,
-             decode_method='sample', tau=1.0, k=1,
+             decode_method=None, tau=None, k=None,
              idx2token=None,
              ):
     """
@@ -117,6 +118,7 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
         transformer: nn.Transformer
         vocab_out_fc: module used to transform Transformer's decoder outputs to logits
         tokens_embedding: nn.Embedding(vocab, dim)
+        pos_enc: PositionalEncoder module
         input_embs: [bsz, input_len, dim]
         input_lens: list of ints
         init_ids: [bsz, init_len]  (e.g. SOS ids)
@@ -158,7 +160,8 @@ def generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
 
         dec_outputs = transformer.decoder(decoded_ids_emb, memory,  # dec_outputs = [cur_len, bsz, dim]
                                           tgt_mask=tgt_mask, # TODO: why does this affect it?
-                                          memory_key_padding_mask=memory_key_padding_mask)
+                                          memory_key_padding_mask=memory_key_padding_mask
+                                          )
 
         # Compute logits over vocab, use last output to get next token
         logits = vocab_out_fc(dec_outputs)  # [cur_len, bsz, vocab]
