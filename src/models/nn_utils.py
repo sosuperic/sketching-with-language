@@ -71,6 +71,7 @@ def prob_to_vocab_id(prob, method, k=10):
 
 def lstm_generate(lstm, vocab_out_fc, tokens_embedding,
                   init_ids=None, hidden=None, cell=None,
+                  condition_on_hc=True,
                   pad_id=None, eos_id=None,
                   max_len=100,
                   decode_method=None, tau=None, k=None,
@@ -87,6 +88,7 @@ def lstm_generate(lstm, vocab_out_fc, tokens_embedding,
         init_embs: [init_len, bsz, emb] (e.g. embedded SOS ids)
         hidden: [layers * direc, bsz, dim]
         cell: [layers * direc, bsz, dim]
+        condition_on_hc: bool (condition on hidden and cell every time step)
         EOS_ID: int (id for EOS_ID token)
         decode_method: str (how to sample words given probabilities; 'greedy', 'sample')
         tau: float (temperature for softmax)
@@ -113,6 +115,10 @@ def lstm_generate(lstm, vocab_out_fc, tokens_embedding,
     cur_input_id = init_ids
     for t in range(max_len):
         cur_input_emb = tokens_embedding(cur_input_id)  # [1, bsz, dim]
+        if condition_on_hc:
+            last_hc = hidden[-1,:,:] + cell[-1,:,:]  # [bsz, dim]
+            last_hc = last_hc.unsqueeze(0)  # [1, bsz, dim]
+            cur_input_emb = torch.cat([cur_input_emb, last_hc], dim=2)  # [1, bsz, dim * 2]
         dec_outputs, (hidden, cell) = lstm(cur_input_emb, (hidden, cell))  # [cur_len, bsz, dim]; h/c
 
         # Compute logits over vocab, use last output to get next token

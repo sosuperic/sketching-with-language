@@ -54,6 +54,7 @@ class HParams():
         self.n_dec_layers = 4
         self.use_pre_strokes = False
         self.model_type = 'rnn'  # 'rnn', 'transformer'
+        self.condition_on_hc = True  # With 'rnn', input to decoder also contains last hidden cell
         self.dropout = 0.2
 
         # inference
@@ -337,7 +338,7 @@ class InstructionRNN(TrainNN):
 
         elif self.hp.model_type == 'rnn':
             self.enc = nn.LSTM(5, d_model, self.hp.n_enc_layers, batch_first=False, dropout=self.hp.dropout)
-            self.dec = nn.LSTM(d_model, d_model, self.hp.n_dec_layers, batch_first=False, dropout=self.hp.dropout)
+            self.dec = nn.LSTM(d_model * 2, d_model, self.hp.n_dec_layers, batch_first=False, dropout=self.hp.dropout)
             self.models.extend([self.enc, self.dec])
 
         self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, d_model)
@@ -402,13 +403,21 @@ class InstructionRNN(TrainNN):
         # Encode strokes
         strokes.transpose_(0,1)  # [max_stroke_len, bsz, dim]
         _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-        # assuming unidirectional:
-        # last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]
+        # assuming unidirectional:)
 
         # Decode
         texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
         texts_emb.transpose_(0,1)  # [max_text_len + 2, bsz, dim]
-        dec_outputs, _ = self.dec(texts_emb, (hidden, cell))  # [max_text_len + 2, bsz, dim]; h/c
+
+        if self.hp.condition_on_hc:
+            # combine last hidden and cell, repeat along time dimension, and concatenate with encoded texts
+            last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]  # last = [bsz, dim]
+            last_hc = (last_hidden + last_cell).unsqueeze(0)  # [1, bsz, dim]
+            last_hc = last_hc.repeat(texts_emb.size(0), 1, 1)  # [max_text_len + 2, bsz, dim]
+            dec_inputs_emb = torch.cat([texts_emb, last_hc], dim=2)  # [max_text_len + 2, bsz, dim * 2]
+        else:
+            dec_inputs_emb = texts_emb
+        dec_outputs, _ = self.dec(dec_inputs_emb, (hidden, cell))  # [max_text_len + 2, bsz, dim]; h/c
 
         # Compute logits and loss
         logits = self.vocab_out_fc(dec_outputs)  # [max_text_len + 2, bsz, vocab]
@@ -516,7 +525,7 @@ class InstructionRNN(TrainNN):
 
                 decoded_probs, decoded_ids, decoded_texts = nn_utils.lstm_generate(
                     self.dec, self.vocab_out_fc, self.tokens_embedding,
-                    init_ids=init_ids, hidden=hidden, cell=cell,
+                    init_ids=init_ids, hidden=hidden, cell=cell, condition_on_hc=self.hp.condition_on_hc,
                     pad_id=PAD_ID, eos_id=EOS_ID,
                     max_len=25,
                     decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
