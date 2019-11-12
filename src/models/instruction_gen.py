@@ -14,18 +14,19 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
 from src.data_manager.quickdraw import LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH
-from src.models.sketch_rnn import normalize_data, calculate_normalizing_scale_factor, stroke3_to_stroke5, TrainNN
+from src.models.sketch_rnn import stroke3_to_stroke5, TrainNN
 from src.models.train_nn import TrainNN, RUNS_PATH
+from src.models.transformer_utils import *
 import src.utils as utils
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
 LABELED_PROGRESSION_PAIRS_VALID_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'valid.pkl')
 LABELED_PROGRESSION_PAIRS_TEST_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'test.pkl')
 
-LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2token.json')
-LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'token2idx.json')
-LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2cat.json')
-LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'cat2idx.json')
+LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2token.pkl')
+LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'token2idx.pkl')
+LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2cat.pkl')
+LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'cat2idx.pkl')
 
 
 USE_CUDA = torch.cuda.is_available()
@@ -52,6 +53,11 @@ class HParams():
         self.n_dec_layers = 4
         # dropout
 
+        # inference
+        self.decode_method = 'greedy'  # 'sample', 'greedy'
+        self.tau = 1.0  # sampling text
+
+
 
 ##############################################################################
 #
@@ -59,7 +65,7 @@ class HParams():
 #
 ##############################################################################
 
-PAD, OOV, EOS, SOS = 0, 1, 2, 3  # TODO: this should be a part of dataset maybe?
+PAD_ID, OOV_ID, EOS_ID, SOS_ID = 0, 1, 2, 3  # TODO: this should be a part of dataset maybe?
 
 def normalize(sentence):
     """Tokenize"""
@@ -78,7 +84,7 @@ def build_vocab(data):
             tokens.add(token)
 
     idx2token = {}
-    tokens = [OOV, EOS, SOS] + list(tokens)
+    tokens = ['PAD', 'OOV', 'EOS', 'SOS'] + list(tokens)
     for i, token in enumerate(tokens):
         idx2token[i] = token
     token2idx = {v:k for k, v in idx2token.items()}
@@ -145,30 +151,55 @@ def save_progression_pair_dataset_splits_and_vocab():
         utils.save_file(data, fp)
 
 def map_str_to_index(s, token2idx):
-    return [token2idx[tok] for tok in normalize(s)]
+    return [int(token2idx[tok]) for tok in normalize(s)]
 
 
 def normalize_data(data):
     """
     Normalize entire dataset (delta_x, delta_y) by the scaling factor.
 
-    :param: data is list of dicts
+    :param data: list of dicts
     """
     scale_factor = calculate_normalizing_scale_factor(data)
-    normalized = []
-    for seq in data:
-        seq[:, 0:2] /= scale_factor
-        normalized.append(seq)
-    return normalized
+    normalized_data = []
+    for sample in data:
+        stroke3_seg = sample['stroke3_segment']
+        stroke3 = sample['stroke3']
+        stroke3_seg[:, 0:2] /= scale_factor
+        stroke3[:, 0:2] /= scale_factor
+        sample['stroke3_segment'] = stroke3_seg
+        sample['stroke3'] = stroke3
+        normalized_data.append(sample)
+    return normalized_data
+
+def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_factor() in sketch_rnn/utils.py
+    """
+    Calculate the normalizing factor in Appendix of paper
+
+    :param data: list of dicts
+    """
+    deltas = []
+    for sample in data:
+        stroke = sample['stroke3_segment']
+        for j in range(stroke.shape[0]):
+            deltas.append(stroke[j][0])
+            deltas.append(stroke[j][1])
+    deltas = np.array(deltas)
+    scale_factor = np.std(deltas)
+    return scale_factor
 
 
 class ProgressionPairDataset(Dataset):
-    def __init__(self, dataset_split):
+    def __init__(self, dataset_split, remove_question_marks=False):
         """
         
-        :param split_data: list of dicts
+        Args:
+            dataset_split: str
+            remove_question_marks: bool (whether to remove samples where annotation was '?')
         """
         super().__init__()
+        self.dataset_split = dataset_split
+        self.remove_quesiton_marks = remove_question_marks
 
         # Get data
         fp = None
@@ -182,6 +213,13 @@ class ProgressionPairDataset(Dataset):
             save_progression_pair_dataset_splits_and_vocab()
         data = utils.load_file(fp)
 
+        if remove_question_marks:
+            new_data = []
+            for sample in data:
+                if sample['annotation'] != '?':
+                    new_data.append(sample)
+            data = new_data
+
         # Load vocab and category mappings
         self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
@@ -190,11 +228,7 @@ class ProgressionPairDataset(Dataset):
         self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
         self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
 
-        # TODO: need to modify normalize_data because data in sketch_rnn is stroke-5 format,
-        # here split_data is a list of dicts with stroke3_
-        # TODO: Do we use the normalizing scale factor for the entire sketch dataset or calculated just on this annotated data?
-        # self.data = normalize_data(data)
-        self.data = data
+        self.data = normalize_data(data)
 
     def __len__(self):
         return len(self.data)
@@ -202,18 +236,18 @@ class ProgressionPairDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         stroke3_seg = sample['stroke3_segment']
-
-        # TODO: why do we even need stroke5 format
         stroke5_seg = stroke3_to_stroke5(stroke3_seg, len(stroke3_seg))
-        # TODO: is just passing the length okay for max_len? we'll do the batching manually
 
         text = sample['annotation']
         text_indices = map_str_to_index(text, self.token2idx)
 
+        text_indices = [SOS_ID] + text_indices + [EOS_ID]
+
         cat = sample['category']
         cat_idx = self.cat2idx[cat]
+        url = sample['url']
 
-        return (stroke5_seg, text, text_indices, cat, cat_idx)
+        return (stroke5_seg, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn(batch):
@@ -222,7 +256,7 @@ class ProgressionPairDataset(Dataset):
         
         :param: batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        strokes, texts, texts_indices, cats, cats_idx = zip(*batch)
+        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
@@ -246,82 +280,7 @@ class ProgressionPairDataset(Dataset):
         batch_strokes = torch.FloatTensor(batch_strokes)
         batch_text_indices = torch.LongTensor(batch_text_indices)
 
-        return batch_strokes, stroke_lens, texts, text_lens, batch_text_indices, cats, cats_idx
-
-
-
-
-##############################################################################
-#
-# Transformers
-# https://pytorch.org/docs/stable/_modules/torch/nn/modules/transformer.html
-#
-##############################################################################
-
-import math
-class PositionalEncoder(torch.nn.Module):
-    def __init__(self, d_model, max_seq_len=250):
-        super().__init__()
-        self.d_model = d_model
-        pe = torch.zeros(max_seq_len, d_model)
-        for pos in range(max_seq_len):
-            for i in range(0, d_model, 2):
-                pe[pos, i] =  math.sin(pos / (10000 ** ((2 * i) / d_model)))
-                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1)) / d_model)))
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        with torch.no_grad():
-            x = x * math.sqrt(self.d_model)
-            seq_len = x.size(1)
-            pe = self.pe[:, :seq_len]
-            x = x + pe
-            return x
-
-def create_transformer_padding_masks(src_lens, tgt_lens):
-    """
-    Return ByteTensors where a true value means value should be ignored. Used to handle variable length
-    sequences within a batch.
-    
-    :param src_lens: list of length bsz
-    :param tgt_lens: list of length bsz
-    :return:
-        src_key_padding_mask: [bsz, max_src_len] ByteTensor
-        tgt_key_padding_mask: [bsz, max_tgt_len] ByteTensor
-        memory_key_padding_mask: [bsz, max_src_len] ByteTensor
-    """
-    bsz = len(src_lens)
-    max_src_len = max(src_lens)
-    src_key_padding_mask = torch.zeros(bsz, max_src_len).bool()
-    for i, seq_len in enumerate(src_lens):
-        src_key_padding_mask[i,seq_len:] = 1
-
-    max_tgt_len = max(tgt_lens)
-    tgt_key_padding_mask = torch.zeros(bsz, max_tgt_len).bool()
-    for i, seq_len in enumerate(tgt_lens):
-        tgt_key_padding_mask[i,seq_len:] = 1
-
-    memory_key_padding_mask = src_key_padding_mask
-
-    src_key_padding_mask = utils.move_to_cuda(src_key_padding_mask)
-    tgt_key_padding_mask = utils.move_to_cuda(tgt_key_padding_mask)
-    memory_key_padding_mask = utils.move_to_cuda(memory_key_padding_mask)
-
-    return src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask
-
-def generate_square_subsequent_mask(size):
-    """
-    Generate a square mask for the sequence that prevents attending to items in the future.
-    
-    The masked positions are filled with float('-inf').
-    Unmasked positions are filled with float(0.0).
-    """
-    mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)
-    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-    mask = utils.move_to_cuda(mask)
-
-    return mask
+        return batch_strokes, stroke_lens, texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
 
 
@@ -344,21 +303,24 @@ class InstructionRNN(TrainNN):
         self.pos_enc = PositionalEncoder(d_model, max_seq_len=250)  # [1, max_seq_len, dim]  (1 for broadcasting with bsz)
         self.strokes_input_fc = nn.Linear(5, d_model)
         self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, d_model)
-        self.enc_dec = nn.Transformer(d_model=d_model, dim_feedforward=d_model * 4,
-                                     nhead=2,
-                                     activation='gelu',
-                                     num_encoder_layers=self.hp.n_enc_layers,
-                                     num_decoder_layers=self.hp.n_dec_layers)
+        self.transformer = nn.Transformer(
+            d_model=d_model, dim_feedforward=d_model * 4,
+            nhead=2,
+            activation='gelu',
+            num_encoder_layers=self.hp.n_enc_layers,
+            num_decoder_layers=self.hp.n_dec_layers)
         self.vocab_out_fc = nn.Linear(d_model, self.tr_loader.dataset.vocab_size)
 
         if USE_CUDA:
             self.pos_enc.cuda()
             self.strokes_input_fc.cuda()
             self.tokens_embedding.cuda()
-            self.enc_dec.cuda()
+            self.transformer.cuda()
             self.vocab_out_fc.cuda()
 
-        # Optimizezrs
+        self.models = [self.pos_enc, self.strokes_input_fc, self.tokens_embedding, self.transformer, self.vocab_out_fc]
+
+        # Optimizers
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
     #
@@ -375,10 +337,10 @@ class InstructionRNN(TrainNN):
 
     def preprocess_batch_from_data_loader(self, batch):
         """Convert tensors to cuda"""
-        strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx = batch
+        strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls = batch
         strokes = utils.move_to_cuda(strokes)
         text_indices = utils.move_to_cuda(text_indices)
-        batch = (strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx)
+        batch = (strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls)
         return batch
 
     def one_forward_pass(self, batch):
@@ -396,21 +358,19 @@ class InstructionRNN(TrainNN):
         
         :return: dict: 'loss': float Tensor must exist
         """
-        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx = batch
+        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
         bsz = strokes.size(0)
 
         # Embed strokes and text
-        stroke_emb = self.strokes_input_fc(strokes)                   # [bsz, max_stroke_len, dim]
-        text_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
+        strokes_emb = self.strokes_input_fc(strokes)                   # [bsz, max_stroke_len, dim]
+        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
 
         #
         # Encode decode with transformer
         #
         # Scaling and positional encoding
-        enc_inputs = stroke_emb * math.sqrt(self.hp.dim)
-        dec_inputs = text_emb * math.sqrt(self.hp.dim)
-        enc_inputs += self.pos_enc.pe[:,:enc_inputs.size(1),:]
-        dec_inputs += self.pos_enc.pe[:,:dec_inputs.size(1),:]
+        enc_inputs = scale_add_pos_emb(strokes_emb, self.pos_enc.pe)
+        dec_inputs = scale_add_pos_emb(texts_emb, self.pos_enc.pe)
 
         # transpose because transformer expects length dimension first
         enc_inputs.transpose_(0, 1)  # [max_stroke_len, bsz, dim]
@@ -420,13 +380,13 @@ class InstructionRNN(TrainNN):
             create_transformer_padding_masks(stroke_lens, text_lens)
         tgt_mask = generate_square_subsequent_mask(dec_inputs.size(0))  # [max_text_len + 2, max_text_len + 2]
 
-        dec_outputs = self.enc_dec(enc_inputs, dec_inputs,  # [max_text_len + 2, bsz, dim]
-                                   src_key_padding_mask=src_key_padding_mask,
-                                   # tgt_key_padding_mask=tgt_key_padding_mask,
-                                   #  TODO: why does adding this result in Nans? Technically don't need it anyway though probably given that we have tgt_mask?
-                                   memory_key_padding_mask=memory_key_padding_mask,
-                                   tgt_mask=tgt_mask
-                                   )
+        dec_outputs = self.transformer(enc_inputs, dec_inputs, # [max_text_len + 2, bsz, dim]
+                                       src_key_padding_mask=src_key_padding_mask,
+                                       # tgt_key_padding_mask=tgt_key_padding_mask,
+                                       #  TODO: why does adding this result in Nans? Technically don't need it anyway though probably given that we have tgt_mask?
+                                       memory_key_padding_mask=memory_key_padding_mask,
+                                       tgt_mask=tgt_mask
+                                       )
         # src_mask and memory_mask: don't think there should be one
 
         #
@@ -435,17 +395,59 @@ class InstructionRNN(TrainNN):
         logits = self.vocab_out_fc(dec_outputs)  # [max_text_len + 2, bsz, vocab]
 
         logits = logits.transpose(0,1)  # [bsz, max_text_len + 2, vocab]
-        logits = logits[:,:-1,:]  # Last input is EOS, output would be EOS -> <token>. Should be ignored.
+        logits = logits[:,:-1,:]  # [bsz, max_text_len + 1, vocab]; Last input is EOS, output would be EOS -> <token>. Should be ignored.
         vocab_size = logits.size(-1)
         text_indices_w_eos = text_indices_w_sos_eos[:,1:]  # remove sos; [bsz, max_text_len + 1]
 
         loss = F.cross_entropy(logits.reshape(-1, vocab_size),  # [bsz * max_text_len + 1, vocab]
                                text_indices_w_eos.reshape(-1),  # [bsz * max_text_len + 1]
-                               ignore_index=PAD)  # TODO: is ignore_index enough for masking loss value?
+                               ignore_index=PAD_ID)  # TODO: is ignore_index enough for masking loss value?
 
         result = {'loss': loss}
 
         return result
+
+    def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):
+
+        for model in self.models:
+            model.eval()
+
+        with torch.no_grad():
+
+            # Generate texts on validation set
+            generated = []
+            for i, batch in enumerate(self.val_loader):
+                batch = self.preprocess_batch_from_data_loader(batch)
+                strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+                bsz = strokes.size(0)
+
+                strokes_emb = self.strokes_input_fc(strokes)                    # [bsz, max_stroke_len, dim]
+                input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc.pe)    # [bsz, max_stroke_len, dim]
+
+                init_ids = utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
+                decoded_probs, decoded_ids, decoded_texts = generate(
+                    # TODO: probably should just pass in strokes_input_fc as well..
+                    self.transformer, self.vocab_out_fc, self.tokens_embedding, self.pos_enc.pe,
+                    input_embs=input_embs, input_lens=stroke_lens,
+                    init_ids=init_ids, init_embs=init_embs,
+                    PAD_ID=PAD_ID, EOS_ID=EOS_ID,
+                    max_len=100,
+                    decode_method=self.hp.decode_method, tau=self.hp.tau,
+                    idx2token=self.tr_loader.dataset.idx2token)
+
+                for j, instruction in enumerate(texts):
+                    generated.append({
+                        'ground_truth': instruction,
+                        'generated': decoded_texts[j],
+                        'url': urls[j]
+                    })
+                    text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
+                        instruction, decoded_texts[j], urls[j])
+                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
+
+            out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
+            utils.save_file(generated, out_fp, verbose=True)
 
 
 if __name__ == '__main__':
@@ -460,3 +462,11 @@ if __name__ == '__main__':
 
     model = InstructionRNN(hp, save_dir)
     model.train_loop()
+
+    # val_dataset = ProgressionPairDataset('valid')
+    # val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False,
+    #                         collate_fn=ProgressionPairDataset.collate_fn)
+    # idx2token = val_loader.dataset.idx2token
+    # for batch in val_loader:
+    #     strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+    #     import pdb; pdb.set_trace()

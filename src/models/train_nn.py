@@ -26,7 +26,6 @@ class TrainNN(nn.Module):
 
     def __init__(self, hp, save_dir):
         super().__init__()
-
         self.hp = hp
         self.save_dir = save_dir
 
@@ -35,6 +34,8 @@ class TrainNN(nn.Module):
 
         self.tr_loader = None
         self.val_loader = None
+
+        self.writer = None
 
     def get_data_loader(self):
         pass
@@ -120,7 +121,7 @@ class TrainNN(nn.Module):
         tb_path = os.path.join(self.save_dir, 'tensorboard')
         outputs_path = os.path.join(self.save_dir, 'outputs')
         os.makedirs(outputs_path)
-        writer = SummaryWriter(tb_path)
+        self.writer = SummaryWriter(tb_path)
         stdout_fp = os.path.join(self.save_dir, 'stdout.txt')
         stdout_f = open(stdout_fp, 'w')
         model_fp = os.path.join(self.save_dir, 'model.pt')
@@ -135,7 +136,7 @@ class TrainNN(nn.Module):
             start_time = time.time()
             for model in self.models:
                 model.train()
-            mean_losses = self.dataset_loop(self.tr_loader, epoch, is_train=True, writer=writer, tb_tag='train')
+            mean_losses = self.dataset_loop(self.tr_loader, epoch, is_train=True, writer=self.writer, tb_tag='train')
             end_time = time.time()
             min_elapsed = (end_time - start_time) / 60
             log_str = self.get_log_str(epoch, 'train', mean_losses, runtime=min_elapsed)
@@ -148,7 +149,7 @@ class TrainNN(nn.Module):
             # validate
             for model in self.models:
                 model.eval()
-            mean_losses = self.dataset_loop(self.val_loader, epoch, is_train=False, writer=writer, tb_tag='valid')
+            mean_losses = self.dataset_loop(self.val_loader, epoch, is_train=False, writer=self.writer, tb_tag='valid')
             val_loss = mean_losses['loss']
             val_losses.append(val_loss)
             log_str = self.get_log_str(epoch, 'valid', mean_losses)
@@ -156,7 +157,7 @@ class TrainNN(nn.Module):
             stdout_f.flush()
 
             # Generate sequence to save image and show progress
-            self.end_of_epoch_hook(epoch, outputs_path=outputs_path)
+            self.end_of_epoch_hook(epoch, outputs_path=outputs_path, writer=self.writer)
 
             # Save best model
             if val_loss < min_val_loss:
@@ -182,5 +183,5 @@ class TrainNN(nn.Module):
 
         stdout_f.close()
 
-    def end_of_epoch_hook(self, epoch, outputs_path=None):  # TODO: is this how to use **kwargs
+    def end_of_epoch_hook(self, epoch, outputs_path=None):
         pass

@@ -470,7 +470,7 @@ class SketchRNN(TrainNN):
     def pre_forward_train_hook(self):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
 
-    def end_of_epoch_hook(self, epoch, outputs_path=None):  # TODO: is this how to use **kwargs
+    def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
         self.save_generation(self.gen_data_loader, epoch, n_gens=1, outputs_path=outputs_path)
 
     def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
@@ -507,6 +507,7 @@ class SketchRNN(TrainNN):
         # and predicted categorical distribution q)
         # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
         LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
+        #  TODO: check arguments for above BCE
 
         return LS + LP
 
