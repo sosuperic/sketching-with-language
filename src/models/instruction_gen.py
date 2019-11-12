@@ -52,9 +52,9 @@ class HParams():
         self.dim = 256
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.use_pre_strokes = False
-        self.model_type = 'rnn'  # 'rnn', 'transformer'
-        self.condition_on_hc = True  # With 'rnn', input to decoder also contains last hidden cell
+        self.use_prestrokes = False
+        self.model_type = 'lstm'  # 'lstm', 'transformer'
+        self.condition_on_hc = True  # With 'lstm', input to decoder also contains last hidden cell
         self.dropout = 0.2
 
         # inference
@@ -311,24 +311,163 @@ class ProgressionPairDataset(Dataset):
 #
 ##############################################################################
 
+class InstructionDecoderLSTM(nn.Module):
+    def __init__(self,
+                 input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
+                 condition_on_hc=False, use_prestrokes=False):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim,
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.batch_first = batch_first
+        self.condition_on_hc = condition_on_hc
+        self.use_prestrokes = use_prestrokes
 
-class InstructionRNN(TrainNN):
+        self.lstm =  nn.LSTM(input_dim, hidden_dim,
+                             num_layers=num_layers, dropout=dropout, batch_first= batch_first)
+
+    def forward(self, texts_emb, hidden=None, cell=None, tokens_embedding=None):
+        """
+        Args:
+            texts_emb: [len, bsz, dim] FloatTensor
+            hidden: [n_layers * n_directions, bsz, dim]  FloatTensor
+            cell: [n_layers * n_directions, bsz, dim] FloatTensor
+            tokens_embedding: nn.Embedding(vocab, dim)
+            
+        Returns:
+            outputs:
+                if tokens_embedding is None: [len, bsz, dim] FloatTensor 
+                else: [len, bsz, vocab] FloatTensor 
+            hidden: [n_layers * n_directions, bsz, dim]
+            cell: [n_layers * n_directions, bsz, dim] FloatTensor
+        """
+
+        # Condition on last layer's hidden and cell on every time step
+        if self.condition_on_hc:
+            # combine last hidden and cell, repeat along time dimension, and concatenate with encoded texts
+            last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]  # last = [bsz, dim]
+            last_hc = (last_hidden + last_cell).unsqueeze(0)  # [1, bsz, dim]
+            last_hc = last_hc.repeat(texts_emb.size(0), 1, 1)  # [len, bsz, dim]
+            inputs_emb = torch.cat([texts_emb, last_hc], dim=2)  # [len, bsz, dim * 2]
+        else:
+            inputs_emb = texts_emb
+
+        outputs, (hidden, cell) = self.lstm(inputs_emb, (hidden, cell))
+        # [max_text_len + 2, bsz, dim]; h/c = [n_layers * n_directions, bsz, dim]
+
+        if tokens_embedding is not None:
+            outputs = torch.matmul(outputs, tokens_embedding.weight.t())  # [len, bsz, vocab]
+
+        return outputs, (hidden, cell)
+
+    def generate(self, tokens_embedding,
+                 init_ids=None, hidden=None, cell=None,
+                 pad_id=None, eos_id=None,
+                 max_len=100,
+                 decode_method=None, tau=None, k=None,
+                 idx2token=None,
+                 ):
+        """
+        Decode up to max_len symbols by feeding previous output as next input.
+
+        Args:
+            lstm: nn.LSTM
+            tokens_embedding: nn.Embedding(vocab, dim)
+            init_ids:   # [init_len, bsz]
+            init_embs: [init_len, bsz, emb] (e.g. embedded SOS ids)
+            hidden: [layers * direc, bsz, dim]
+            cell: [layers * direc, bsz, dim]
+            condition_on_hc: bool (condition on hidden and cell every time step)
+            EOS_ID: int (id for EOS_ID token)
+            decode_method: str (how to sample words given probabilities; 'greedy', 'sample')
+            tau: float (temperature for softmax)
+            k: int (for sampling or beam search)
+            idx2token: dict
+
+       Returns:
+            decoded_probs: [bsz, max_len, vocab]
+            decoded_ids: [bsz, max_len]
+            decoded_texts: list of strs
+        """
+        init_len, bsz = init_ids.size()
+        vocab_size = len(idx2token)
+
+        # Track which sequences have generated eos_id
+        rows_with_eos = nn_utils.move_to_cuda(torch.zeros(bsz).long())
+        pad_ids = nn_utils.move_to_cuda(torch.Tensor(bsz).fill_(pad_id)).long()
+        pad_prob = nn_utils.move_to_cuda(torch.zeros(bsz, vocab_size))  # one hot for pad id
+        pad_prob[:, pad_id] = 1
+
+        # Generate
+        decoded_probs = nn_utils.move_to_cuda(torch.zeros(bsz, max_len, vocab_size))  #
+        decoded_ids = nn_utils.move_to_cuda(torch.zeros(bsz, max_len).long())  # [bsz, max_len]
+        cur_input_id = init_ids
+        for t in range(max_len):
+            cur_input_emb = tokens_embedding(cur_input_id)  # [1, bsz, dim]
+            if self.condition_on_hc:
+                last_hc = hidden[-1, :, :] + cell[-1, :, :]  # [bsz, dim]
+                last_hc = last_hc.unsqueeze(0)  # [1, bsz, dim]
+                cur_input_emb = torch.cat([cur_input_emb, last_hc], dim=2)  # [1, bsz, dim * 2]
+            dec_outputs, (hidden, cell) = self.lstm(cur_input_emb, (hidden, cell))  # [cur_len, bsz, dim]; h/c
+
+            # Compute logits over vocab, use last output to get next token
+            # TODO: can we use self.forward
+            logits = torch.matmul(dec_outputs, tokens_embedding.weight.t())  # [cur_len, bsz, vocab]
+            logits.transpose_(0, 1)  # [bsz, cur_len, vocab]
+            logits = logits[:, -1, :]  # last output; [bsz, vocab]
+            prob = nn_utils.logits_to_prob(logits, tau=tau)  # [bsz, vocab]
+            prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
+            ids = ids[:, 0]  # get top k; [bsz]
+
+            # If sequence (row) has already produced an eos_id, replace id with pad (and the prob with pad_prob)
+            rows_with_eos = rows_with_eos | (ids == eos_id).long()
+            prob = torch.where((rows_with_eos == 1).unsqueeze(1), pad_prob, prob)  # unsqueeze to broadcast
+            ids = torch.where(rows_with_eos == 1, pad_ids, ids)
+
+            # Update generated sequence so far
+            decoded_probs[:, t, :] = prob
+            decoded_ids[:, t] = ids
+
+            cur_input_id = ids.unsqueeze(0)  # [1, bsz]
+
+            # Terminate early if all sequences have generated eos
+            if rows_with_eos.sum().item() == bsz:
+                break
+
+        # TODO: sort out init wonkiness
+        # Remove initial input to decoder
+        # decoded_probs = decoded_probs[:, init_embs.size(1):, :]
+        # decoded_ids = decoded_ids[:, init_embs.size(1):]
+
+        # Convert to strings
+        decoded_texts = []
+        if idx2token is not None:
+            for i in range(bsz):
+                tokens = []
+                for j in range(decoded_ids.size(1)):
+                    id = decoded_ids[i][j].item()
+                    if id == eos_id:
+                        break
+                    tokens.append(idx2token[id])
+                text = ' '.join(tokens)
+                decoded_texts.append(text)
+
+        return decoded_probs, decoded_ids, decoded_texts
+
+class StrokeToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
 
         self.tr_loader, self.val_loader = self.get_data_loaders()
 
         # Model
-        d_model = self.hp.dim
         if self.hp.model_type == 'transformer':
-            self.strokes_input_fc = nn.Linear(5, d_model)
-            self.pos_enc = PositionalEncoder(d_model, max_seq_len=250)
+            self.strokes_input_fc = nn.Linear(5, self.hp.dim)
+            self.pos_enc = PositionalEncoder(self.hp.dim, max_seq_len=250)
             self.transformer = nn.Transformer(
-                d_model=d_model, dim_feedforward=d_model * 4,
-                nhead=2,
-                activation='relu',
-                num_encoder_layers=self.hp.n_enc_layers,
-                num_decoder_layers=self.hp.n_dec_layers,
+                d_model=self.hp.dim, dim_feedforward=self.hp.dim * 4, nhead=2, activation='relu',
+                num_encoder_layers=self.hp.n_enc_layers, num_decoder_layers=self.hp.n_dec_layers,
                 dropout=hp.dropout,
             )
             for p in self.transformer.parameters():
@@ -336,15 +475,18 @@ class InstructionRNN(TrainNN):
                     nn.init.xavier_uniform_(p)
             self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
 
-        elif self.hp.model_type == 'rnn':
-            self.enc = nn.LSTM(5, d_model, self.hp.n_enc_layers, batch_first=False, dropout=self.hp.dropout)
-            self.dec = nn.LSTM(d_model * 2, d_model, self.hp.n_dec_layers, batch_first=False, dropout=self.hp.dropout)
+        elif self.hp.model_type == 'lstm':
+            self.enc = nn.LSTM(5, self.hp.dim, self.hp.n_enc_layers, dropout=self.hp.dropout, batch_first=False)
+            dec_input_dim = self.hp.dim * 2 if self.hp.condition_on_hc else self.hp.dim
+            self.dec = InstructionDecoderLSTM(
+                dec_input_dim, self.hp.dim, num_layers=self.hp.n_dec_layers,
+                dropout=self.hp.dropout, batch_first=False,
+                condition_on_hc=self.hp.condition_on_hc, use_prestrokes=self.hp.use_prestrokes)
             self.models.extend([self.enc, self.dec])
 
-        self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, d_model)
-        self.vocab_out_fc = nn.Linear(d_model, self.tr_loader.dataset.vocab_size)
+        self.tokens_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, self.hp.dim)
+        self.models.extend([self.tokens_embedding])
 
-        self.models.extend([self.tokens_embedding, self.vocab_out_fc])
         for model in self.models:
             model.cuda()
 
@@ -364,27 +506,45 @@ class InstructionRNN(TrainNN):
         return tr_loader, val_loader
 
     def preprocess_batch_from_data_loader(self, batch):
-        """Convert tensors to cuda"""
+        """
+        Convert tensors to cuda and convert to [len, bsz, ...] instead of [bsz, len, ...]
+        """
         preprocessed = []
         for item in batch:
             if type(item) == torch.Tensor:
                 item = nn_utils.move_to_cuda(item)
+                item.transpose_(0, 1)
             preprocessed.append(item)
         return preprocessed
 
+    def compute_loss(self, logits, tf_inputs, pad_id):
+        """
+        Args:
+            logits: [len, bsz, vocab]
+            tf_inputs: [len, bsz] ("teacher-forced inputs", inputs to decoder used to generate logits)
+                (text_indices_w_sos_eos)
+        """
+        logits = logits[:-1, :, :]    # last input that produced logits is EOS. Don't care about the EOS -> mapping
+        targets = tf_inputs[1: :, :]  # remove first input (sos)
+
+        vocab_size = logits.size(-1)
+        logits = logits.reshape(-1, vocab_size)
+        targets = targets.reshape(-1)
+        loss = F.cross_entropy(logits, targets, ignore_index=pad_id)
+        return loss
 
     def one_forward_pass(self, batch):
         """
         Return loss and other items of interest for one forward pass
 
         :param batch:
-            strokes: [bsz, max_stroke_len, 5] FloatTensor
+            strokes: [max_stroke_len, bsz, 5] FloatTensor
             stroke_lens: list of ints
-            pre_strokes: [bsz, max_pre_stroke_len, 5] FloatTensor
+            pre_strokes: [max_pre_stroke_len, bsz, 5] FloatTensor
             pre_stroke_lens: list of ints
             texts: list of strs
             text_lens: list of ints
-            text_indices_w_sos_eos: [bsz, max_text_len + 2] LongTensor (+2 for SOS and EOS)
+            text_indices_w_sos_eos: [max_text_len + 2, bsz] LongTensor (+2 for sos and eos)
             cats: list of strs (categories)
             cats_idx: list of ints
         
@@ -392,43 +552,20 @@ class InstructionRNN(TrainNN):
         """
         if self.hp.model_type == 'transformer':
             return self.one_forward_pass_transformer(batch)
-        elif self.hp.model_type == 'rnn':
-            return self.one_forward_pass_rnn(batch)
+        elif self.hp.model_type == 'lstm':
+            return self.one_forward_pass_lstm(batch)
 
-    def one_forward_pass_rnn(self, batch):
+    def one_forward_pass_lstm(self, batch):
         strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
             texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
-        bsz = strokes.size(0)
 
         # Encode strokes
-        strokes.transpose_(0,1)  # [max_stroke_len, bsz, dim]
-        _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-        # assuming unidirectional:)
+        _, (hidden, cell) = self.enc(strokes)  # [bsz, max_stroke_len, dim]; h/c = [layers * direc, bsz, dim]
 
         # Decode
-        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
-        texts_emb.transpose_(0,1)  # [max_text_len + 2, bsz, dim]
-
-        if self.hp.condition_on_hc:
-            # combine last hidden and cell, repeat along time dimension, and concatenate with encoded texts
-            last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]  # last = [bsz, dim]
-            last_hc = (last_hidden + last_cell).unsqueeze(0)  # [1, bsz, dim]
-            last_hc = last_hc.repeat(texts_emb.size(0), 1, 1)  # [max_text_len + 2, bsz, dim]
-            dec_inputs_emb = torch.cat([texts_emb, last_hc], dim=2)  # [max_text_len + 2, bsz, dim * 2]
-        else:
-            dec_inputs_emb = texts_emb
-        dec_outputs, _ = self.dec(dec_inputs_emb, (hidden, cell))  # [max_text_len + 2, bsz, dim]; h/c
-
-        # Compute logits and loss
-        logits = self.vocab_out_fc(dec_outputs)  # [max_text_len + 2, bsz, vocab]
-        logits = logits.transpose(0, 1)  # [bsz, max_text_len + 2, vocab]
-        logits = logits[:, :-1, :]  # [bsz, max_text_len + 1, vocab]; Last input is EOS, output would be EOS -> <token>. Should be ignored.
-        vocab_size = logits.size(-1)
-        text_indices_w_eos = text_indices_w_sos_eos[:, 1:]  # remove sos; [bsz, max_text_len + 1]
-        loss = F.cross_entropy(logits.reshape(-1, vocab_size),  # [bsz * max_text_len + 1, vocab]
-                               text_indices_w_eos.reshape(-1),  # [bsz * max_text_len + 1]
-                               ignore_index=PAD_ID)
-
+        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [max_text_len + 2, bsz, dim]
+        logits, _ = self.dec(texts_emb, hidden=hidden, cell=cell, tokens_embedding=self.tokens_embedding)  # [max_text_len + 2, bsz, dim]; h/c
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
         result = {'loss': loss}
 
         return result
@@ -436,11 +573,10 @@ class InstructionRNN(TrainNN):
     def one_forward_pass_transformer(self, batch):
         strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
             texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
-        bsz = strokes.size(0)
 
         # Embed strokes and text
-        strokes_emb = self.strokes_input_fc(strokes)                   # [bsz, max_stroke_len, dim]
-        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [bsz, max_text_len + 2, dim]
+        strokes_emb = self.strokes_input_fc(strokes)                   # [max_stroke_len, bsz, dim]
+        texts_emb = self.tokens_embedding(text_indices_w_sos_eos)      # [max_text_len + 2, bsz, dim]
 
         #
         # Encode decode with transformer
@@ -449,38 +585,22 @@ class InstructionRNN(TrainNN):
         enc_inputs = scale_add_pos_emb(strokes_emb, self.pos_enc)
         dec_inputs = scale_add_pos_emb(texts_emb, self.pos_enc)
 
-        # transpose because transformer expects length dimension first
-        enc_inputs.transpose_(0, 1)  # [max_stroke_len, bsz, dim]
-        dec_inputs.transpose_(0, 1)  # [max_text_len + 2, bsz, dim]
-
         src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask = \
             create_transformer_padding_masks(stroke_lens, text_lens)
         tgt_mask = generate_square_subsequent_mask(dec_inputs.size(0))  # [max_text_len + 2, max_text_len + 2]
-        dec_outputs = self.transformer(enc_inputs, dec_inputs, # [max_text_len + 2, bsz, dim]
+        dec_outputs = self.transformer(enc_inputs, dec_inputs,
                                        src_key_padding_mask=src_key_padding_mask,
                                        # tgt_key_padding_mask=tgt_key_padding_mask, #  TODO: why does adding this result in Nans?
                                        memory_key_padding_mask=memory_key_padding_mask,
-                                       tgt_mask=tgt_mask
-                                       )
-        # src_mask and memory_mask: don't think there should be one
+                                       tgt_mask=tgt_mask)
+        # dec_outputs: [max_text_len + 2, bsz, dim]
+
         if (dec_outputs != dec_outputs).any():
             import pdb; pdb.set_trace()
-            return {'loss': dec_inputs.sum()}  # dummy for now
 
-        #
         # Compute logits and loss
-        #
-        logits = self.vocab_out_fc(dec_outputs)  # [max_text_len + 2, bsz, vocab]
-
-        logits = logits.transpose(0,1)  # [bsz, max_text_len + 2, vocab]
-        logits = logits[:,:-1,:]  # [bsz, max_text_len + 1, vocab]; Last input is EOS, output would be EOS -> <token>. Should be ignored.
-        vocab_size = logits.size(-1)
-        text_indices_w_eos = text_indices_w_sos_eos[:,1:]  # remove sos; [bsz, max_text_len + 1]
-
-        loss = F.cross_entropy(logits.reshape(-1, vocab_size),  # [bsz * max_text_len + 1, vocab]
-                               text_indices_w_eos.reshape(-1),  # [bsz * max_text_len + 1]
-                               ignore_index=PAD_ID)  # TODO: is ignore_index enough for masking loss value?
-
+        logits = torch.matmul(dec_outputs, self.tokens_embedding.weight.t())  # [max_text_len + 2, bsz, vocab]
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
         result = {'loss': loss}
 
         return result
@@ -493,10 +613,10 @@ class InstructionRNN(TrainNN):
     def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):
         if self.hp.model_type == 'transformer':
             self.end_of_epoch_hook_transformer(epoch, outputs_path, writer)
-        elif self.hp.model_type == 'rnn':
-            self.end_of_epoch_hook_rnn(epoch, outputs_path, writer)
+        elif self.hp.model_type == 'lstm':
+            self.end_of_epoch_hook_lstm(epoch, outputs_path, writer)
 
-    def end_of_epoch_hook_rnn(self, epoch, outputs_path=None, writer=None):
+    def end_of_epoch_hook_lstm(self, epoch, outputs_path=None, writer=None):
         for model in self.models:
             model.eval()
 
@@ -508,26 +628,19 @@ class InstructionRNN(TrainNN):
                 batch = self.preprocess_batch_from_data_loader(batch)
                 strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
                     texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
-                bsz = strokes.size(0)
+                bsz = strokes.size(1)
 
                 # Encode
-                strokes.transpose_(0, 1)  # [max_stroke_len, bsz, dim]
                 _, (hidden, cell) = self.enc(strokes)  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-                # assuming unidirectional:
-                # last_hidden, last_cell = hidden[-1, :, :], cell[-1, :, :]
 
                 # Create init input
                 init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
+                init_ids.transpose_(0,1)  # [1, bsz]
 
-                init_ids.transpose_(0,1)   # [1, bsz]
-                init_embs.transpose_(0,1)  # [1, bsz, dim]
-
-                decoded_probs, decoded_ids, decoded_texts = nn_utils.lstm_generate(
-                    self.dec, self.vocab_out_fc, self.tokens_embedding,
-                    init_ids=init_ids, hidden=hidden, cell=cell, condition_on_hc=self.hp.condition_on_hc,
-                    pad_id=PAD_ID, eos_id=EOS_ID,
-                    max_len=25,
+                decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
+                    self.tokens_embedding,
+                    init_ids=init_ids, hidden=hidden, cell=cell,
+                    pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
                     decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
                     idx2token=self.tr_loader.dataset.idx2token,
                     )
@@ -559,19 +672,19 @@ class InstructionRNN(TrainNN):
                 batch = self.preprocess_batch_from_data_loader(batch)
                 strokes, stroke_lens, pre_strokes, pre_stroke_lens, \
                     texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
-                bsz = strokes.size(0)
+                bsz = strokes.size(1)
 
-                strokes_emb = self.strokes_input_fc(strokes)                    # [bsz, max_stroke_len, dim]
-                input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)    # [bsz, max_stroke_len, dim]
+                strokes_emb = self.strokes_input_fc(strokes)                    # [max_stroke_len, bsz, dim]
+                src_input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)    # [max_stroke_len, bsz, dim]
 
                 init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                init_embs = self.tokens_embedding(init_ids)  # [bsz, 1, dim]
+                init_ids.transpose_(0,1)  # [1, bsz]
+                init_embs = self.tokens_embedding(init_ids)  # [1, bsz, dim]
 
                 decoded_probs, decoded_ids, decoded_texts = transformer_generate(
-                    # TODO: probably should just pass in strokes_input_fc as well..
-                    self.transformer, self.vocab_out_fc, self.tokens_embedding, self.pos_enc,
-                    input_embs=input_embs, input_lens=stroke_lens,
-                    init_ids=init_ids, init_embs=init_embs,
+                    self.transformer, self.tokens_embedding, self.pos_enc,
+                    src_input_embs=src_input_embs, input_lens=stroke_lens,
+                    init_ids=init_ids,
                     pad_id=PAD_ID, eos_id=EOS_ID,
                     max_len=100,
                     decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
@@ -598,10 +711,10 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'instructionrnn', run_name)
+    save_dir = os.path.join(RUNS_PATH, 'stroke2instruction', run_name)
     utils.save_run_data(save_dir, hp)
 
-    model = InstructionRNN(hp, save_dir)
+    model = StrokeToInstructionModel(hp, save_dir)
     model.train_loop()
 
     # val_dataset = ProgressionPairDataset('valid')

@@ -104,26 +104,26 @@ def generate_square_subsequent_mask(size):
 
     return mask
 
-def transformer_generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
-             input_embs=None, input_lens=None,
-             init_ids=None, init_embs=None,
-             pad_id=None, eos_id=None,
-             max_len=100,
-             decode_method=None, tau=None, k=None,
-             idx2token=None,
-             ):
+def transformer_generate(
+        transformer, tokens_embedding, pos_enc,
+        src_input_embs=None, input_lens=None,
+        init_ids=None,
+        pad_id=None, eos_id=None,
+        max_len=100,
+        decode_method=None, tau=None, k=None,
+        idx2token=None,
+        ):
     """
     Decode up to max_len symbols by feeding previous output as next input.
     
     Args:
         transformer: nn.Transformer
-        vocab_out_fc: module used to transform Transformer's decoder outputs to logits
         tokens_embedding: nn.Embedding(vocab, dim)
         pos_enc: PositionalEncoder module
-        input_embs: [bsz, input_len, dim]
+        input_embs: [input_len, bsz, dim]
         input_lens: list of ints
-        init_ids: [bsz, init_len]  (e.g. SOS ids)
-        init_embs: [bsz, init_len, emb] (e.g. embedded SOS ids)
+        init_ids: [init_len, bsz]  (e.g. SOS ids)
+        init_embs: [init_len, bsz, emb] (e.g. embedded SOS ids)
         pad_id: int 
         eos_id: int (id for EOS_ID token)
         decode_method: str (how to sample words given probabilities; 'greedy', 'sample')
@@ -136,13 +136,12 @@ def transformer_generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
         decoded_ids: [bsz, max_len]
         decoded_texts: list of strs
     """
-    bsz = init_embs.size(0)
+    init_len, bsz = init_ids.size()
     vocab_size = len(idx2token)
 
     # Encode inputs
     src_key_padding_mask, _ , memory_key_padding_mask = create_transformer_padding_masks(src_lens=input_lens)
-    input_embs.transpose_(0,1)  # [input_len, bsz, dim]
-    memory = transformer.encoder(input_embs, src_key_padding_mask=src_key_padding_mask)  # [input_len, bsz, dim]
+    memory = transformer.encoder(src_input_embs, src_key_padding_mask=src_key_padding_mask)  # [input_len, bsz, dim]
 
     # Track which sequences have generated eos_id
     rows_with_eos = nn_utils.move_to_cuda(torch.zeros(bsz).long())
@@ -151,24 +150,24 @@ def transformer_generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
     pad_prob[:, pad_id] = 1
 
     # Generate
-    decoded_probs = nn_utils.move_to_cuda(torch.zeros(bsz, max_len, vocab_size))
-    decoded_ids = init_ids
-    for i in range(max_len):
+    decoded_probs = nn_utils.move_to_cuda(torch.zeros(init_len + max_len, bsz, vocab_size))
+    decoded_ids = nn_utils.move_to_cuda(torch.zeros(init_len + max_len, bsz).long())
+    decoded_ids[:init_len, :] = init_ids
+    for t in range(init_len, max_len):
         # pass through TransformerDecoder
-        tgt_mask = generate_square_subsequent_mask(decoded_ids.size(1)).type_as(decoded_ids)
-        decoded_ids_emb = tokens_embedding(decoded_ids)  # [bsz, cur_len, dim]
-        decoded_ids_emb.transpose_(0,1)  # [cur_len, bsz, dim]
-        decoded_ids_emb = scale_add_pos_emb(decoded_ids_emb, pos_enc)
+        tgt_mask = generate_square_subsequent_mask(t).type_as(decoded_ids)
+        cur_dec_input = decoded_ids[:t, :]  # [t, bsz]
+        cur_dec_input = tokens_embedding(cur_dec_input)
+        cur_dec_input = scale_add_pos_emb(cur_dec_input, pos_enc)  # [t, bsz, dim]
 
-        dec_outputs = transformer.decoder(decoded_ids_emb, memory,  # dec_outputs = [cur_len, bsz, dim]
-                                          tgt_mask=tgt_mask, # TODO: why does this affect it?
+        dec_outputs = transformer.decoder(cur_dec_input, memory,  # dec_outputs = [t, bsz, dim]
+                                          tgt_mask=tgt_mask,
                                           memory_key_padding_mask=memory_key_padding_mask
                                           )
 
         # Compute logits over vocab, use last output to get next token
-        logits = vocab_out_fc(dec_outputs)  # [cur_len, bsz, vocab]
-        logits.transpose_(0,1)      # [bsz, cur_len, vocab]
-        logits = logits[:,-1,:]  # last output; [bsz, vocab]
+        logits = torch.matmul(dec_outputs, tokens_embedding.weight.t())  # [t, bsz, vocab]
+        logits = logits[-1,:,:]  # [bsz, vocab]
         prob = nn_utils.logits_to_prob(logits, tau=tau)  # [bsz, vocab]
         prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
         ids = ids[:,0]  # get top k
@@ -179,17 +178,20 @@ def transformer_generate(transformer, vocab_out_fc, tokens_embedding, pos_enc,
         ids = torch.where(rows_with_eos == 1, pad_ids, ids)
 
         # Update generated sequence so far
-        decoded_probs = torch.cat([decoded_probs, prob.unsqueeze(1)], dim=1)  # [bsz, init_len + (t+1), vocab]
-        decoded_ids = torch.cat([decoded_ids, ids.unsqueeze(1)], dim=1)  # [bsz, init_len + (t+1)]
+        decoded_probs[t,:,:] = prob
+        decoded_ids[t,:] = ids
 
         # Terminate early if all sequences have generated eos
         if rows_with_eos.sum().item() == bsz:
             break
 
-    # Remove initial input to decoder
-    # TODO: should this be here? decoded_probs and decoded_ids isn't init_len + max_len
-    decoded_probs = decoded_probs[:, init_embs.size(1):, :]
-    decoded_ids = decoded_ids[:, init_embs.size(1):]
+    # # Remove initial input to decoder
+    decoded_probs = decoded_probs[init_len:,:,:]
+    decoded_ids = decoded_ids[init_len:,:]
+
+    # TODO: remove this once InstructionDecoderLSTM is refactored to return [len, bsz] instead of [bsz, len]
+    decoded_probs.transpose_(0,1)
+    decoded_ids.transpose_(0,1)
 
     # Convert to strings
     decoded_texts = []
