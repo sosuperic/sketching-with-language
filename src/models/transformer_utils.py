@@ -105,7 +105,7 @@ def generate_square_subsequent_mask(size):
     return mask
 
 def transformer_generate(
-        transformer, tokens_embedding, pos_enc,
+        transformer, token_embedding, pos_enc,
         src_input_embs=None, input_lens=None,
         init_ids=None,
         pad_id=None, eos_id=None,
@@ -118,7 +118,7 @@ def transformer_generate(
     
     Args:
         transformer: nn.Transformer
-        tokens_embedding: nn.Embedding(vocab, dim)
+        token_embedding: nn.Embedding(vocab, dim)
         pos_enc: PositionalEncoder module
         input_embs: [input_len, bsz, dim]
         input_lens: list of ints
@@ -157,7 +157,7 @@ def transformer_generate(
         # pass through TransformerDecoder
         tgt_mask = generate_square_subsequent_mask(t).type_as(decoded_ids)
         cur_dec_input = decoded_ids[:t, :]  # [t, bsz]
-        cur_dec_input = tokens_embedding(cur_dec_input)
+        cur_dec_input = token_embedding(cur_dec_input)
         cur_dec_input = scale_add_pos_emb(cur_dec_input, pos_enc)  # [t, bsz, dim]
 
         dec_outputs = transformer.decoder(cur_dec_input, memory,  # dec_outputs = [t, bsz, dim]
@@ -166,7 +166,7 @@ def transformer_generate(
                                           )
 
         # Compute logits over vocab, use last output to get next token
-        logits = torch.matmul(dec_outputs, tokens_embedding.weight.t())  # [t, bsz, vocab]
+        logits = torch.matmul(dec_outputs, token_embedding.weight.t())  # [t, bsz, vocab]
         logits = logits[-1,:,:]  # [bsz, vocab]
         prob = nn_utils.logits_to_prob(logits, tau=tau)  # [bsz, vocab]
         prob, ids = nn_utils.prob_to_vocab_id(prob, decode_method, k=k)  # prob: [bsz, vocab]; ids: [bsz, k]
