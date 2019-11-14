@@ -52,7 +52,7 @@ class HParams():
         self.dim = 512
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.model_type = 'lstm'  # 'lstm', 'transformer'
+        self.model_type = 'cnn_lstm'  # 'lstm', 'transformer'
         self.condition_on_hc = False  # With 'lstm', input to decoder also contains last hidden cell
         self.use_prestrokes = True
         self.use_categories = True
@@ -349,7 +349,7 @@ class StrokeEncoderCNN(nn.Module):
         Args:
             strokes: [seq_len, bsz, input_dim]
 
-        Returns:  [bsz, n_feat_maps * len(filter_size)]
+        Returns:  [bsz, dim]
         """
         strokes = self.input_fc(strokes)  # [seq_len, bsz, emb_dim]
         strokes = strokes.transpose(0,1).unsqueeze(1)  # [bsz, 1, seq_len, emb_dim]
@@ -366,6 +366,72 @@ class StrokeEncoderCNN(nn.Module):
         embedded = self.dropout(embedded)
 
         return embedded
+
+class StrokeEncoderTransformer(nn.Module):
+    def __init__(self,
+                 input_dim, hidden_dim, num_layers=1, dropout=0,
+                 use_prestrokes=False, use_categories=False
+                 ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.use_prestrokes = use_prestrokes
+        self.use_categories = use_categories
+
+        enc_layer = nn.TransformerEncoderLayer(
+            hidden_dim, 2, dim_feedforward=hidden_dim * 4, dropout=dropout, activation='gelu'
+        )
+        self.enc = nn.TransformerEncoder(enc_layer, num_layers)
+
+        self.input_fc = nn.Linear(input_dim, hidden_dim)
+        if use_categories:
+            self.dropout_mod = nn.Dropout(dropout)
+            self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
+
+    def forward(self,  strokes, stroke_lens,
+                prestrokes=None, prestroke_lens=None,
+                category_embedding=None, categories=None):
+        """
+        Args:
+            strokes:  [max_stroke_len, bsz, input_dim]
+            stroke_lens: list of ints, length max_stroke_len
+            prestrokes:  [max_prestroke_len, bsz]
+            prestroke_lens: list of ints, length max_prestroke_len
+            category_embedding: nn.Embedding(n_categories, dim)
+            categories: [bsz] LongTensor
+
+        Returns:
+            hidden: [bsz, dim]
+        """
+        # TODO: using prestrokes is a bit annoying...
+        # We can't simply 1) concat strokes and prestrokes, 2) add stroke_lens and prestroke_lens
+        # because there would be padding elements between strokes and prestrokes.
+        bsz = strokes.size(1)
+
+        # if category_embedding:
+        #     cats_emb =  category_embedding(categories)  # [bsz, dim]
+        #     cats_emb = self.dropout_mod(cats_emb)
+        #     strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
+        #     strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
+        #     if self.use_prestrokes:
+        #         prestrokes = torch.cat([prestrokes, cats_emb.repeat(prestrokes.size(0), 1, 1)], dim=2)
+        #         prestrokes = self.stroke_cat_fc(prestrokes)
+
+        strokes = self.input_fc(strokes)  # [len, bsz, hsz]
+
+        strokes_pad_mask, _, _ = create_transformer_padding_masks(src_lens=stroke_lens)
+        memory = self.enc(strokes, src_key_padding_mask=strokes_pad_mask)  # [len, bsz, dim]
+
+        hidden = []
+        for i in range(bsz):  # TODO: what is a tensor op to do this?
+            item_len = stroke_lens[i]
+            item_emb = memory[:item_len,i,:].mean(dim=0)  # [dim]
+            hidden.append(item_emb)
+        hidden = torch.stack(hidden, dim=0)  # [bsz, dim]
+
+        return hidden
 
 class StrokeEncoderLSTM(nn.Module):
     def __init__(self,
@@ -407,7 +473,7 @@ class StrokeEncoderLSTM(nn.Module):
             stroke_outputs: [max_stroke_len, bsz, dim]
             prestroke_outputs: [max_prestroke_len, bsz, dim]
             hidden: [layers * direc, bsz, dim]
-            cell:  [bsz, max_stroke_len, dim]
+            cell:  [layers * direc, bsz, dim]
         """
         # Compute a category embedding, repeat it along the time dimension, concatenate it with the strokes along
         # the feature dimension, and apply a fully connected
@@ -622,33 +688,20 @@ class StrokeToInstructionModel(TrainNN):
             self.category_embedding = nn.Embedding(35, self.hp.dim)
             self.models.append(self.category_embedding)
 
-        if hp.model_type == 'transformer':
-            if hp.use_prestrokes:
-                print('Using prestrokes not implemented for Transformer')
-                # raise NotImplementedError('Using prestrokes not implemented for Transformer')
-            if hp.use_categories:
-                raise NotImplementedError('Use categories not implemented for Transformer')
-
-            self.strokes_input_fc = nn.Linear(5, hp.dim)
-            self.pos_enc = PositionalEncoder(hp.dim, max_seq_len=250)
-            self.transformer = nn.Transformer(
-                d_model=hp.dim, dim_feedforward=hp.dim * 4, nhead=2, activation='relu',
-                num_encoder_layers=hp.n_enc_layers, num_decoder_layers=hp.n_dec_layers,
-                dropout=hp.dropout,
-            )
-            for p in self.transformer.parameters():
-                if p.dim() > 1:
-                    nn.init.xavier_uniform_(p)
-            self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
-
         if hp.model_type.endswith('lstm'):
-
-            # encoder can be cnn or lstm
+            # encoders may be different
             if hp.model_type == 'cnn_lstm':
                 if hp.use_prestrokes:
                     raise NotImplementedError('Using prestrokes not implemented for cnn_lstm')
                 self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout)
-            else:
+            elif hp.model_type == 'transformer_lstm':
+                self.enc = StrokeEncoderTransformer(
+                    5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
+                    use_prestrokes=hp.use_prestrokes, use_categories=hp.use_categories,
+                )
+                if hp.use_prestrokes:
+                    raise NotImplementedError('Using prestrokes not implemented for transformer_lstm')
+            elif hp.model_type == 'lstm':
                 self.enc = StrokeEncoderLSTM(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
                     use_prestrokes=hp.use_prestrokes, use_categories=hp.use_categories,
@@ -666,6 +719,24 @@ class StrokeToInstructionModel(TrainNN):
             )
 
             self.models.extend([self.enc, self.dec])
+        elif hp.model_type == 'transformer':
+            if hp.use_prestrokes:
+                raise NotImplementedError('Using prestrokes not implemented for Transformer')
+            if hp.use_categories:
+                raise NotImplementedError('Use categories not implemented for Transformer')
+
+            self.strokes_input_fc = nn.Linear(5, hp.dim)
+            self.pos_enc = PositionalEncoder(hp.dim, max_seq_len=250)
+            self.transformer = nn.Transformer(
+                d_model=hp.dim, dim_feedforward=hp.dim * 4, nhead=2, activation='relu',
+                num_encoder_layers=hp.n_enc_layers, num_decoder_layers=hp.n_dec_layers,
+                dropout=hp.dropout,
+            )
+            for p in self.transformer.parameters():
+                if p.dim() > 1:
+                    nn.init.xavier_uniform_(p)
+            self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
+
 
         for model in self.models:
             model.cuda()
@@ -731,12 +802,14 @@ class StrokeToInstructionModel(TrainNN):
         
         :return: dict: 'loss': float Tensor must exist
         """
-        if self.hp.model_type == 'transformer':
-            return self.one_forward_pass_transformer(batch)
+        if self.hp.model_type == 'cnn_lstm':
+            return self.one_forward_pass_cnn_lstm(batch)
+        elif self.hp.model_type == 'transformer_lstm':
+            return self.one_forward_pass_transformer_lstm(batch)
         elif self.hp.model_type == 'lstm':
             return self.one_forward_pass_lstm(batch)
-        elif self.hp.model_type == 'cnn_lstm':
-            return self.one_forward_pass_cnn_lstm(batch)
+        elif self.hp.model_type == 'transformer':
+            return self.one_forward_pass_transformer(batch)
 
     def one_forward_pass_cnn_lstm(self, batch):
         strokes, stroke_lens, prestrokes, prestroke_lens, \
@@ -760,6 +833,27 @@ class StrokeToInstructionModel(TrainNN):
 
         return result
 
+    def one_forward_pass_transformer_lstm(self, batch):
+        strokes, stroke_lens, prestrokes, prestroke_lens, \
+            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+
+        # Encode strokes
+        hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                            category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
+        # [bsz, dim]
+        hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
+        hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+        cell = hidden.clone()  # [n_layers, bsz, dim]
+
+        # Decode
+        texts_emb = self.token_embedding(text_indices_w_sos_eos)  # [max_text_len + 2, bsz, dim]
+        logits, _ = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
+                             token_embedding=self.token_embedding,
+                             category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, dim]; h/c
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
+        result = {'loss': loss}
+
+        return result
 
     def one_forward_pass_lstm(self, batch):
         strokes, stroke_lens, prestrokes, prestroke_lens, \
@@ -834,7 +928,44 @@ class StrokeToInstructionModel(TrainNN):
 
 
                 # Model-specific decoding
-                if self.hp.model_type == 'transformer':
+                if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
+                    if self.hp.model_type == 'cnn_lstm':
+                        # Encode strokes
+                        embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                            category_embedding=self.category_embedding, categories=cats_idx)
+                        # [bsz, dim]
+                        embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
+                        hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                        cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                    elif self.hp.model_type == 'transformer_lstm':
+                        # Encode strokes
+                        hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                          category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
+                        # [bsz, dim]
+                        hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
+                        hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                        cell = hidden.clone()  # [n_layers, bsz, dim]
+
+                    elif self.hp.model_type == 'lstm':
+                        _, (hidden, cell) = self.enc(strokes, stroke_lens,
+                                                     prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                                     category_embedding=self.category_embedding, categories=cats_idx)
+                        # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+
+                    # Create init input
+                    init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                    init_ids.transpose_(0, 1)  # [1, bsz]
+
+                    decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
+                        self.token_embedding,
+                        category_embedding=self.category_embedding, categories=cats_idx,
+                        init_ids=init_ids, hidden=hidden, cell=cell,
+                        pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
+                        decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
+                        idx2token=self.tr_loader.dataset.idx2token,
+                    )
+
+                elif self.hp.model_type == 'transformer':
                     strokes_emb = self.strokes_input_fc(strokes)  # [max_stroke_len, bsz, dim]
                     src_input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)  # [max_stroke_len, bsz, dim]
 
@@ -851,52 +982,13 @@ class StrokeToInstructionModel(TrainNN):
                         decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
                         idx2token=self.tr_loader.dataset.idx2token)
 
-                elif self.hp.model_type == 'lstm':
-                    _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                                 prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                                                 category_embedding=self.category_embedding, categories=cats_idx)
-                    # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-
-                    # Create init input
-                    init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                    init_ids.transpose_(0, 1)  # [1, bsz]
-
-                    decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
-                        self.token_embedding,
-                        category_embedding=self.category_embedding, categories=cats_idx,
-                        init_ids=init_ids, hidden=hidden, cell=cell,
-                        pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
-                        decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
-                        idx2token=self.tr_loader.dataset.idx2token,
-
-                    )
-                elif self.hp.model_type == 'cnn_lstm':
-                    # Encode strokes
-                    embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                                        category_embedding=self.category_embedding, categories=cats_idx)
-                    # [bsz, dim]
-                    embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
-                    hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-                    cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-
-                    # Create init input
-                    init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                    init_ids.transpose_(0, 1)  # [1, bsz]
-
-                    decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
-                        self.token_embedding,
-                        category_embedding=self.category_embedding, categories=cats_idx,
-                        init_ids=init_ids, hidden=hidden, cell=cell,
-                        pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
-                        decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
-                        idx2token=self.tr_loader.dataset.idx2token,
-                    )
 
                 for j, instruction in enumerate(texts):
                     generated.append({
                         'ground_truth': instruction,
                         'generated': decoded_texts[j],
-                        'url': urls[j]
+                        'url': urls[j],
+                        'category': cats[j],
                     })
                     text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
                         instruction, decoded_texts[j], urls[j])
