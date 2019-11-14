@@ -5,6 +5,7 @@ TODO: might refactor this into another file.
 """
 
 import src.utils as utils
+from src.models.instruction_gen import normalize
 
 def convert_generated_instruction_samples_to_html(samples_fp):
     """
@@ -30,7 +31,19 @@ def convert_generated_instruction_samples_to_html(samples_fp):
 
         ROW_TEMPLATE = """
         <div class="row">
-            <div class="col-md-6">
+            <div class="col-md-5">
+              <div class="thumbnail">
+                  <div>
+                   <p><strong>Category: {}</strong></p>
+                  </div>
+                  <img src="{}" style="max-width:100%">
+                  <div class="caption">
+                    <p>Ground truth: {}</p>
+                    <p>Generated: {}
+                  </div>
+              </div>
+            </div>
+            <div class="col-md-5">
               <div class="thumbnail">
                   <div>
                    <p><strong>Category: {}</strong></p>
@@ -46,12 +59,20 @@ def convert_generated_instruction_samples_to_html(samples_fp):
         """
 
         samples = utils.load_file(samples_fp)
-        for i, sample in enumerate(samples):
+        for i in range(0, len(samples), 2):
             # cat = sample['category']
-            cat = sample['url'].split('fullinput/')[1].split('/progress')[0]
-            row = ROW_TEMPLATE.format(
-                cat, sample['url'], sample['ground_truth'], sample['generated']
-            )
+            cat1 = samples[i]['url'].split('fullinput/')[1].split('/progress')[0]
+            url1 = samples[i]['url']
+            gt1 = ' '.join(normalize(samples[i]['ground_truth']))
+            gen1 = samples[i]['generated']
+
+            cat2 = samples[i+1]['url'].split('fullinput/')[1].split('/progress')[0]
+            url2 = samples[i+1]['url']
+            gt2 = ' '.join(normalize(samples[i+1]['ground_truth']))
+            gen2 = samples[i+1]['generated']
+
+            row = ROW_TEMPLATE.format(cat1, url1, gt1, gen1,
+                                      cat2, url2, gt2, gen2)
             out_f.write(row)
 
         out_f.write("""
