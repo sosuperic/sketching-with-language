@@ -7,6 +7,8 @@ from nltk.tokenize import word_tokenize  # TODO: add the download punkt to requi
 import numpy as np
 import os
 
+from rouge_score import rouge_scorer
+
 import torch
 from torch import nn
 from torch import optim
@@ -996,6 +998,17 @@ class StrokeToInstructionModel(TrainNN):
 
             out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
             utils.save_file(generated, out_fp, verbose=True)
+
+            self.compute_metrics_on_generations(generated)
+
+    def compute_metrics_on_generations(self, generated):
+        """
+        Args:
+            generated: list of dicts with 'ground_truth' and 'generated'
+        """
+        # TODO: compute ROUGE, BLEU
+        pass
+
 
 
 if __name__ == '__main__':

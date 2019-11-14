@@ -47,7 +47,7 @@ def convert_generated_instruction_samples_to_html(samples_fp):
 
         samples = utils.load_file(samples_fp)
         for i, sample in enumerate(samples):
-            # cat = sample['cat']
+            # cat = sample['category']
             cat = sample['url'].split('fullinput/')[1].split('/progress')[0]
             row = ROW_TEMPLATE.format(
                 cat, sample['url'], sample['ground_truth'], sample['generated']
