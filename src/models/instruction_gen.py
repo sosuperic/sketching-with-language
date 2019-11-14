@@ -374,19 +374,18 @@ class StrokeEncoderLSTM(nn.Module):
                  ):
         super().__init__()
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim,
+        self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
         self.batch_first = batch_first
         self.use_prestrokes = use_prestrokes
         self.use_categories = use_categories
 
-        self.lstm = nn.LSTM(input_dim, hidden_dim,
-                            num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
             self.lstm = nn.LSTM(hidden_dim, hidden_dim,
+                                bidirectional=True,
                                 num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         else:
             self.lstm = nn.LSTM(input_dim, hidden_dim,
@@ -412,6 +411,8 @@ class StrokeEncoderLSTM(nn.Module):
         """
         # Compute a category embedding, repeat it along the time dimension, concatenate it with the strokes along
         # the feature dimension, and apply a fully connected
+        bsz = strokes.size(1)
+
         if category_embedding:
             cats_emb =  category_embedding(categories)  # [bsz, dim]
             cats_emb = self.dropout_mod(cats_emb)
@@ -432,6 +433,10 @@ class StrokeEncoderLSTM(nn.Module):
             packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
             strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
             strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
+
+        # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
+        hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
+        cell = cell.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
 
         return strokes_outputs, (hidden, cell)
 
@@ -485,8 +490,8 @@ class InstructionDecoderLSTM(nn.Module):
         if self.use_categories and category_embedding:
             cats_emb = category_embedding(categories)  # [bsz, dim]
             cats_emb = self.dropout_mod(cats_emb)
-            cats_emb = cats_emb.repeat(texts_emb.size(0), 1, 1)  # [len, bsz, dim]
-            inputs_emb = torch.cat([texts_emb, cats_emb], dim=2)  # [len, bsz, dim * 2 or dim *3]
+            cats_emb = cats_emb.repeat(inputs_emb.size(0), 1, 1)  # [len, bsz, dim]
+            inputs_emb = torch.cat([inputs_emb, cats_emb], dim=2)  # [len, bsz, dim * 2 or dim *3]
 
         # decode
         packed_inputs = nn.utils.rnn.pack_padded_sequence(inputs_emb, text_lens, enforce_sorted=False)
