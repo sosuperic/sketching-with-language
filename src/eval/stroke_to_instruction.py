@@ -3,7 +3,7 @@
 """
 Evaluating StrokeToInstruction model
 """
-
+import argparse
 from collections import defaultdict
 import numpy as np
 from pprint import pprint
@@ -42,7 +42,10 @@ class Scorer(object):
 
 
 def calc_bleu_and_rouge_on_samples(samples_fp):
-
+    """
+    Args:
+        samples_fp: str to samples.json
+    """
     samples = utils.load_file(samples_fp)
 
     scorers = [Scorer('bleu'), Scorer('rouge')]
@@ -58,9 +61,8 @@ def calc_bleu_and_rouge_on_samples(samples_fp):
                 m2scores[name].append(value)
                 m2cat2scores[name][cat].append(value)
 
-    print()
-    print('*' * 150)
-    print('Average per category:')
+    print('\nROUGE and BLEU:')
+    print('\nAverage per category:')
     for rouge_name, cat2scores in m2cat2scores.items():
         print('-' * 50)
         print(rouge_name)
@@ -70,5 +72,33 @@ def calc_bleu_and_rouge_on_samples(samples_fp):
     print('Average:')
     pprint({rouge_name: np.mean(vals) for rouge_name, vals in m2scores.items()})
 
+def calc_rare_words_stats(samples_fp):
+    """
+    Stats for whether rare words are being generated
+
+    Args:
+        samples_fp: str to samples.json
+    """
+    samples = utils.load_file(samples_fp)
+    gt_toks = set()
+    gen_toks = set()
+    for sample in samples:
+        gt, gen = sample['ground_truth'], sample['generated']
+        for tok in normalize(gt):
+            gt_toks.add(tok)
+        for tok in normalize(gen):
+            gen_toks.add(tok)
+
+    print('\nRare words stats:')
+    print('Number of unique tokens in reference instructions: ', len(gt_toks))
+    print('Number of unique tokens in generated instructions: ', len(gen_toks))
+
+
 if __name__ == '__main__':
-    calc_bleu_and_rouge_on_samples('samples_e11.json')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--fp', help='path to samples file')
+    args = parser.parse_args()
+    # calc_bleu_and_rouge_on_samples('samples_e11.json')
+    # calc_bleu_and_rouge_on_samples('samples_eBEST.json')
+    calc_bleu_and_rouge_on_samples(args.fp)
+    calc_rare_words_stats(args.fp)
