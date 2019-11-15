@@ -132,6 +132,22 @@ def final_categories():
     categories = [c.strip() for c in categories]
     return categories
 
+def build_category_index(data):
+    """
+    Returns mappings from index to category and vice versa.
+
+    Args:
+        data: list of dicts, each dict is one sample
+    """
+    categories = set()
+    for sample in data:
+        categories.add(sample['category'])
+    categories = sorted(list(categories))
+    idx2cat = {i: cat for i, cat in enumerate(categories)}
+    cat2idx = {cat: i for i, cat in idx2cat.items()}
+
+    return idx2cat, cat2idx
+
 def ndjson_to_stroke3(sample):
     """
     Parse an ndjson sample and return ink (as np array) and classname.
@@ -170,6 +186,75 @@ def ndjson_to_stroke3(sample):
     np_ink = np_ink[1:, :]
 
     return np_ink, class_name
+
+
+def stroke3_to_stroke5(seq, max_len=None):
+    """
+    Convert from stroke-3 to stroke-5 format
+    "to_big_strokes()" in Magenta's sketch_rnn/utils.py
+
+    Args:
+        seq: [len, 3] float array
+
+    Returns:
+        result: [max_len, 5] float array
+        l: int, length of sequence
+    """
+    result_len = max_len if max_len else len(seq)
+    result = np.zeros((result_len, 5), dtype=float)
+    l = len(seq)
+    assert l <= result_len
+    result[0:l, 0:2] = seq[:, 0:2]  # 1st and 2nd values are same
+    result[0:l, 3] = seq[:, 2]  # stroke-5[3] = pen-up, same as stroke-3[2]
+    result[0:l, 2] = 1 - result[0:l, 3]  # stroke-5[2] = pen-down, stroke-3[2] = pen-up (so inverse)
+    result[l:, 4] = 1  # last "stroke" has stroke5[4] equal to 1, all other values 0 (see Figure 4); hence l
+    return result
+
+def normalize_strokes(data, scale_factor=None, scale_factor_key='stroke3',
+                      stroke_keys=['stroke3']):
+    """
+    Normalize stroke3 or stroke5 dataset's delta_x and delta_y values.
+
+    Args:
+        data: list of dicts, each dict is one sample that contains stroke information
+        scale_factor: float if given
+        scale_factor_key: str
+        stroke_keys: keys in data's dicts that must be scaled (e.g. stroke3, stroke3_segment)
+    """
+    if scale_factor is None:
+        scale_factor = _calculate_normalizing_scale_factor(data, scale_factor_key)
+
+    normalized_data = []
+    for sample in data:
+        for key in stroke_keys:
+            stroke = sample[key]
+            stroke[:, 0:2] /= scale_factor
+            sample[key] = stroke
+        normalized_data.append(sample)
+
+    return normalized_data
+
+def _calculate_normalizing_scale_factor(data, scale_factor_key):  #
+    """
+    Calculate the normalizing factor in Appendix of paper
+    (calculate_normalizing_scale_factor() in Magenta's sketch_rnn/utils.py)
+
+    Args:
+        data: list of dicts
+        scale_factor_key: str
+    """
+    deltas = []
+    for sample in data:
+        # TODO: should I calculate this scale factor based only on stroke3_**segment**?? Or stroke3
+        stroke = sample[scale_factor_key]
+        for j in range(stroke.shape[0]):
+            deltas.append(stroke[j][0])
+            deltas.append(stroke[j][1])
+    deltas = np.array(deltas)
+    scale_factor = np.std(deltas)
+    return scale_factor
+
+
 
 ###################################################################
 #

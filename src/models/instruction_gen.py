@@ -1,23 +1,19 @@
 # instruction_gen.py
 
-import argparse
 import matplotlib
 matplotlib.use('Agg')
 import numpy as np
 import os
 
-import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
-from src.data_manager.quickdraw import LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH
-from src.models.sketch_rnn import stroke3_to_stroke5, TrainNN
+from src.data_manager.quickdraw import LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
+    normalize_strokes, stroke3_to_stroke5, build_category_index
 from src.models.train_nn import TrainNN, RUNS_PATH
 from src.models.transformer_utils import *
-import src.utils as utils
-import src.models.nn_utils as nn_utils
 from src.eval.stroke_to_instruction import InstructionScorer
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
@@ -81,7 +77,8 @@ def build_vocab(data):
     """
     Returns mappings from index to token and vice versa.
     
-    :param data: list of dicts, each dict is one example.
+    Args:
+        data: list of dicts, each dict is one example.
     """
     tokens = set()
     for sample in data:
@@ -96,20 +93,6 @@ def build_vocab(data):
     token2idx = {v:k for k, v in idx2token.items()}
 
     return idx2token, token2idx
-
-def build_category_index(data):
-    """
-    Returns mappings from index to category and vice versa.
-    
-    :param data: list of dicts, each dict is one example
-    """
-    categories = set()
-    for sample in data:
-        categories.add(sample['category'])
-    idx2cat = {i: cat for i, cat in enumerate(categories)}
-    cat2idx = {cat: i  for i, cat in idx2cat.items()}
-
-    return idx2cat, cat2idx
 
 def save_progression_pair_dataset_splits_and_vocab():
     """
@@ -160,41 +143,6 @@ def map_sentence_to_index(sentence, token2idx):
     return [int(token2idx[tok]) for tok in utils.normalize_sentence(sentence)]
 
 
-def normalize_data(data):
-    """
-    Normalize entire dataset (delta_x, delta_y) by the scaling factor.
-
-    :param data: list of dicts
-    """
-    scale_factor = calculate_normalizing_scale_factor(data)
-    normalized_data = []
-    for sample in data:
-        stroke3_seg = sample['stroke3_segment']
-        stroke3 = sample['stroke3']
-        stroke3_seg[:, 0:2] /= scale_factor
-        stroke3[:, 0:2] /= scale_factor
-        sample['stroke3_segment'] = stroke3_seg
-        sample['stroke3'] = stroke3
-        normalized_data.append(sample)
-    return normalized_data
-
-def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_factor() in sketch_rnn/utils.py
-    """
-    Calculate the normalizing factor in Appendix of paper
-
-    :param data: list of dicts
-    """
-    deltas = []
-    for sample in data:
-        stroke = sample['stroke3_segment']
-        for j in range(stroke.shape[0]):
-            deltas.append(stroke[j][0])
-            deltas.append(stroke[j][1])
-    deltas = np.array(deltas)
-    scale_factor = np.std(deltas)
-    return scale_factor
-
-
 class ProgressionPairDataset(Dataset):
     def __init__(self, dataset_split, use_prestrokes=False):
         """
@@ -227,8 +175,11 @@ class ProgressionPairDataset(Dataset):
         self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
         self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
 
-        self.scale_factor = calculate_normalizing_scale_factor(data)
-        self.data = normalize_data(data)
+        # TODO: should I be using stroke3_SEGMENT for the factor or stroke3? or
+        # pass in the factor computed on the entire dataset?
+        self.data = normalize_strokes(data, scale_factor_key='stroke3_segment',
+                                      stroke_keys=['stroke3', 'stroke3_segment'])
+
 
     def __len__(self):
         return len(self.data)
@@ -238,7 +189,7 @@ class ProgressionPairDataset(Dataset):
 
         # Get subsequence of drawing that was annotated
         stroke3 = sample['stroke3_segment']
-        stroke5 = stroke3_to_stroke5(stroke3, len(stroke3))
+        stroke5 = stroke3_to_stroke5(stroke3)
 
         if self.use_prestrokes:
             # Get subsequence that precedes the annotated
@@ -250,7 +201,7 @@ class ProgressionPairDataset(Dataset):
             # doesn't occur in the data otherwise
             # TODO: is this a good separator token?
             sep_pt = np.array([0,0,1,1,0])
-            stroke5_pre = stroke3_to_stroke5(stroke3_pre, len(stroke3_pre))
+            stroke5_pre = stroke3_to_stroke5(stroke3_pre)
             stroke5 = np.vstack([stroke5_pre, sep_pt, stroke5])
 
 
@@ -271,7 +222,10 @@ class ProgressionPairDataset(Dataset):
         """
         Method to passed into a DataLoader that defines how to combine samples in a batch
         
-        :param: batch: list of samples, one sample is returned from __getitem__(idx)
+        TODO: why did I write my own collate_fn? Is there something wrong with not using one for the StrokeDataset?
+        
+        Args:
+            batch: list of samples, one sample is returned from __getitem__(idx)
         """
         strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
@@ -760,7 +714,7 @@ class StrokeToInstructionModel(TrainNN):
         """
         Return loss and other items of interest for one forward pass
 
-        :param batch:
+        Args: batch: tuple from DataLoader
             strokes: [max_stroke_len, bsz, 5] FloatTensor
             stroke_lens: list of ints
             texts: list of strs

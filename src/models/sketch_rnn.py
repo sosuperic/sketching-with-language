@@ -4,9 +4,6 @@
 SketchRNN model is VAE with GMM in decoder
 """
 
-import argparse
-from collections import defaultdict
-from datetime import datetime
 import matplotlib
 
 matplotlib.use('Agg')
@@ -14,18 +11,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import PIL
-import time
 
 import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 
+from src import utils
+from src.models import nn_utils
+from src.data_manager.quickdraw import final_categories, stroke3_to_stroke5, normalize_strokes, \
+    build_category_index
 from src.models.train_nn import TrainNN, RUNS_PATH
-import src.utils as utils
-import src.models.nn_utils as nn_utils
 
 NPZ_DATA_PATH = 'data/quickdraw/npz/'
 
@@ -40,7 +37,7 @@ USE_CUDA = torch.cuda.is_available()
 class HParams():
     def __init__(self):
         # Data
-        self.category = 'cat'
+        self.categories = 'cat'  # comma separated categories or 'all'
 
         # Training
         self.batch_size = 64  # 100
@@ -79,58 +76,6 @@ class HParams():
 #
 ##############################################################################
 
-def normalize_data(data):
-    """
-    Normalize entire dataset (delta_x, delta_y) by the scaling factor.
-
-    Args:
-        data: [len, 3 or 5] array (stroke3 or stroke5 format)
-    """
-    scale_factor = calculate_normalizing_scale_factor(data)
-    print(scale_factor)
-    normalized = []
-    for seq in data:
-        seq[:, 0:2] /= scale_factor
-        normalized.append(seq)
-    return normalized
-
-def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_factor() in sketch_rnn/utils.py
-    """
-    Calculate the normalizing factor in Appendix of paper
-
-    Args:
-        data: [len, 3 or 5] array (stroke3 or stroke5 format)
-    """
-    delta_data = []
-    for i in range(len(data)):
-        for j in range(len(data[i])):
-            delta_data.append(data[i][j, 0])
-            delta_data.append(data[i][j, 1])
-    delta_data = np.array(delta_data)
-    scale_factor = np.std(delta_data)
-    return scale_factor
-
-def stroke3_to_stroke5(seq, max_len=None):  # to_big_strokes() in sketch_rnn/utils.py
-    """
-    Convert from stroke-3 to stroke-5 format
-
-    Args:
-        seq: [len, 3] float array
-
-    Returns:
-        result: [max_len, 5] float array
-        l: int, length of sequence
-    """
-    result_len = max_len if max_len else len(seq)
-    result = np.zeros((result_len, 5), dtype=float)
-    l = len(seq)
-    assert l <= result_len
-    result[0:l, 0:2] = seq[:, 0:2]  # 1st and 2nd values are same
-    result[0:l, 3] = seq[:, 2]  # stroke-5[3] = pen-up, same as stroke-3[2]
-    result[0:l, 2] = 1 - result[0:l, 3]  # stroke-5[2] = pen-down, stroke-3[2] = pen-up (so inverse)
-    result[l:, 4] = 1  # last "stroke" has stroke5[4] equal to 1, all other values 0 (see Figure 4); hence l
-    return result
-
 class StrokeDataset(Dataset):
     """
     Dataset to load sketches
@@ -140,51 +85,65 @@ class StrokeDataset(Dataset):
         one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
     """
 
-    def __init__(self, category, dataset_split, hp):
+    def __init__(self, categories, dataset_split, max_len=200):
         """
-
-        :param category: str ('cat', 'giraffe', etc.)
-        :param dataset_split: str, ('train', 'valid', 'test')
-        """
-        self.hp = hp
-        # TODO : refactor so that we don't need to pass in hp (used for hp.max_len (different from self.max_len),
-        # and self.hp.batch_size, which I don't think is necessary anymore)
-
-        data_path = os.path.join(NPZ_DATA_PATH, '{}.npz'.format(category))
-        full_data = np.load(data_path, encoding='latin1')[dataset_split]  # e.g. cat.npz is in 3-stroke format
-        self.data = self._preprocess_data(full_data)
-        self.max_len = max([len(seq[:, 0]) for seq in self.data])  # this may be less than the hp max len
-
-    def _preprocess_data(self, data):  # see preprocess() in sketch_rnn/utils.py
-        """
-        Filter, clean, normalize data
-        
         Args:
-            data: [len, 3 or 5] array (stroke3 or stroke5 format)
+            categories: str (comma separated or 'all')
+            dataset_split: str ('train', 'valid', 'test')
+            hp: HParams
         """
-        # Filter first so that normalizing scale factor doesn't use filtered out sequences
-        preprocessed = self._filter_and_clean_data(data)
-        preprocessed = normalize_data(preprocessed)
-        # preprocessed = self._filter_to_multiple_of_batch_size(preprocessed)
-        return preprocessed
+        self.dataset_split = dataset_split
+        self.max_len = max_len
 
-    def _filter_and_clean_data(self, data):
+        # get categories
+        self.categories = None
+        if categories == 'all':
+            self.categories = final_categories()
+        elif ',' in categories:
+            self.categories = categories.split(',')
+        else:
+            self.categories = [categories]
+
+        # Load data
+        full_data = []  # list of dicts
+        self.max_len_in_data = 0
+        for i, category in enumerate(self.categories):
+            print('Loading {} ({}/{})'.format(category, i+1, len(self.categories)))
+            data_path = os.path.join(NPZ_DATA_PATH, '{}.npz'.format(category))
+            category_data = np.load(data_path, encoding='latin1')[dataset_split]  # e.g. cat.npz is in 3-stroke format
+            n_samples = len(category_data)
+            for i in range(n_samples):
+                stroke3 = category_data[i]
+                sample_len = stroke3.shape[0]  # number of points in stroke3 format
+                self.max_len_in_data = max(self.max_len_in_data, sample_len)
+                full_data.append({'stroke3': stroke3, 'category': category})
+
+        self.data = self.filter_and_clean_data(full_data)
+        self.data = normalize_strokes(self.data)
+        self.idx2cat, self.cat2idx = build_category_index(self.data)
+
+        print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
+
+    def filter_and_clean_data(self, data):
         """
         Removes short and large sequences;
         Remove large gaps (stroke has large delta, i.e. takes place far away from previous stroke)
         
         Args:
+            data: list of dicts
             data: [len, 3 or 5] array (stroke3 or stroke5 format)
         """
         filtered = []
-        for seq in data:
-            seq_len = len(seq[:, 0])
-            if (seq_len > 10) and (seq_len <= self.hp.max_len):
+        for sample in data:
+            stroke = sample['stroke3']
+            stroke_len = stroke.shape[0]
+            if (stroke_len > 10) and (stroke_len <= self.max_len):
                 # Following means absolute value of offset is at most 1000
-                seq = np.minimum(seq, 1000)
-                seq = np.maximum(seq, -1000)
-                seq = np.array(seq, dtype=np.float32)
-                filtered.append(seq)
+                stroke = np.minimum(stroke, 1000)
+                stroke = np.maximum(stroke, -1000)
+                stroke = np.array(stroke, dtype=np.float32)  # type conversion
+                sample['stroke3'] = stroke
+                filtered.append(sample)
         return filtered
 
     def __len__(self):
@@ -192,11 +151,14 @@ class StrokeDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.data[idx]
-        orig_len = len(sample)
-        sample = stroke3_to_stroke5(sample, self.max_len)
-        return (sample, orig_len)
+        category = sample['category']
+        cat_idx = self.cat2idx[category]
+        stroke3 = sample['stroke3']
+        stroke_len = len(stroke3)
+        stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
+        return stroke5, stroke_len, category, cat_idx
 
-
+    # TODO: do I need to write my own collate_fn like in InstructionGen?
 
 ##############################################################################
 #
@@ -206,6 +168,8 @@ class StrokeDataset(Dataset):
 
 def save_sequence_as_img(sequence, output_fp):
     """
+    TODO: move to quickdraw?
+    
     Args:
         sequence: [len, TODO: is it 3 or 5]
             [delta_x, delta_y, pen up / down]  # TODO: is it up or down
@@ -238,10 +202,10 @@ class SketchRNNVAEEncoder(nn.Module):
         self.fc_mu = nn.Linear(2 * enc_dim, z_dim)  # 2 for bidirectional
         self.fc_sigma = nn.Linear(2 * enc_dim, z_dim)
 
-    def forward(self, inputs, hidden_cell=None):
+    def forward(self, strokes, hidden_cell=None):
         """
         Args:
-            inputs: [max_len, bsz, input_dim] (input_size == isz == 5)
+            strokes: [max_len, bsz, input_dim] (input_size == isz == 5)
             hidden_cell: tuple of [n_layers * n_directions, bsz, dim]
 
         Returns:
@@ -249,7 +213,7 @@ class SketchRNNVAEEncoder(nn.Module):
             mu: [bsz, z_dim]
             sigma_hat [bsz, z_dim] (used to calculate KL loss, eq. 10)
         """
-        bsz = inputs.size(1)
+        bsz = strokes.size(1)
 
         # Initialize hidden state and cell state with zeros on first forward pass
         num_directions = 2 if self.lstm.bidirectional else 1
@@ -261,7 +225,7 @@ class SketchRNNVAEEncoder(nn.Module):
 
         # Pass inputs, hidden, and cell into encoder's lstm
         # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
-        _, (hidden, cell) = self.lstm(inputs, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
+        _, (hidden, cell) = self.lstm(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
         # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
         last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
         # [num_directions, bsz, hsz]
@@ -314,10 +278,10 @@ class SketchRNNDecoderGMM(nn.Module):
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
         self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
 
-    def forward(self, inputs, output_all=True, hidden_cell=None):
+    def forward(self, strokes, output_all=True, hidden_cell=None):
         """
         Args:
-            inputs: [len, bsz, esz + 5]
+            strokes: [len, bsz, esz + 5]
             output_all: boolean, return output at every timestep or just the last
             hidden_cell: tuple of [n_layers, bsz, dec_dim]
 
@@ -335,14 +299,14 @@ class SketchRNNDecoderGMM(nn.Module):
             cell: [1, bsz, dec_dim]
                   last cell state
         """
-        bsz = inputs.size(1)
+        bsz = strokes.size(1)
         if hidden_cell is None:  # init
             hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
             cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
             hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
-        outputs, (hidden, cell) = self.lstm(inputs, hidden_cell)
+        outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
 
         # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
         # Dimensions
@@ -402,32 +366,33 @@ class SketchRNNModel(TrainNN):
         super().__init__(hp, save_dir)
 
         self.eta_step = hp.eta_min
-        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.category, shuffle=True)
-        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.category, shuffle=False)
-        self.end_epoch_loader = self.get_data_loader('train', 1, hp.category, shuffle=False)
+        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, shuffle=True)
+        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, shuffle=False)
+        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, shuffle=False)
 
     #
     # Data
     #
-    def get_data_loader(self, dataset_split, batch_size, category, shuffle=True):
+    def get_data_loader(self, dataset_split, batch_size, categories, shuffle=True):
         """
         Args:
             dataset_split: str
             batch_size: int
-            category: str
+            categories: str
+            shuffle: bool
         """
-        ds = StrokeDataset(category, dataset_split, self.hp)
+        ds = StrokeDataset(categories, dataset_split, self.hp.max_len)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         return loader
 
-    def make_target(self, inputs, lengths, M):
+    def make_target(self, strokes, stroke_lens, M):
         """
-        Create target vector out of stroke-5 data and lengths. Namely, use lengths
+        Create target vector out of stroke-5 data and stroke_lens. Namely, use stroke_lens
         to create mask for each sequence
 
         Args:
-            inputs: [max_len, bsz, 5]
-            lengths: list of ints
+            strokes: [max_len, bsz, 5]
+            stroke_lens: list of ints
             M: int, number of mixtures
 
         Returns:
@@ -436,47 +401,49 @@ class SketchRNNModel(TrainNN):
             dy: [max_len + 1, bsz, num_mixtures]
             p:  [max_len + 1, bsz, 3]
         """
-        max_len, bsz, _ = inputs.size()
+        max_len, bsz, _ = strokes.size()
 
         # add eos
         eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
         eos = nn_utils.move_to_cuda(eos)
-        inputs = torch.cat([inputs, eos], 0)  # [max_len + 1, bsz, 5]
+        strokes = torch.cat([strokes, eos], 0)  # [max_len + 1, bsz, 5]
 
-        # calculate mask for each sequence using lengths
+        # calculate mask for each sequence using stroke_lens
         mask = torch.zeros(max_len + 1, bsz)
-        for idx, length in enumerate(lengths):
+        for idx, length in enumerate(stroke_lens):
             mask[:length, idx] = 1
         mask = nn_utils.move_to_cuda(mask)
         mask = mask.detach()
-        dx = torch.stack([inputs.data[:, :, 0]] * M, 2).detach()
-        dy = torch.stack([inputs.data[:, :, 1]] * M, 2).detach()
-        p1 = inputs.data[:, :, 2].detach()
-        p2 = inputs.data[:, :, 3].detach()
-        p3 = inputs.data[:, :, 4].detach()
+        dx = torch.stack([strokes.data[:, :, 0]] * M, 2).detach()
+        dy = torch.stack([strokes.data[:, :, 1]] * M, 2).detach()
+        p1 = strokes.data[:, :, 2].detach()
+        p2 = strokes.data[:, :, 3].detach()
+        p3 = strokes.data[:, :, 4].detach()
         p = torch.stack([p1, p2, p3], 2)
 
         return mask, dx, dy, p
 
     def preprocess_batch_from_data_loader(self, batch):
         """
-        Transposes and moves to cuda
+        Transposes strokes, moves to cuda
 
         Args:
             batch: tuple of
-                inputs: [bsz, max_len, 5] Tensor
-                lengths: list of ints
+                strokes: [bsz, max_len, 5] Tensor
+                stroke_lens: list of ints
+                cats: list of strs (categories)
+                cats_idx: [bsz] LongTensor
 
         Returns:
             batch: [max_len, bsz, 5]
-            lengths: list of ints
+            stroke_lens: list of ints
         """
-        inputs, lengths = batch
-        inputs = inputs.transpose(0, 1).float()  # Dataloader returns inputs in 1st dim, rest of code expects it to be 2nd
-        inputs = nn_utils.move_to_cuda(inputs)
-        lengths = lengths.numpy().tolist()
-        batch = (inputs, lengths)
-        return batch
+        strokes, stroke_lens, cats, cats_idx = batch
+        strokes = strokes.transpose(0, 1).float()
+        strokes = nn_utils.move_to_cuda(strokes)
+        stroke_lens = stroke_lens.numpy().tolist()
+        cats_idx = nn_utils.move_to_cuda(cats_idx)
+        return strokes, stroke_lens, cats, cats_idx
 
     #
     # Training, Generation
@@ -509,7 +476,7 @@ class SketchRNNModel(TrainNN):
             p:  [max_len + 1, bsz, 3]
             pi: [max_len + 1, bsz, M] 
 
-        These are outputs from make_targets(batch, lengths). "+ 1" because of the
+        These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
         end of sequence stroke appended in make_targets()
         """
         max_len, batch_size = mask.size()
@@ -568,26 +535,24 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
         Return loss and other items of interest for one forward pass
 
         Args:
-            batch: tuple of
-                inputs: [max_len, bsz, 5]
-                lengths: list of ints
+            batch: tuple from DataLoaders
 
         Returns:
             dict where 'loss': float Tensor must exist
         """
-        inputs, lengths = batch
-        max_len, bsz, _ = inputs.size()
+        strokes, stroke_lens, cats, cats_idx = batch
+        max_len, bsz, _ = strokes.size()
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
         sos = nn_utils.move_to_cuda(sos)
-        dec_inputs = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
+        dec_inputs = torch.cat([sos, strokes], 0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
 
         # Decode
         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
+        mask, dx, dy, p = self.make_target(strokes, stroke_lens, self.hp.M)
         loss = self.reconstruction_loss(mask,
                                         dx, dy, p,
                                         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
@@ -626,23 +591,21 @@ class SketchRNNVAEModel(SketchRNNModel):
         Return loss and other items of interest for one forward pass
 
         Args:
-            batch: tuple of
-                inputs: [max_len, bsz, 5]
-                lengths: list of ints
+            batch: tuple from loader
 
         Returns:
             dict where 'loss': float Tensor must exist
         """
-        inputs, lengths = batch
-        max_len, bsz, _ = inputs.size()
+        strokes, stroke_lens, cats, cats_idx = batch
+        max_len, bsz, _ = strokes.size()
 
         # Encode
-        z, mu, sigma_hat = self.enc(inputs)  # each [bsz, z_dim]
+        z, mu, sigma_hat = self.enc(strokes)  # each [bsz, z_dim]
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
         sos = nn_utils.move_to_cuda(sos)
-        inputs_init = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
+        inputs_init = torch.cat([sos, strokes], 0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
         z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
         dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
 
@@ -656,7 +619,7 @@ class SketchRNNVAEModel(SketchRNNModel):
                                                                      hidden_cell=hidden_cell)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
+        mask, dx, dy, p = self.make_target(strokes, stroke_lens, self.hp.M)
         loss_KL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
         loss_R = self.reconstruction_loss(mask,
                                           dx, dy, p,
@@ -704,12 +667,12 @@ class SketchRNNVAEModel(SketchRNNModel):
         n = 0
         for i, batch in enumerate(data_loader):
             batch = self.preprocess_batch_from_data_loader(batch)
-            inputs, lengths = batch
+            strokes, stroke_lens, cats, cats_idx = batch
 
-            max_len, bsz, _ = inputs.size()
+            max_len, bsz, _ = strokes.size()
 
             # Encode
-            z, _, _ = self.enc(inputs)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
+            z, _, _ = self.enc(strokes)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
