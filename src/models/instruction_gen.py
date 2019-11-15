@@ -389,14 +389,14 @@ class StrokeToInstructionModel(TrainNN):
                     for name, value in scorer.score(gt, gen).items():
                         result[name] = value
                         if writer:
-                            writer.add_scalar('inference/{}'.format(name), value, epoch * self.val_loader.__len__() + j)
+                            writer.add_scalar('inference/{}'.format(name), value, epoch * self.val_loader.__len__() + i)
                 inference.append(result)
 
                 # log
                 text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
                     instruction, decoded_texts[j], urls[j])
                 if writer:
-                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
+                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + i)
 
         return inference
 
