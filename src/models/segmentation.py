@@ -14,7 +14,7 @@ from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH
 from src.models import nn_utils
 from src import utils
 
-from src.models.sketch_rnn import SketchDataset
+from src.models.sketch_rnn import StrokeDataset
 from src.data_manager.quickdraw import final_categories
 
 
@@ -47,7 +47,7 @@ class Segmentation(object):
     def segment_all_data(self):
         for category in final_categories():
             for split in ['train', 'valid', 'test']:
-                ds = SketchDataset(split, category=category)
+                ds = StrokeDataset(split, category=category)
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
                 for segmented in self.segment(loader):
                     pass # TODO: save segmented

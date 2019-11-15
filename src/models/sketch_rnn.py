@@ -70,6 +70,8 @@ class HParams():
         self.R = 0.99995  # annealing (supp eq. 4)
         self.KL_min = 0.2  #
 
+        self.notes = ''
+
 
 ##############################################################################
 #
@@ -81,7 +83,8 @@ def normalize_data(data):
     """
     Normalize entire dataset (delta_x, delta_y) by the scaling factor.
 
-    :param: data is [delta_x, delta_y, ...]  array
+    Args:
+        data: [len, 3 or 5] array (stroke3 or stroke5 format)
     """
     scale_factor = calculate_normalizing_scale_factor(data)
     print(scale_factor)
@@ -95,7 +98,8 @@ def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_fac
     """
     Calculate the normalizing factor in Appendix of paper
 
-    :param: data is [delta_x, delta_y, ...]  array
+    Args:
+        data: [len, 3 or 5] array (stroke3 or stroke5 format)
     """
     delta_data = []
     for i in range(len(data)):
@@ -106,26 +110,28 @@ def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_fac
     scale_factor = np.std(delta_data)
     return scale_factor
 
-def stroke3_to_stroke5(seq, max_len):  # to_big_strokes() in sketch_rnn/utils.py
+def stroke3_to_stroke5(seq, max_len=None):  # to_big_strokes() in sketch_rnn/utils.py
     """
     Convert from stroke-3 to stroke-5 format
 
-    :param seq: [len, 3] float array
+    Args:
+        seq: [len, 3] float array
 
-    :returns
+    Returns:
         result: [max_len, 5] float array
         l: int, length of sequence
     """
-    result = np.zeros((max_len, 5), dtype=float)
+    result_len = max_len if max_len else len(seq)
+    result = np.zeros((result_len, 5), dtype=float)
     l = len(seq)
-    assert l <= max_len
+    assert l <= result_len
     result[0:l, 0:2] = seq[:, 0:2]  # 1st and 2nd values are same
     result[0:l, 3] = seq[:, 2]  # stroke-5[3] = pen-up, same as stroke-3[2]
     result[0:l, 2] = 1 - result[0:l, 3]  # stroke-5[2] = pen-down, stroke-3[2] = pen-up (so inverse)
     result[l:, 4] = 1  # last "stroke" has stroke5[4] equal to 1, all other values 0 (see Figure 4); hence l
     return result
 
-class SketchDataset(Dataset):
+class StrokeDataset(Dataset):
     """
     Dataset to load sketches
 
@@ -152,17 +158,23 @@ class SketchDataset(Dataset):
     def _preprocess_data(self, data):  # see preprocess() in sketch_rnn/utils.py
         """
         Filter, clean, normalize data
+        
+        Args:
+            data: [len, 3 or 5] array (stroke3 or stroke5 format)
         """
         # Filter first so that normalizing scale factor doesn't use filtered out sequences
         preprocessed = self._filter_and_clean_data(data)
         preprocessed = normalize_data(preprocessed)
-        preprocessed = self._filter_to_multiple_of_batch_size(preprocessed)
+        # preprocessed = self._filter_to_multiple_of_batch_size(preprocessed)
         return preprocessed
 
     def _filter_and_clean_data(self, data):
         """
         Removes short and large sequences;
         Remove large gaps (stroke has large delta, i.e. takes place far away from previous stroke)
+        
+        Args:
+            data: [len, 3 or 5] array (stroke3 or stroke5 format)
         """
         filtered = []
         for seq in data:
@@ -173,16 +185,6 @@ class SketchDataset(Dataset):
                 seq = np.maximum(seq, -1000)
                 seq = np.array(seq, dtype=np.float32)
                 filtered.append(seq)
-        return filtered
-
-    def _filter_to_multiple_of_batch_size(self, data):
-        """
-        Code requires fixed batch size for some reason
-        """
-        # TODO: this is probably not necessary anymore now that there's no more hp.batch_size hardcoded in
-        # (instead it's calculated based on the batch tensor in that particular forward pass
-        n_batches = len(data) // self.hp.batch_size
-        filtered = data[:n_batches * self.hp.batch_size]
         return filtered
 
     def __len__(self):
@@ -204,9 +206,10 @@ class SketchDataset(Dataset):
 
 def save_sequence_as_img(sequence, output_fp):
     """
-
-    :param sequence: [delta_x, delta_y, pen up / down]  # TODO: is it up or down
-    :param output_fp: str
+    Args:
+        sequence: [len, TODO: is it 3 or 5]
+            [delta_x, delta_y, pen up / down]  # TODO: is it up or down
+        output_fp: str
     """
     strokes = np.split(sequence, np.where(sequence[:, 2] > 0)[0] + 1)
     fig = plt.figure()
@@ -237,12 +240,11 @@ class EncoderRNN(nn.Module):
 
     def forward(self, inputs, hidden_cell=None):
         """
+        Args:
+            inputs: [max_len, bsz, input_dim] (input_size == isz == 5)
+            hidden_cell: tuple of [n_layers * n_directions, bsz, dim]
 
-        :param inputs: [max_len, bsz, input_dim] (input_size == isz == 5)
-        :param batch_size: int
-        :param hidden_cell:
-
-        :return:
+        Returns:
             z: [bsz, z_dim]
             mu: [bsz, z_dim]
             sigma_hat [bsz, z_dim] (used to calculate KL loss, eq. 10)
@@ -296,9 +298,11 @@ class DecoderRNN(nn.Module):
 
     def __init__(self, input_dim, dec_dim, M, dropout=1.0):
         """
-
-        :param input_dim: int (size of input)
-        :param dec_dim: int (size of hidden states)
+        Args:
+            input_dim: int (size of input)
+            dec_dim: int (size of hidden states)
+            M: int (number of mixtures)
+            dropout: float
         """
         super(DecoderRNN, self).__init__()
 
@@ -312,10 +316,10 @@ class DecoderRNN(nn.Module):
 
     def forward(self, inputs, output_all=True, hidden_cell=None):
         """
-
-        :param inputs: [len, bsz, esz + 5]
-        :param output_all: boolean, return output at every timestep or just the last
-        :param hidden_cell: [n_layers, bsz, dec_dim]
+        Args:
+            inputs: [len, bsz, esz + 5]
+            output_all: boolean, return output at every timestep or just the last
+            hidden_cell: tuple of [n_layers, bsz, dec_dim]
 
         :returns:
             pi: weights for each mixture            [max_len + 1, bsz, M]
@@ -412,7 +416,7 @@ class SketchRNN(TrainNN):
             batch_size: int
             category: str
         """
-        ds = SketchDataset(category, dataset_split, self.hp)
+        ds = StrokeDataset(category, dataset_split, self.hp)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         return loader
 
@@ -421,11 +425,12 @@ class SketchRNN(TrainNN):
         Create target vector out of stroke-5 data and lengths. Namely, use lengths
         to create mask for each sequence
 
-        :param: inputs: [max_len, bsz, 5]
-        :param: lengths: list of ints 
-        :param: M: int, number of mixtures
+        Args:
+            inputs: [max_len, bsz, 5]
+            lengths: list of ints
+            M: int, number of mixtures
 
-        :returns: 
+        Returns:
             mask: [max_len + 1, bsz]
             dx: [max_len + 1, bsz, num_mixtures]
             dy: [max_len + 1, bsz, num_mixtures]
@@ -455,10 +460,14 @@ class SketchRNN(TrainNN):
 
     def preprocess_batch_from_data_loader(self, batch):
         """
-        :param batch: [bsz, max_len, 5] Tensor
-        :param lengths: [bsz] Tensor
+        Transposes and moves to cuda
 
-        :returns:
+        Args:
+            batch: tuple of
+                inputs: [bsz, max_len, 5] Tensor
+                lengths: list of ints
+
+        Returns:
             batch: [max_len, bsz, 5]
             lengths: list of ints
         """
@@ -472,9 +481,9 @@ class SketchRNN(TrainNN):
     #
     # Training, Generation
     #
-
     def pre_forward_train_hook(self):
-        self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
+        # update eta for LKL
+        self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
         self.save_generation(data_loader, epoch, n_gens=1, outputs_path=outputs_path)
@@ -491,17 +500,17 @@ class SketchRNN(TrainNN):
                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                             q):
         """
-        Eq. 9
+        Based on likelihood (Eq. 9)
 
-        Params
-        ------
-        These are outputs from make_targets(batch, lengths)
+        Args:
             mask: [max_len + 1, bsz]
             dx: [max_len + 1, bsz, num_mixtures]
             dy: [max_len + 1, bsz, num_mixtures]
             p:  [max_len + 1, bsz, 3]
             pi: [max_len + 1, bsz, M] 
-        + 1 because end of sequence stroke appended in make_targets()
+
+        These are outputs from make_targets(batch, lengths). "+ 1" because of the
+        end of sequence stroke appended in make_targets()
         """
         max_len, batch_size = mask.size()
 
@@ -557,12 +566,13 @@ class SketchRNNDecoderOnly(SketchRNN):
         """
         Return loss and other items of interest for one forward pass
 
-        :param batch: tuple of
-            inputs: [max_len, bsz, 5]
-            lengths: list of ints
-        :return: dict
-            'loss': float Tensor. Must exist
-             'loss_*': 
+        Args:
+            batch: tuple of
+                inputs: [max_len, bsz, 5]
+                lengths: list of ints
+
+        Returns:
+            dict where 'loss': float Tensor must exist
         """
         inputs, lengths = batch
         max_len, bsz, _ = inputs.size()
@@ -604,9 +614,8 @@ class SketchRNNVAE(SketchRNN):
         self.decoder = DecoderRNN(hp.z_dim + 5, hp.dec_dim, hp.M)
         self.models.extend([self.encoder, self.fc_hc, self.decoder])
         if USE_CUDA:
-            self.encoder.cuda()
-            self.fc_hc.cuda()
-            self.decoder.cuda()
+            for model in self.models:
+                model.cuda()
 
         # optimization -- ADAM plus annealing (supp eq. 4)
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
@@ -615,12 +624,13 @@ class SketchRNNVAE(SketchRNN):
         """
         Return loss and other items of interest for one forward pass
 
-        :param batch: tuple of
-            inputs: [max_len, bsz, 5]
-            lengths: list of ints
-        :return: dict
-            'loss': float Tensor. Must exist
-             'loss_*': 
+        Args:
+            batch: tuple of
+                inputs: [max_len, bsz, 5]
+                lengths: list of ints
+
+        Returns:
+            dict where 'loss': float Tensor must exist
         """
         inputs, lengths = batch
         max_len, bsz, _ = inputs.size()
@@ -663,13 +673,14 @@ class SketchRNNVAE(SketchRNN):
         """
         Calculate KL loss -- (eq. 10, 11)
 
-        :param: sigma_hat: [bsz, z_dim]
-        :param: mu: [bsz, z_dim]
-        :param: KL_min: float
-        :param: wKL: float
-        :param: eta_step: float
+        Args:
+            sigma_hat: [bsz, z_dim]
+            mu: [bsz, z_dim]
+            KL_min: float
+            wKL: float
+            eta_step: float
 
-        :returns: float Tensor
+        Returns: float Tensor
         """
         bsz, z_dim = sigma_hat.size()
 
@@ -746,14 +757,15 @@ class SketchRNNVAE(SketchRNN):
         Return state using current mixture parameters etc. set from decoder call.
         Note that this state is different from the stroke-5 format.
 
-        :param: pi: [len, bsz, M]
+        Args:
+            pi: [len, bsz, M]
             # TODO!! This is currently hardcoded with save_conditional_generation
             # When we do pi.data[0,0,:] down below,
                 The 0-th index 0: Currently, pi is being calculated with output_all=False, which means it's just ouputting the last pi.
                 The 1-th index 0: first in batch
         # TODO: refactor so that the above isn't the case.
 
-        :returns:
+        Returns:
             # TODO: what does it return exactly?
             s, dx, dy, pen_down, eos
         """
@@ -804,9 +816,6 @@ class SketchRNNVAE(SketchRNN):
 
     def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False):
         """
-        Inputs are all floats
-
-        Returns two floats
         """
         if greedy:
             return mu_x, mu_y
@@ -832,7 +841,6 @@ class SketchRNNVAE(SketchRNN):
 if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
-    # Add additional arguments to parser
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
