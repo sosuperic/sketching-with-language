@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 
 import src.utils as utils
-import src.models.nn_utils as nn_utils
+import src.models.core.nn_utils as nn_utils
 
 
 class PositionalEncoder(nn.Module):

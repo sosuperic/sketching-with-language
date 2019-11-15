@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from src import utils
 from src.data_manager.quickdraw import  LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     build_category_index, normalize_strokes, stroke3_to_stroke5
-from src.models import nn_utils
+from src.models.core import nn_utils
 
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')

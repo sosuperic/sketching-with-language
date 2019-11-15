@@ -9,11 +9,11 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from src.models.train_nn import TrainNN, RUNS_PATH
-from src.models.transformer_utils import *
-from src.models.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
+from src.models.core.train_nn import TrainNN, RUNS_PATH
+from src.models.core.transformer_utils import *
+from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
-from src.models.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN
+from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN
 from src.eval.stroke_to_instruction import InstructionScorer
 
 USE_CUDA = torch.cuda.is_available()

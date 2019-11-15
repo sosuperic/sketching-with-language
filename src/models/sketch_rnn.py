@@ -18,9 +18,9 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from src import utils
-from src.models import nn_utils
-from src.models.stroke_models import StrokeDataset, SketchRNNDecoderGMM, SketchRNNVAEEncoder
-from src.models.train_nn import TrainNN, RUNS_PATH
+from src.models.core import nn_utils
+from src.models.base.stroke_models import StrokeDataset, SketchRNNDecoderGMM, SketchRNNVAEEncoder
+from src.models.core.train_nn import TrainNN, RUNS_PATH
 
 
 USE_CUDA = torch.cuda.is_available()

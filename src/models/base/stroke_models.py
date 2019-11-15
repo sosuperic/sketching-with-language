@@ -15,9 +15,8 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 
 from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories
-from src.models.transformer_utils import *
-
-from src.models import nn_utils
+from src.models.core.transformer_utils import *
+from src.models.core import nn_utils
 
 NPZ_DATA_PATH = 'data/quickdraw/npz/'
 
