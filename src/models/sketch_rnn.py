@@ -228,9 +228,9 @@ def save_sequence_as_img(sequence, output_fp):
 # ENCODER
 #
 ##############################################################################
-class EncoderRNN(nn.Module):
+class SketchRNNVAEEncoder(nn.Module):
     def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=1.0):
-        super(EncoderRNN, self).__init__()
+        super().__init__()
         self.enc_dim = enc_dim
 
         self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
@@ -292,7 +292,7 @@ class EncoderRNN(nn.Module):
 # DECODER
 #
 ##############################################################################
-class DecoderRNN(nn.Module):
+class SketchRNNDecoderGMM(nn.Module):
     """
     """
 
@@ -304,7 +304,7 @@ class DecoderRNN(nn.Module):
             M: int (number of mixtures)
             dropout: float
         """
-        super(DecoderRNN, self).__init__()
+        super().__init__()
 
         self.input_dim = input_dim
         self.dec_dim = dec_dim
@@ -397,7 +397,7 @@ class DecoderRNN(nn.Module):
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
 
 
-class SketchRNN(TrainNN):
+class SketchRNNModel(TrainNN):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
 
@@ -549,18 +549,19 @@ class SketchRNN(TrainNN):
         return exp / norm
 
 
-class SketchRNNDecoderOnly(SketchRNN):
+class SketchRNNDecoderOnlyModel(SketchRNNModel):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
 
         # Model
-        self.decoder = DecoderRNN(5, hp.dec_dim, hp.M)
-        self.models.append(self.decoder)
+        self.dec = SketchRNNDecoderGMM(5, hp.dec_dim, hp.M)
+        self.models.append(self.dec)
         if USE_CUDA:
-            self.decoder.cuda()
+            for model in self.models:
+                model.cuda()
 
         # optimization -- ADAM plus annealing (supp eq. 4)
-        self.optimizers.append(optim.Adam(self.decoder.parameters(), hp.lr))
+        self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
     def one_forward_pass(self, batch):
         """
@@ -583,7 +584,7 @@ class SketchRNNDecoderOnly(SketchRNN):
         dec_inputs = torch.cat([sos, inputs], 0)  # add sos at the begining of the inputs; [max_len + 1, bsz, 5]
 
         # Decode
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(dec_inputs, output_all=True)
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
         # Calculate losses
         mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
@@ -600,7 +601,7 @@ class SketchRNNDecoderOnly(SketchRNN):
         pass
 
 
-class SketchRNNVAE(SketchRNN):
+class SketchRNNVAEModel(SketchRNNModel):
     """
     Create entire sketch model by combining encoder and decoder. Training, generation, etc.
     """
@@ -609,10 +610,10 @@ class SketchRNNVAE(SketchRNN):
         super().__init__(hp, save_dir)
 
         # Model
-        self.encoder = EncoderRNN(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
+        self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
         self.fc_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
-        self.decoder = DecoderRNN(hp.z_dim + 5, hp.dec_dim, hp.M)
-        self.models.extend([self.encoder, self.fc_hc, self.decoder])
+        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M)
+        self.models.extend([self.enc, self.fc_hc, self.dec])
         if USE_CUDA:
             for model in self.models:
                 model.cuda()
@@ -636,7 +637,7 @@ class SketchRNNVAE(SketchRNN):
         max_len, bsz, _ = inputs.size()
 
         # Encode
-        z, mu, sigma_hat = self.encoder(inputs)  # each [bsz, z_dim]
+        z, mu, sigma_hat = self.enc(inputs)  # each [bsz, z_dim]
 
         # Create inputs to decoder
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
@@ -651,8 +652,8 @@ class SketchRNNVAE(SketchRNN):
         # TODO: if we want multiple layers, we need to replicate hidden and cell n_layers times
 
         # Decode
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.decoder(dec_inputs, output_all=True,
-                                                                         hidden_cell=hidden_cell)
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True,
+                                                                     hidden_cell=hidden_cell)
 
         # Calculate losses
         mask, dx, dy, p = self.make_target(inputs, lengths, self.hp.M)
@@ -708,7 +709,7 @@ class SketchRNNVAE(SketchRNN):
             max_len, bsz, _ = inputs.size()
 
             # Encode
-            z, _, _ = self.encoder(inputs)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
+            z, _, _ = self.enc(inputs)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
@@ -727,7 +728,7 @@ class SketchRNNVAE(SketchRNN):
 
                 # decode
                 pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
-                    self.decoder(input, output_all=False, hidden_cell=hidden_cell)
+                    self.dec(input, output_all=False, hidden_cell=hidden_cell)
                 hidden_cell = (hidden, cell)
 
                 # sample next state
@@ -849,8 +850,8 @@ if __name__ == "__main__":
 
     model = None
     if hp.model_type == 'vae':
-        model = SketchRNNVAE(hp, save_dir)
+        model = SketchRNNVAEModel(hp, save_dir)
     elif hp.model_type == 'decoder':
-        model = SketchRNNDecoderOnly(hp, save_dir)
+        model = SketchRNNDecoderOnlyModel(hp, save_dir)
 
     model.train_loop()
