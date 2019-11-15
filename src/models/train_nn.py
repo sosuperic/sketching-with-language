@@ -39,6 +39,9 @@ class TrainNN(nn.Module):
     # Training
     #
     ##############################################################################
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
     def lr_decay(self, optimizer, min_lr, lr_decay):
         """
         Decay learning rate by a factor of lr_decay
@@ -122,6 +125,8 @@ class TrainNN(nn.Module):
         stdout_fp = os.path.join(self.save_dir, 'stdout.txt')
         stdout_f = open(stdout_fp, 'w')
         model_fp = os.path.join(self.save_dir, 'model.pt')
+
+        print('Number of trainable parameters: ', self.count_parameters())
 
         # Train
         val_losses = []  # used for early stopping

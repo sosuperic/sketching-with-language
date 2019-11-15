@@ -54,8 +54,8 @@ class HParams():
         self.dim = 512
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.model_type = 'cnn_lstm'  # 'lstm', 'transformer'
-        self.condition_on_hc = False  # With 'lstm', input to decoder also contains last hidden cell
+        self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
+        self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_prestrokes = True
         self.use_categories = True
         self.dropout = 0.2
@@ -201,7 +201,7 @@ def calculate_normalizing_scale_factor(data):  # calculate_normalizing_scale_fac
 
 
 class ProgressionPairDataset(Dataset):
-    def __init__(self, dataset_split, remove_question_marks=False):
+    def __init__(self, dataset_split, use_prestrokes=False):
         """
         
         Args:
@@ -210,7 +210,7 @@ class ProgressionPairDataset(Dataset):
         """
         super().__init__()
         self.dataset_split = dataset_split
-        self.remove_quesiton_marks = remove_question_marks
+        self.use_prestrokes = use_prestrokes
 
         # Get data
         fp = None
@@ -224,13 +224,6 @@ class ProgressionPairDataset(Dataset):
             save_progression_pair_dataset_splits_and_vocab()
         data = utils.load_file(fp)
 
-        if remove_question_marks:
-            new_data = []
-            for sample in data:
-                if sample['annotation'] != '?':
-                    new_data.append(sample)
-            data = new_data
-
         # Load vocab and category mappings
         self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
@@ -239,6 +232,7 @@ class ProgressionPairDataset(Dataset):
         self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
         self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
 
+        self.scale_factor = calculate_normalizing_scale_factor(data)
         self.data = normalize_data(data)
 
     def __len__(self):
@@ -248,15 +242,22 @@ class ProgressionPairDataset(Dataset):
         sample = self.data[idx]
 
         # Get subsequence of drawing that was annotated
-        stroke3_seg = sample['stroke3_segment']
-        stroke5_seg = stroke3_to_stroke5(stroke3_seg, len(stroke3_seg))
-        # Get subsequence that precedes the annotated
-        stroke3_pre_seg = sample['stroke3'][:sample['stroke3_start'],:]
+        stroke3 = sample['stroke3_segment']
+        stroke5 = stroke3_to_stroke5(stroke3, len(stroke3))
 
-        # Insert element so that all presegments have length at least 1
-        stroke3_pre_seg = np.vstack([np.array([0, 0, 1]), stroke3_pre_seg])  # 1 for penup
+        if self.use_prestrokes:
+            # Get subsequence that precedes the annotated
+            stroke3_pre = sample['stroke3'][:sample['stroke3_start'],:]
+            # Insert element so that all presegments have length at least 1
+            stroke3_pre = np.vstack([np.array([0, 0, 1]), stroke3_pre])  # 1 for penup
 
-        stroke5_pre_seg = stroke3_to_stroke5(stroke3_pre_seg, len(stroke3_pre_seg))
+            # Separator point is [0,0,1,1,0]. Should be identifiable as pt[2] is pen down, pt[3] is pen up and
+            # doesn't occur in the data otherwise
+            # TODO: is this a good separator token?
+            sep_pt = np.array([0,0,1,1,0])
+            stroke5_pre = stroke3_to_stroke5(stroke3_pre, len(stroke3_pre))
+            stroke5 = np.vstack([stroke5_pre, sep_pt, stroke5])
+
 
         # Map
         text = sample['annotation']
@@ -268,7 +269,7 @@ class ProgressionPairDataset(Dataset):
         cat_idx = self.cat2idx[cat]
         url = sample['url']
 
-        return (stroke5_seg, stroke5_pre_seg, text, text_indices, cat, cat_idx, url)
+        return (stroke5, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn(batch):
@@ -277,7 +278,7 @@ class ProgressionPairDataset(Dataset):
         
         :param: batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        strokes, prestrokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
@@ -289,14 +290,6 @@ class ProgressionPairDataset(Dataset):
             l = stroke.shape[0]
             batch_strokes[i,:l,:] = stroke
 
-        # Create array of strokes, zeros for padding
-        prestroke_lens = [prestroke.shape[0] for prestroke in prestrokes]
-        max_prestrokes_len = max(prestroke_lens)
-        batch_prestrokes = np.zeros((bsz, max_prestrokes_len, sample_dim))
-        for i, prestrokes in enumerate(prestrokes):
-            l = prestrokes.shape[0]
-            batch_prestrokes[i, :l, :] = prestrokes
-
         # Create array of text indices, zeros for padding
         text_lens = [len(t) for t in texts_indices]
         max_text_len = max(text_lens)
@@ -307,11 +300,10 @@ class ProgressionPairDataset(Dataset):
 
         # Convert to Tensors
         batch_strokes = torch.FloatTensor(batch_strokes)
-        batch_prestrokes = torch.FloatTensor(batch_prestrokes)
         batch_text_indices = torch.LongTensor(batch_text_indices)
         cats_idx = torch.LongTensor(cats_idx)
 
-        return batch_strokes, stroke_lens, batch_prestrokes, prestroke_lens,\
+        return batch_strokes, stroke_lens, \
                texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
 
@@ -345,7 +337,7 @@ class StrokeEncoderCNN(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, strokes, stroke_lens, prestrokes=None, prestroke_lens=None,
+    def forward(self, strokes, stroke_lens,
                 category_embedding=None, categories=None):
         """
         Args:
@@ -353,6 +345,8 @@ class StrokeEncoderCNN(nn.Module):
 
         Returns:  [bsz, dim]
         """
+        # TODO: shouldn't I be using stroke_lens to mask?
+
         strokes = self.input_fc(strokes)  # [seq_len, bsz, emb_dim]
         strokes = strokes.transpose(0,1).unsqueeze(1)  # [bsz, 1, seq_len, emb_dim]
 
@@ -372,14 +366,13 @@ class StrokeEncoderCNN(nn.Module):
 class StrokeEncoderTransformer(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim, num_layers=1, dropout=0,
-                 use_prestrokes=False, use_categories=False
+                 use_categories=False
                  ):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
-        self.use_prestrokes = use_prestrokes
         self.use_categories = use_categories
 
         enc_layer = nn.TransformerEncoderLayer(
@@ -393,23 +386,17 @@ class StrokeEncoderTransformer(nn.Module):
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
 
     def forward(self,  strokes, stroke_lens,
-                prestrokes=None, prestroke_lens=None,
                 category_embedding=None, categories=None):
         """
         Args:
             strokes:  [max_stroke_len, bsz, input_dim]
             stroke_lens: list of ints, length max_stroke_len
-            prestrokes:  [max_prestroke_len, bsz]
-            prestroke_lens: list of ints, length max_prestroke_len
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
 
         Returns:
             hidden: [bsz, dim]
         """
-        # TODO: using prestrokes is a bit annoying...
-        # We can't simply 1) concat strokes and prestrokes, 2) add stroke_lens and prestroke_lens
-        # because there would be padding elements between strokes and prestrokes.
         bsz = strokes.size(1)
 
         # if category_embedding:
@@ -438,7 +425,7 @@ class StrokeEncoderTransformer(nn.Module):
 class StrokeEncoderLSTM(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
-                 use_prestrokes=False, use_categories=False
+                 use_categories=False
                  ):
         super().__init__()
         self.input_dim = input_dim
@@ -446,7 +433,6 @@ class StrokeEncoderLSTM(nn.Module):
         self.num_layers = num_layers
         self.dropout = dropout
         self.batch_first = batch_first
-        self.use_prestrokes = use_prestrokes
         self.use_categories = use_categories
 
         if use_categories:
@@ -460,20 +446,16 @@ class StrokeEncoderLSTM(nn.Module):
                                 num_layers=num_layers, dropout=dropout, batch_first=batch_first)
 
     def forward(self, strokes, stroke_lens,
-                prestrokes=None, prestroke_lens=None,
                 category_embedding=None, categories=None):
         """
         Args:
             strokes:  [max_stroke_len, bsz, input_dim]
             stroke_lens: list of ints, length max_stroke_len
-            prestrokes:  [max_prestroke_len, bsz]
-            prestroke_lens: list of ints, length max_prestroke_len
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
 
         Returns:
             stroke_outputs: [max_stroke_len, bsz, dim]
-            prestroke_outputs: [max_prestroke_len, bsz, dim]
             hidden: [layers * direc, bsz, dim]
             cell:  [layers * direc, bsz, dim]
         """
@@ -486,21 +468,10 @@ class StrokeEncoderLSTM(nn.Module):
             cats_emb = self.dropout_mod(cats_emb)
             strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
             strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
-            if self.use_prestrokes:
-                prestrokes = torch.cat([prestrokes, cats_emb.repeat(prestrokes.size(0), 1, 1)], dim=2)
-                prestrokes = self.stroke_cat_fc(prestrokes)
 
-        if self.use_prestrokes:
-            packed_prestrokes = nn.utils.rnn.pack_padded_sequence(prestrokes, prestroke_lens, enforce_sorted=False)
-            _, (pre_h, pre_c) = self.lstm(packed_prestrokes)  # [max_pre_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-
-            packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
-            strokes_outputs, (hidden, cell) = self.lstm(packed_strokes, (pre_h, pre_c))  # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-            strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
-        else:
-            packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
-            strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
-            strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
+        packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
+        strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
+        strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
 
         # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
         hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
@@ -680,8 +651,10 @@ class StrokeToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
 
-        self.tr_loader =  self.get_data_loader('train', self.hp.batch_size, shuffle=True)
-        self.val_loader = self.get_data_loader('valid', self.hp.batch_size, shuffle=False)
+        self.tr_loader =  self.get_data_loader('train', self.hp.batch_size, shuffle=True,
+                                               use_prestrokes=self.hp.use_prestrokes)
+        self.val_loader = self.get_data_loader('valid', self.hp.batch_size, shuffle=False,
+                                               use_prestrokes=self.hp.use_prestrokes)
         self.end_epoch_loader = self.val_loader
 
         # Model
@@ -695,20 +668,16 @@ class StrokeToInstructionModel(TrainNN):
         if hp.model_type.endswith('lstm'):
             # encoders may be different
             if hp.model_type == 'cnn_lstm':
-                if hp.use_prestrokes:
-                    raise NotImplementedError('Using prestrokes not implemented for cnn_lstm')
                 self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout)
             elif hp.model_type == 'transformer_lstm':
                 self.enc = StrokeEncoderTransformer(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
-                    use_prestrokes=hp.use_prestrokes, use_categories=hp.use_categories,
+                    use_categories=hp.use_categories,
                 )
-                if hp.use_prestrokes:
-                    raise NotImplementedError('Using prestrokes not implemented for transformer_lstm')
             elif hp.model_type == 'lstm':
                 self.enc = StrokeEncoderLSTM(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
-                    use_prestrokes=hp.use_prestrokes, use_categories=hp.use_categories,
+                    use_categories=hp.use_categories,
                 )
 
             # decoder is lstm
@@ -724,8 +693,6 @@ class StrokeToInstructionModel(TrainNN):
 
             self.models.extend([self.enc, self.dec])
         elif hp.model_type == 'transformer':
-            if hp.use_prestrokes:
-                raise NotImplementedError('Using prestrokes not implemented for Transformer')
             if hp.use_categories:
                 raise NotImplementedError('Use categories not implemented for Transformer')
 
@@ -751,14 +718,14 @@ class StrokeToInstructionModel(TrainNN):
     #
     # Data
     #
-    def get_data_loader(self, dataset_split, batch_size, shuffle=True):
+    def get_data_loader(self, dataset_split, batch_size, shuffle=True, use_prestrokes=False):
         """
         Args:
             dataset_split: str
             batch_size: int
             shuffle: bool
         """
-        ds = ProgressionPairDataset(dataset_split)
+        ds = ProgressionPairDataset(dataset_split, use_prestrokes=use_prestrokes)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=ProgressionPairDataset.collate_fn)
         return loader
 
@@ -798,8 +765,6 @@ class StrokeToInstructionModel(TrainNN):
         :param batch:
             strokes: [max_stroke_len, bsz, 5] FloatTensor
             stroke_lens: list of ints
-            prestrokes: [max_prestrokes_len, bsz, 5] FloatTensor
-            prestroke_lens: list of ints
             texts: list of strs
             text_lens: list of ints
             text_indices_w_sos_eos: [max_text_len + 2, bsz] LongTensor (+2 for sos and eos)
@@ -818,11 +783,11 @@ class StrokeToInstructionModel(TrainNN):
             return self.one_forward_pass_transformer(batch)
 
     def one_forward_pass_cnn_lstm(self, batch):
-        strokes, stroke_lens, prestrokes, prestroke_lens, \
+        strokes, stroke_lens, \
             texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
-        embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+        embedded = self.enc(strokes, stroke_lens,
                             category_embedding=self.category_embedding, categories=cats_idx)
         # [bsz, dim]
         embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
@@ -840,12 +805,11 @@ class StrokeToInstructionModel(TrainNN):
         return result
 
     def one_forward_pass_transformer_lstm(self, batch):
-        strokes, stroke_lens, prestrokes, prestroke_lens, \
-            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
-        hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                            category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
+        hidden = self.enc(strokes, stroke_lens,
+                          category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
         # [bsz, dim]
         hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
         hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -862,11 +826,10 @@ class StrokeToInstructionModel(TrainNN):
         return result
 
     def one_forward_pass_lstm(self, batch):
-        strokes, stroke_lens, prestrokes, prestroke_lens, \
-            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
-        _, (hidden, cell) = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+        _, (hidden, cell) = self.enc(strokes, stroke_lens,
                                      category_embedding=self.category_embedding, categories=cats_idx)
         # [bsz, max_stroke_len, dim]; h/c = [layers * direc, bsz, dim]
 
@@ -881,8 +844,7 @@ class StrokeToInstructionModel(TrainNN):
         return result
 
     def one_forward_pass_transformer(self, batch):
-        strokes, stroke_lens, prestrokes, prestroke_lens, \
-            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Embed strokes and text
         strokes_emb = self.strokes_input_fc(strokes)                   # [max_stroke_len, bsz, dim]
@@ -948,15 +910,14 @@ class StrokeToInstructionModel(TrainNN):
         inference = []
         for i, batch in enumerate(loader):
             batch = self.preprocess_batch_from_data_loader(batch)
-            strokes, stroke_lens, prestrokes, prestroke_lens, \
-            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+            strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
             bsz = strokes.size(1)
 
             # Model-specific decoding
             if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
                 if self.hp.model_type == 'cnn_lstm':
                     # Encode strokes
-                    embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                    embedded = self.enc(strokes, stroke_lens,
                                         category_embedding=self.category_embedding, categories=cats_idx)
                     # [bsz, dim]
                     embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
@@ -964,7 +925,7 @@ class StrokeToInstructionModel(TrainNN):
                     cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
                 elif self.hp.model_type == 'transformer_lstm':
                     # Encode strokes
-                    hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                    hidden = self.enc(strokes, stroke_lens,
                                       category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
                     # [bsz, dim]
                     hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
@@ -973,7 +934,6 @@ class StrokeToInstructionModel(TrainNN):
 
                 elif self.hp.model_type == 'lstm':
                     _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                                 prestrokes=prestrokes, prestroke_lens=prestroke_lens,
                                                  category_embedding=self.category_embedding, categories=cats_idx)
                     # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
 
@@ -1061,5 +1021,5 @@ if __name__ == '__main__':
     #                         collate_fn=ProgressionPairDataset.collate_fn)
     # idx2token = val_loader.dataset.idx2token
     # for batch in val_loader:
-    #     strokes, stroke_lens, prestrokes, prestroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+    #     strokes, stroke_lens, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
     #     import pdb; pdb.set_trace()
