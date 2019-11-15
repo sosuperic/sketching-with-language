@@ -112,7 +112,7 @@ class StrokeDataset(Dataset):
 
 ##############################################################################
 #
-# Encoders
+# Standard Encoders
 #
 ##############################################################################
 
@@ -170,7 +170,7 @@ class StrokeEncoderCNN(nn.Module):
 
 class StrokeEncoderLSTM(nn.Module):
     def __init__(self,
-                 input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
+                 input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=False,
                  use_categories=False
                  ):
         super().__init__()
@@ -281,6 +281,13 @@ class StrokeEncoderTransformer(nn.Module):
 
         return hidden
 
+
+##############################################################################
+#
+# VAE Encoder
+#
+##############################################################################
+
 class SketchRNNVAEEncoder(nn.Module):
     def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=1.0):
         super().__init__()
@@ -347,9 +354,6 @@ class SketchRNNVAEEncoder(nn.Module):
 ##############################################################################
 
 class SketchRNNDecoderGMM(nn.Module):
-    """
-    """
-
     def __init__(self, input_dim, dec_dim, M, dropout=1.0):
         """
         Args:
@@ -449,3 +453,103 @@ class SketchRNNDecoderGMM(nn.Module):
         q = F.softmax(params_pen, dim=-1).view(len_out, -1, 3)
 
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
+
+
+    #
+    # Loss
+    #
+    def make_target(self, strokes, stroke_lens, M):
+        """
+        Create target vector out of stroke-5 data and stroke_lens. Namely, use stroke_lens
+        to create mask for each sequence
+
+        Args:
+            strokes: [max_len, bsz, 5]
+            stroke_lens: list of ints
+            M: int, number of mixtures
+
+        Returns:
+            mask: [max_len + 1, bsz]
+            dx: [max_len + 1, bsz, num_mixtures]
+            dy: [max_len + 1, bsz, num_mixtures]
+            p:  [max_len + 1, bsz, 3]
+        """
+        max_len, bsz, _ = strokes.size()
+
+        # add eos
+        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
+        eos = nn_utils.move_to_cuda(eos)
+        strokes = torch.cat([strokes, eos], 0)  # [max_len + 1, bsz, 5]
+
+        # calculate mask for each sequence using stroke_lens
+        mask = torch.zeros(max_len + 1, bsz)
+        for idx, length in enumerate(stroke_lens):
+            mask[:length, idx] = 1
+        mask = nn_utils.move_to_cuda(mask)
+        mask = mask.detach()
+        dx = torch.stack([strokes.data[:, :, 0]] * M, 2).detach()
+        dy = torch.stack([strokes.data[:, :, 1]] * M, 2).detach()
+        p1 = strokes.data[:, :, 2].detach()
+        p2 = strokes.data[:, :, 3].detach()
+        p3 = strokes.data[:, :, 4].detach()
+        p = torch.stack([p1, p2, p3], 2)
+
+        return mask, dx, dy, p
+
+    #
+    # Reconstruction loss
+    #
+    def reconstruction_loss(self,
+                            mask,
+                            dx, dy, p,  # ground truth
+                            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                            q):
+        """
+        Based on likelihood (Eq. 9)
+
+        Args:
+            mask: [max_len + 1, bsz]
+            dx: [max_len + 1, bsz, num_mixtures]
+            dy: [max_len + 1, bsz, num_mixtures]
+            p:  [max_len + 1, bsz, 3]
+            pi: [max_len + 1, bsz, M] 
+
+        These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
+        end of sequence stroke appended in make_targets()
+        """
+        max_len, batch_size = mask.size()
+
+        # Loss w.r.t pen offset
+        prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
+        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
+
+        # Loss of pen parameters (cross entropy between ground truth pen params p
+        # and predicted categorical distribution q)
+        # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
+        LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
+        #  TODO: check arguments for above BCE
+
+        return LS + LP
+
+    def bivariate_normal_pdf(self, dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy):
+        """
+        Get probability of dx, dy using mixture parameters. 
+
+        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with 
+        Recurrent Neural Networks)
+        """
+        # Eq. 25
+        # Reminder: mu's here are calculated for mixture model on the stroke data, which
+        # models delta-x's and delta-y's. So z_x just comparing actual ground truth delta (dx)
+        # to the prediction from the mixture model (mu_x). Then normalizing etc.
+        z_x = ((dx - mu_x) / sigma_x) ** 2
+        z_y = ((dy - mu_y) / sigma_y) ** 2
+        z_xy = (dx - mu_x) * (dy - mu_y) / (sigma_x * sigma_y)
+        z = z_x + z_y - 2 * rho_xy * z_xy
+
+        # Eq. 24
+        norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
+        exp = torch.exp(-z / (2 * (1 - rho_xy ** 2)))
+
+        return exp / norm
+

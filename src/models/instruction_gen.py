@@ -241,7 +241,7 @@ class StrokeToInstructionModel(TrainNN):
         # Encode strokes
         _, (hidden, cell) = self.enc(strokes, stroke_lens,
                                      category_embedding=self.category_embedding, categories=cats_idx)
-        # [bsz, max_stroke_len, dim]; h/c = [layers * direc, bsz, dim]
+        # [bsz, max_stroke_len, dim]; h/c = [n_layers, bsz, dim]
 
         # Decode
         texts_emb = self.token_embedding(text_indices_w_sos_eos)      # [max_text_len + 2, bsz, dim]

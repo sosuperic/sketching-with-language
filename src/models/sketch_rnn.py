@@ -95,7 +95,7 @@ def save_sequence_as_img(sequence, output_fp):
 
 ##############################################################################
 #
-# ENCODER
+# Base SketchRNN model
 #
 ##############################################################################
 
@@ -122,44 +122,6 @@ class SketchRNNModel(TrainNN):
         ds = StrokeDataset(categories, dataset_split, self.hp.max_len)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         return loader
-
-    def make_target(self, strokes, stroke_lens, M):
-        """
-        Create target vector out of stroke-5 data and stroke_lens. Namely, use stroke_lens
-        to create mask for each sequence
-
-        Args:
-            strokes: [max_len, bsz, 5]
-            stroke_lens: list of ints
-            M: int, number of mixtures
-
-        Returns:
-            mask: [max_len + 1, bsz]
-            dx: [max_len + 1, bsz, num_mixtures]
-            dy: [max_len + 1, bsz, num_mixtures]
-            p:  [max_len + 1, bsz, 3]
-        """
-        max_len, bsz, _ = strokes.size()
-
-        # add eos
-        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
-        eos = nn_utils.move_to_cuda(eos)
-        strokes = torch.cat([strokes, eos], 0)  # [max_len + 1, bsz, 5]
-
-        # calculate mask for each sequence using stroke_lens
-        mask = torch.zeros(max_len + 1, bsz)
-        for idx, length in enumerate(stroke_lens):
-            mask[:length, idx] = 1
-        mask = nn_utils.move_to_cuda(mask)
-        mask = mask.detach()
-        dx = torch.stack([strokes.data[:, :, 0]] * M, 2).detach()
-        dy = torch.stack([strokes.data[:, :, 1]] * M, 2).detach()
-        p1 = strokes.data[:, :, 2].detach()
-        p2 = strokes.data[:, :, 3].detach()
-        p3 = strokes.data[:, :, 4].detach()
-        p = torch.stack([p1, p2, p3], 2)
-
-        return mask, dx, dy, p
 
     def preprocess_batch_from_data_loader(self, batch):
         """
@@ -196,63 +158,12 @@ class SketchRNNModel(TrainNN):
     def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
         pass
 
-    #
-    # Reconstruction loss
-    #
-    def reconstruction_loss(self,
-                            mask,
-                            dx, dy, p,  # ground truth
-                            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                            q):
-        """
-        Based on likelihood (Eq. 9)
 
-        Args:
-            mask: [max_len + 1, bsz]
-            dx: [max_len + 1, bsz, num_mixtures]
-            dy: [max_len + 1, bsz, num_mixtures]
-            p:  [max_len + 1, bsz, 3]
-            pi: [max_len + 1, bsz, M] 
-
-        These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
-        end of sequence stroke appended in make_targets()
-        """
-        max_len, batch_size = mask.size()
-
-        # Loss w.r.t pen offset
-        prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
-        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
-
-        # Loss of pen parameters (cross entropy between ground truth pen params p
-        # and predicted categorical distribution q)
-        # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
-        LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
-        #  TODO: check arguments for above BCE
-
-        return LS + LP
-
-    def bivariate_normal_pdf(self, dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy):
-        """
-        Get probability of dx, dy using mixture parameters. 
-
-        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with 
-        Recurrent Neural Networks)
-        """
-        # Eq. 25
-        # Reminder: mu's here are calculated for mixture model on the stroke data, which
-        # models delta-x's and delta-y's. So z_x just comparing actual ground truth delta (dx)
-        # to the prediction from the mixture model (mu_x). Then normalizing etc.
-        z_x = ((dx - mu_x) / sigma_x) ** 2
-        z_y = ((dy - mu_y) / sigma_y) ** 2
-        z_xy = (dx - mu_x) * (dy - mu_y) / (sigma_x * sigma_y)
-        z = z_x + z_y - 2 * rho_xy * z_xy
-
-        # Eq. 24
-        norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
-        exp = torch.exp(-z / (2 * (1 - rho_xy ** 2)))
-
-        return exp / norm
-
+##############################################################################
+#
+# Decoder only ("Unconditional" model)
+#
+##############################################################################
 
 class SketchRNNDecoderOnlyModel(SketchRNNModel):
     def __init__(self, hp, save_dir):
@@ -290,11 +201,11 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(strokes, stroke_lens, self.hp.M)
-        loss = self.reconstruction_loss(mask,
-                                        dx, dy, p,
-                                        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                                        q)
+        mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
+        loss = self.dec.reconstruction_loss(mask,
+                                            dx, dy, p,
+                                            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                                            q)
         result = {'loss': loss, 'loss_R': loss}
 
         return result
@@ -303,6 +214,12 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
         # TODO: generation not implemented yet (need to generalize the conditional generation of the VAE)
         pass
 
+
+##############################################################################
+#
+# VAE Model ("Conditional" model)
+#
+##############################################################################
 
 class SketchRNNVAEModel(SketchRNNModel):
     """
@@ -357,12 +274,12 @@ class SketchRNNVAEModel(SketchRNNModel):
                                                                      hidden_cell=hidden_cell)
 
         # Calculate losses
-        mask, dx, dy, p = self.make_target(strokes, stroke_lens, self.hp.M)
+        mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
         loss_KL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
-        loss_R = self.reconstruction_loss(mask,
-                                          dx, dy, p,
-                                          pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                                          q)
+        loss_R = self.dec.reconstruction_loss(mask,
+                                              dx, dy, p,
+                                              pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                                              q)
         loss = loss_KL + loss_R
         result = {'loss': loss, 'loss_KL': loss_KL, 'loss_R': loss_R}
 
