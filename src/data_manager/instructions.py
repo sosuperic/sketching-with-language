@@ -5,7 +5,6 @@ TODO: might refactor this into another file.
 """
 
 import src.utils as utils
-from src.models.instruction_gen import normalize
 
 def convert_generated_instruction_samples_to_html(samples_fp):
     """
@@ -63,12 +62,12 @@ def convert_generated_instruction_samples_to_html(samples_fp):
             # cat = sample['category']
             cat1 = samples[i]['url'].split('fullinput/')[1].split('/progress')[0]
             url1 = samples[i]['url']
-            gt1 = ' '.join(normalize(samples[i]['ground_truth']))
+            gt1 = ' '.join(utils.normalize_sentence(samples[i]['ground_truth']))
             gen1 = samples[i]['generated']
 
             cat2 = samples[i+1]['url'].split('fullinput/')[1].split('/progress')[0]
             url2 = samples[i+1]['url']
-            gt2 = ' '.join(normalize(samples[i+1]['ground_truth']))
+            gt2 = ' '.join(utils.normalize_sentence(samples[i+1]['ground_truth']))
             gen2 = samples[i+1]['generated']
 
             row = ROW_TEMPLATE.format(cat1, url1, gt1, gen1,
