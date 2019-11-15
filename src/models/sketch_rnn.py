@@ -1,11 +1,10 @@
 # sketch_rnn.py
 
 """
-SketchRNN model is VAE with GMM in decoder
+SketchRNN model as in "Neural Representation of Sketch Drawings"
 """
 
 import matplotlib
-
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,16 +14,14 @@ import PIL
 import torch
 from torch import nn
 from torch import optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from src import utils
 from src.models import nn_utils
-from src.data_manager.quickdraw import final_categories, stroke3_to_stroke5, normalize_strokes, \
-    build_category_index
+from src.models.stroke_models import StrokeDataset, SketchRNNDecoderGMM, SketchRNNVAEEncoder
 from src.models.train_nn import TrainNN, RUNS_PATH
 
-NPZ_DATA_PATH = 'data/quickdraw/npz/'
 
 USE_CUDA = torch.cuda.is_available()
 
@@ -69,97 +66,6 @@ class HParams():
 
         self.notes = ''
 
-
-##############################################################################
-#
-# DATASET
-#
-##############################################################################
-
-class StrokeDataset(Dataset):
-    """
-    Dataset to load sketches
-
-    Stroke-3 format: (delta-x, delta-y, binary for if pen is lifted)
-    Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
-        one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
-    """
-
-    def __init__(self, categories, dataset_split, max_len=200):
-        """
-        Args:
-            categories: str (comma separated or 'all')
-            dataset_split: str ('train', 'valid', 'test')
-            hp: HParams
-        """
-        self.dataset_split = dataset_split
-        self.max_len = max_len
-
-        # get categories
-        self.categories = None
-        if categories == 'all':
-            self.categories = final_categories()
-        elif ',' in categories:
-            self.categories = categories.split(',')
-        else:
-            self.categories = [categories]
-
-        # Load data
-        full_data = []  # list of dicts
-        self.max_len_in_data = 0
-        for i, category in enumerate(self.categories):
-            print('Loading {} ({}/{})'.format(category, i+1, len(self.categories)))
-            data_path = os.path.join(NPZ_DATA_PATH, '{}.npz'.format(category))
-            category_data = np.load(data_path, encoding='latin1')[dataset_split]  # e.g. cat.npz is in 3-stroke format
-            n_samples = len(category_data)
-            for i in range(n_samples):
-                stroke3 = category_data[i]
-                sample_len = stroke3.shape[0]  # number of points in stroke3 format
-                self.max_len_in_data = max(self.max_len_in_data, sample_len)
-                full_data.append({'stroke3': stroke3, 'category': category})
-
-        self.data = self.filter_and_clean_data(full_data)
-        self.data = normalize_strokes(self.data)
-        self.idx2cat, self.cat2idx = build_category_index(self.data)
-
-        print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
-
-    def filter_and_clean_data(self, data):
-        """
-        Removes short and large sequences;
-        Remove large gaps (stroke has large delta, i.e. takes place far away from previous stroke)
-        
-        Args:
-            data: list of dicts
-            data: [len, 3 or 5] array (stroke3 or stroke5 format)
-        """
-        filtered = []
-        for sample in data:
-            stroke = sample['stroke3']
-            stroke_len = stroke.shape[0]
-            if (stroke_len > 10) and (stroke_len <= self.max_len):
-                # Following means absolute value of offset is at most 1000
-                stroke = np.minimum(stroke, 1000)
-                stroke = np.maximum(stroke, -1000)
-                stroke = np.array(stroke, dtype=np.float32)  # type conversion
-                sample['stroke3'] = stroke
-                filtered.append(sample)
-        return filtered
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        sample = self.data[idx]
-        category = sample['category']
-        cat_idx = self.cat2idx[category]
-        stroke3 = sample['stroke3']
-        stroke_len = len(stroke3)
-        stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
-        return stroke5, stroke_len, category, cat_idx
-
-    # TODO: do I need to write my own collate_fn like in InstructionGen?
-
 ##############################################################################
 #
 # UTILS
@@ -192,174 +98,6 @@ def save_sequence_as_img(sequence, output_fp):
 # ENCODER
 #
 ##############################################################################
-class SketchRNNVAEEncoder(nn.Module):
-    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=1.0):
-        super().__init__()
-        self.enc_dim = enc_dim
-
-        self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
-        # Create mu and sigma by passing lstm's last output into fc layer (Eq. 2)
-        self.fc_mu = nn.Linear(2 * enc_dim, z_dim)  # 2 for bidirectional
-        self.fc_sigma = nn.Linear(2 * enc_dim, z_dim)
-
-    def forward(self, strokes, hidden_cell=None):
-        """
-        Args:
-            strokes: [max_len, bsz, input_dim] (input_size == isz == 5)
-            hidden_cell: tuple of [n_layers * n_directions, bsz, dim]
-
-        Returns:
-            z: [bsz, z_dim]
-            mu: [bsz, z_dim]
-            sigma_hat [bsz, z_dim] (used to calculate KL loss, eq. 10)
-        """
-        bsz = strokes.size(1)
-
-        # Initialize hidden state and cell state with zeros on first forward pass
-        num_directions = 2 if self.lstm.bidirectional else 1
-        if hidden_cell is None:
-            hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
-            cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
-            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
-            hidden_cell = (hidden, cell)
-
-        # Pass inputs, hidden, and cell into encoder's lstm
-        # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
-        _, (hidden, cell) = self.lstm(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
-        # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
-        last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
-        # [num_directions, bsz, hsz]
-        last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
-
-        # Get mu and sigma from hidden
-        mu = self.fc_mu(last_hidden)  # [bsz, z_dim]
-        sigma_hat = self.fc_sigma(last_hidden)  # [bsz, z_dim]
-
-        if (sigma_hat != sigma_hat).any():
-            import pdb;
-            pdb.set_trace()
-            print('Nans in encoder sigma_hat')
-
-        # Get z for VAE using mu and sigma, N ~ N(0,1)
-        # Turn sigma_hat vector into non-negative std parameter
-        sigma = torch.exp(sigma_hat / 2.)
-        N = torch.randn_like(sigma)
-        N = nn_utils.move_to_cuda(N)
-        z = mu + sigma * N  # [bsz, z_dim]
-
-        # Note we return sigma_hat, not sigma to be used in KL-loss (eq. 10)
-        return z, mu, sigma_hat
-
-
-##############################################################################
-#
-# DECODER
-#
-##############################################################################
-class SketchRNNDecoderGMM(nn.Module):
-    """
-    """
-
-    def __init__(self, input_dim, dec_dim, M, dropout=1.0):
-        """
-        Args:
-            input_dim: int (size of input)
-            dec_dim: int (size of hidden states)
-            M: int (number of mixtures)
-            dropout: float
-        """
-        super().__init__()
-
-        self.input_dim = input_dim
-        self.dec_dim = dec_dim
-        self.M = M
-
-        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=1, dropout=dropout)
-        # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
-        self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
-
-    def forward(self, strokes, output_all=True, hidden_cell=None):
-        """
-        Args:
-            strokes: [len, bsz, esz + 5]
-            output_all: boolean, return output at every timestep or just the last
-            hidden_cell: tuple of [n_layers, bsz, dec_dim]
-
-        :returns:
-            pi: weights for each mixture            [max_len + 1, bsz, M]
-            mu_x: mean x for each mixture           [max_len + 1, bsz, M]
-            mu_y: mean y for each mixture           [max_len + 1, bsz, M]
-            sigma_x: var x for each mixture         [max_len + 1, bsz, M]
-            sigma_y: var y for each mixture         [max_len + 1, bsz, M]
-            rho_xy:  covariance for each mixture    [max_len + 1, bsz, M]
-            q: [max_len + 1, bsz, 3]
-                models p (3 pen strokes in stroke-5) as categorical distribution (page 3);   
-            hidden: [1, bsz, dec_dim]
-                 last hidden state      
-            cell: [1, bsz, dec_dim]
-                  last cell state
-        """
-        bsz = strokes.size(1)
-        if hidden_cell is None:  # init
-            hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
-            hidden_cell = (hidden, cell)
-
-        outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
-
-        # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
-        # Dimensions
-        #   outputs: [max_len + 1, bsz, dec_dim]
-        #   view: [(max_len + 1) * bsz, dec_dim]
-        #   y: [(max_len + 1) * bsz, 6 * M + 3] (6 comes from 5 for params, 6th for weights; see page 3)
-        if output_all:
-            y = self.fc_params(outputs.view(-1, self.dec_dim))
-        else:
-            y = self.fc_params(hidden.view(-1, self.dec_dim))
-
-        # Separate pen and mixture params
-        params = torch.split(y, 6,
-                             1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * bsz, 6]'s, 1 [(max_len + 1) * bsz, 3]
-        params_mixture = torch.stack(params[:-1])  # trajectories; [num_mixtures, (max_len + 1) * bsz, 6]
-        params_pen = params[-1]  # pen up/down;  [(max_len + 1) * bsz, 3]
-
-        # Split trajectories into each mixture param
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, 2)
-        # TODO: these all have [num_mix, (max_len+1) * bsz, 1]
-        pi = pi.squeeze(2)
-        mu_x = mu_x.squeeze(2)
-        mu_y = mu_y.squeeze(2)
-        sigma_x = sigma_x.squeeze(2)
-        sigma_y = sigma_y.squeeze(2)
-        rho_xy = rho_xy.squeeze(2)
-
-        # When training, lstm receives whole input, use all outputs from lstm
-        # When generating, input is just last generated sample
-        # len_out used to reshape mixture param tensors
-        if output_all:
-            len_out = outputs.size(0)
-        else:
-            len_out = 1
-
-        # TODO: don't think I actually need the squeeze's
-        # if len_out == 1:
-        #     import pdb; pdb.set_trace()  # squeeze may be related to generation with len_out = 1
-        # TODO: add dimensions
-        pi = F.softmax(pi.t().squeeze(), dim=-1).view(len_out, -1, self.M)
-        mu_x = mu_x.t().squeeze().contiguous().view(len_out, -1, self.M)
-        mu_y = mu_y.t().squeeze().contiguous().view(len_out, -1, self.M)
-
-        # Eq. 6
-        sigma_x = torch.exp(sigma_x.t().squeeze()).view(len_out, -1, self.M)
-        sigma_y = torch.exp(sigma_y.t().squeeze()).view(len_out, -1, self.M)
-        rho_xy = torch.tanh(rho_xy.t().squeeze()).view(len_out, -1, self.M)
-
-        # Eq. 7
-        q = F.softmax(params_pen, dim=-1).view(len_out, -1, 3)
-
-        return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
-
 
 class SketchRNNModel(TrainNN):
     def __init__(self, hp, save_dir):

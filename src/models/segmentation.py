@@ -14,7 +14,7 @@ from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH
 from src.models import nn_utils
 from src import utils
 
-from src.models.sketch_rnn import StrokeDataset
+from src.models.stroke_models import StrokeDataset
 from src.data_manager.quickdraw import final_categories
 
 
