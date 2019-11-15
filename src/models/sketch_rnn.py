@@ -814,7 +814,8 @@ if __name__ == "__main__":
     model = None
     if hp.model_type == 'vae':
         model = SketchRNNVAEModel(hp, save_dir)
+
     elif hp.model_type == 'decoder':
         model = SketchRNNDecoderOnlyModel(hp, save_dir)
-
+    model = nn_utils.AccessibleDataParallel(model)
     model.train_loop()

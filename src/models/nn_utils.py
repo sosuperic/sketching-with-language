@@ -1,6 +1,7 @@
 # nn_utils.py
 
 import torch
+from torch import nn
 import torch.nn.functional as F
 
 #
@@ -20,6 +21,21 @@ def setup_seeds(seed=1234):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+
+class AccessibleDataParallel(nn.DataParallel):
+    """
+    After wrapping a Module with DataParallel, the attributes of the module (e.g. custom methods) became inaccessible.
+    This is because DataParallel defines a few new members, and allowing other attributes might
+    lead to clashes in their names. See the following:
+    https://pytorch.org/tutorials/beginner/former_torchies/parallelism_tutorial.html
+
+    This is a simple workaround class
+    """
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
 
 #
 # Decoding utils
