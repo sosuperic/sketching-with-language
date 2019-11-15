@@ -57,7 +57,8 @@ class HParams():
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_prestrokes = True
-        self.use_categories = True
+        self.use_categories_enc = False
+        self.use_categories_dec = True
         self.dropout = 0.2
 
         # inference
@@ -399,14 +400,11 @@ class StrokeEncoderTransformer(nn.Module):
         """
         bsz = strokes.size(1)
 
-        # if category_embedding:
-        #     cats_emb =  category_embedding(categories)  # [bsz, dim]
-        #     cats_emb = self.dropout_mod(cats_emb)
-        #     strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
-        #     strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
-        #     if self.use_prestrokes:
-        #         prestrokes = torch.cat([prestrokes, cats_emb.repeat(prestrokes.size(0), 1, 1)], dim=2)
-        #         prestrokes = self.stroke_cat_fc(prestrokes)
+        if self.use_categories:
+            cats_emb =  category_embedding(categories)  # [bsz, dim]
+            cats_emb = self.dropout_mod(cats_emb)
+            strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
+            strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
 
         strokes = self.input_fc(strokes)  # [len, bsz, hsz]
 
@@ -438,11 +436,10 @@ class StrokeEncoderLSTM(nn.Module):
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
-            self.lstm = nn.LSTM(hidden_dim, hidden_dim,
-                                bidirectional=True,
+            self.lstm = nn.LSTM(hidden_dim, hidden_dim, bidirectional=True,
                                 num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         else:
-            self.lstm = nn.LSTM(input_dim, hidden_dim,
+            self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional=True,
                                 num_layers=num_layers, dropout=dropout, batch_first=batch_first)
 
     def forward(self, strokes, stroke_lens,
@@ -463,7 +460,7 @@ class StrokeEncoderLSTM(nn.Module):
         # the feature dimension, and apply a fully connected
         bsz = strokes.size(1)
 
-        if category_embedding:
+        if self.use_categories:
             cats_emb =  category_embedding(categories)  # [bsz, dim]
             cats_emb = self.dropout_mod(cats_emb)
             strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
@@ -476,6 +473,7 @@ class StrokeEncoderLSTM(nn.Module):
         # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
         hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
         cell = cell.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
+
 
         return strokes_outputs, (hidden, cell)
 
@@ -661,39 +659,41 @@ class StrokeToInstructionModel(TrainNN):
         self.token_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.dim)
         self.models.append(self.token_embedding)
         self.category_embedding = None
-        if self.hp.use_categories:
+        if (self.hp.use_categories_enc) or (self.hp.use_categories_dec):
             self.category_embedding = nn.Embedding(35, self.hp.dim)
             self.models.append(self.category_embedding)
 
         if hp.model_type.endswith('lstm'):
             # encoders may be different
             if hp.model_type == 'cnn_lstm':
-                self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout)
+                self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout,
+                                            use_categories=hp.use_categories_enc)
+                raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
             elif hp.model_type == 'transformer_lstm':
                 self.enc = StrokeEncoderTransformer(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
-                    use_categories=hp.use_categories,
+                    use_categories=hp.use_categories_enc,
                 )
             elif hp.model_type == 'lstm':
                 self.enc = StrokeEncoderLSTM(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
-                    use_categories=hp.use_categories,
+                    use_categories=hp.use_categories_enc,
                 )
 
             # decoder is lstm
             dec_input_dim = hp.dim
             if hp.condition_on_hc:
                 dec_input_dim += hp.dim
-            if hp.use_categories:
+            if hp.use_categories_dec:
                 dec_input_dim += hp.dim
             self.dec = InstructionDecoderLSTM(
                 dec_input_dim, hp.dim, num_layers=hp.n_dec_layers, dropout=hp.dropout, batch_first=False,
-                condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories
+                condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories_dec
             )
 
             self.models.extend([self.enc, self.dec])
         elif hp.model_type == 'transformer':
-            if hp.use_categories:
+            if hp.use_categories_enc or hp.use_categories_dec:
                 raise NotImplementedError('Use categories not implemented for Transformer')
 
             self.strokes_input_fc = nn.Linear(5, hp.dim)
