@@ -1,7 +1,6 @@
 # train_nn.py
 
 from collections import defaultdict
-from datetime import datetime
 import numpy as np
 import os
 import time
@@ -10,13 +9,10 @@ import torch
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 
+import src.utils as utils
+
 RUNS_PATH = 'runs/'
 
-##############################################################################
-#
-# MODEL
-#
-##############################################################################
 
 class TrainNN(nn.Module):
 
@@ -24,7 +20,7 @@ class TrainNN(nn.Module):
     Base class for this project that covers train-eval loop.
     """
 
-    def __init__(self, hp, save_dir):
+    def __init__(self, hp, save_dir=None):
         super().__init__()
         self.hp = hp
         self.save_dir = save_dir
@@ -34,15 +30,15 @@ class TrainNN(nn.Module):
 
         self.tr_loader = None
         self.val_loader = None
+        self.end_epoch_loader = None
 
         self.writer = None
 
-    def get_data_loader(self):
-        pass
-
+    ##############################################################################
     #
     # Training
     #
+    ##############################################################################
     def lr_decay(self, optimizer, min_lr, lr_decay):
         """
         Decay learning rate by a factor of lr_decay
@@ -158,7 +154,7 @@ class TrainNN(nn.Module):
             stdout_f.flush()
 
             # Generate sequence to save image and show progress
-            self.end_of_epoch_hook(epoch, outputs_path=outputs_path, writer=self.writer)
+            self.end_of_epoch_hook(self.end_epoch_loader, epoch, outputs_path=outputs_path, writer=self.writer)
 
             # Save best model
             if val_loss < min_val_loss:
@@ -184,5 +180,47 @@ class TrainNN(nn.Module):
 
         stdout_f.close()
 
-    def end_of_epoch_hook(self, epoch, outputs_path=None):
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None):
+        pass
+
+
+    ##############################################################################
+    #
+    # Testing / Inference
+    #
+    ##############################################################################
+
+    def load_model(self, dir):
+        """
+        Args:
+            dir: str (location of trained model)
+        """
+
+        # Load hyperparams used to train model
+        # TODO: we may want to change certain hyperparams at inference time (e.g. decode_method)
+        # Currently, the below just overwrites it
+        model_hp = utils.load_file(os.path.join(dir, 'hp.json'))
+        for key, value in model_hp.items():
+            setattr(self.hp, key, value)
+        # Also want the updated values and save it next to inference/train.json....
+
+        # Load trained weights
+        weights_fp = os.path.join(dir, 'model.pt')
+        self.load_state_dict(torch.load(weights_fp))
+
+    def save_inference_on_split(self, loader=None, dataset_split=None, dir=None, ext=None):
+        """
+        Args:
+            loader: DataLoader
+            dataset_split: str
+            dir: str (location to save inference/<dataset_split>.pkl>
+            ext: str (e.g. 'json', 'pkl'; extension of file)
+        """
+        if loader is None:
+            loader = self.get_data_loader(dataset_split, self.hp.batch_size, shuffle=False)
+        inference = self.inference_loop(loader)
+        fp = os.path.join(dir, 'inference', '{}.{}'.format(dataset_split, ext))
+        utils.save_file(inference, fp, verbose=True)
+
+    def inference_loop(self, loader):
         pass

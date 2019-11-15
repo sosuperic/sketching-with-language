@@ -677,10 +677,12 @@ class InstructionDecoderLSTM(nn.Module):
         return decoded_probs, decoded_ids, decoded_texts
 
 class StrokeToInstructionModel(TrainNN):
-    def __init__(self, hp, save_dir):
+    def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
 
-        self.tr_loader, self.val_loader = self.get_data_loaders()
+        self.tr_loader =  self.get_data_loader('train', self.hp.batch_size, shuffle=True)
+        self.val_loader = self.get_data_loader('valid', self.hp.batch_size, shuffle=False)
+        self.end_epoch_loader = self.val_loader
 
         # Model
         self.token_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.dim)
@@ -749,14 +751,16 @@ class StrokeToInstructionModel(TrainNN):
     #
     # Data
     #
-    def get_data_loaders(self):
-        tr_dataset = ProgressionPairDataset('train')
-        val_dataset = ProgressionPairDataset('valid')
-        tr_loader = DataLoader(tr_dataset, batch_size=self.hp.batch_size, shuffle=True,
-                               collate_fn=ProgressionPairDataset.collate_fn)
-        val_loader = DataLoader(val_dataset, batch_size=self.hp.batch_size, shuffle=False,
-                                collate_fn=ProgressionPairDataset.collate_fn)
-        return tr_loader, val_loader
+    def get_data_loader(self, dataset_split, batch_size, shuffle=True):
+        """
+        Args:
+            dataset_split: str
+            batch_size: int
+            shuffle: bool
+        """
+        ds = ProgressionPairDataset(dataset_split)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=ProgressionPairDataset.collate_fn)
+        return loader
 
     def preprocess_batch_from_data_loader(self, batch):
         """
@@ -913,117 +917,145 @@ class StrokeToInstructionModel(TrainNN):
 
 
     # End of epoch hook
-    def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):
-
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
+        """
+        Args:
+            data_loader: DataLoader
+            epoch: int
+            outputs_path: str
+            writer: Tensorboard Writer
+        """
         for model in self.models:
             model.eval()
 
         with torch.no_grad():
-
             # Generate texts on validation set
-            generated = []
-            for i, batch in enumerate(self.val_loader):
-                batch = self.preprocess_batch_from_data_loader(batch)
-                strokes, stroke_lens, prestrokes, prestroke_lens, \
-                    texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
-                bsz = strokes.size(1)
-
-
-                # Model-specific decoding
-                if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
-                    if self.hp.model_type == 'cnn_lstm':
-                        # Encode strokes
-                        embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                                            category_embedding=self.category_embedding, categories=cats_idx)
-                        # [bsz, dim]
-                        embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
-                        hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-                        cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-                    elif self.hp.model_type == 'transformer_lstm':
-                        # Encode strokes
-                        hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                                          category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
-                        # [bsz, dim]
-                        hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
-                        hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-                        cell = hidden.clone()  # [n_layers, bsz, dim]
-
-                    elif self.hp.model_type == 'lstm':
-                        _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                                     prestrokes=prestrokes, prestroke_lens=prestroke_lens,
-                                                     category_embedding=self.category_embedding, categories=cats_idx)
-                        # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
-
-                    # Create init input
-                    init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                    init_ids.transpose_(0, 1)  # [1, bsz]
-
-                    decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
-                        self.token_embedding,
-                        category_embedding=self.category_embedding, categories=cats_idx,
-                        init_ids=init_ids, hidden=hidden, cell=cell,
-                        pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
-                        decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
-                        idx2token=self.tr_loader.dataset.idx2token,
-                    )
-
-                elif self.hp.model_type == 'transformer':
-                    strokes_emb = self.strokes_input_fc(strokes)  # [max_stroke_len, bsz, dim]
-                    src_input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)  # [max_stroke_len, bsz, dim]
-
-                    init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
-                    init_ids.transpose_(0, 1)  # [1, bsz]
-                    init_embs = self.token_embedding(init_ids)  # [1, bsz, dim]
-
-                    decoded_probs, decoded_ids, decoded_texts = transformer_generate(
-                        self.transformer, self.token_embedding, self.pos_enc,
-                        src_input_embs=src_input_embs, input_lens=stroke_lens,
-                        init_ids=init_ids,
-                        pad_id=PAD_ID, eos_id=EOS_ID,
-                        max_len=100,
-                        decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
-                        idx2token=self.tr_loader.dataset.idx2token)
-
-
-                for j, instruction in enumerate(texts):
-                    generated.append({
-                        'ground_truth': instruction,
-                        'generated': decoded_texts[j],
-                        'url': urls[j],
-                        'category': cats[j],
-                    })
-                    text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
-                        instruction, decoded_texts[j], urls[j])
-                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
-
+            inference = self.inference_loop(data_loader, writer=writer, epoch=epoch)
             out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
-            utils.save_file(generated, out_fp, verbose=True)
+            utils.save_file(inference, out_fp, verbose=True)
 
-            self.compute_metrics_on_generations(generated)
+            self.compute_metrics_on_generations(inference)
 
-    def compute_metrics_on_generations(self, generated):
+    def inference_loop(self, loader, writer=None, epoch=None):
         """
         Args:
-            generated: list of dicts with 'ground_truth' and 'generated'
+            loader: DataLoader
+            writer: Tensorboard writer (used during validation)
+            epoch: int (used for writer)
+
+        Returns: list of dicts
+        """
+        inference = []
+        for i, batch in enumerate(loader):
+            batch = self.preprocess_batch_from_data_loader(batch)
+            strokes, stroke_lens, prestrokes, prestroke_lens, \
+            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+            bsz = strokes.size(1)
+
+            # Model-specific decoding
+            if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
+                if self.hp.model_type == 'cnn_lstm':
+                    # Encode strokes
+                    embedded = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                        category_embedding=self.category_embedding, categories=cats_idx)
+                    # [bsz, dim]
+                    embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
+                    hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                    cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                elif self.hp.model_type == 'transformer_lstm':
+                    # Encode strokes
+                    hidden = self.enc(strokes, stroke_lens, prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                      category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
+                    # [bsz, dim]
+                    hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
+                    hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                    cell = hidden.clone()  # [n_layers, bsz, dim]
+
+                elif self.hp.model_type == 'lstm':
+                    _, (hidden, cell) = self.enc(strokes, stroke_lens,
+                                                 prestrokes=prestrokes, prestroke_lens=prestroke_lens,
+                                                 category_embedding=self.category_embedding, categories=cats_idx)
+                    # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+
+                # Create init input
+                init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                init_ids.transpose_(0, 1)  # [1, bsz]
+
+                decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
+                    self.token_embedding,
+                    category_embedding=self.category_embedding, categories=cats_idx,
+                    init_ids=init_ids, hidden=hidden, cell=cell,
+                    pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
+                    decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
+                    idx2token=self.tr_loader.dataset.idx2token,
+                )
+
+            elif self.hp.model_type == 'transformer':
+                strokes_emb = self.strokes_input_fc(strokes)  # [max_stroke_len, bsz, dim]
+                src_input_embs = scale_add_pos_emb(strokes_emb, self.pos_enc)  # [max_stroke_len, bsz, dim]
+
+                init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+                init_ids.transpose_(0, 1)  # [1, bsz]
+                init_embs = self.token_embedding(init_ids)  # [1, bsz, dim]
+
+                decoded_probs, decoded_ids, decoded_texts = transformer_generate(
+                    self.transformer, self.token_embedding, self.pos_enc,
+                    src_input_embs=src_input_embs, input_lens=stroke_lens,
+                    init_ids=init_ids,
+                    pad_id=PAD_ID, eos_id=EOS_ID,
+                    max_len=100,
+                    decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
+                    idx2token=self.tr_loader.dataset.idx2token)
+
+            for j, instruction in enumerate(texts):
+                inference.append({
+                    'ground_truth': instruction,
+                    'generated': decoded_texts[j],
+                    'url': urls[j],
+                    'category': cats[j],
+                })
+                text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
+                    instruction, decoded_texts[j], urls[j])
+                if writer:
+                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
+
+        return inference
+
+    def compute_metrics_on_generations(self, inference):
+        """
+        Args:
+            inference: list of dicts with 'ground_truth' and 'generated'
         """
         # TODO: compute ROUGE, BLEU
         pass
-
 
 
 if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
     # Add additional arguments to parser
+    parser.add_argument('--inference', action='store_true')
+    parser.add_argument('--inference_split', default='valid', help='dataset split to perform inference on')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'stroke2instruction', run_name)
-    utils.save_run_data(save_dir, hp)
+    if opt.inference:
+        BEST_STROKE_TO_INSTRUCTION_DIR = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
+        # TODO: should load hp before... write function in utils
+        model = StrokeToInstructionModel(hp, save_dir=None)
+        model.load_model(BEST_STROKE_TO_INSTRUCTION_DIR)
+        model.save_inference_on_split(dataset_split=opt.inference_split,
+                                      dir=BEST_STROKE_TO_INSTRUCTION_DIR, ext='json')
 
-    model = StrokeToInstructionModel(hp, save_dir)
-    model.train_loop()
+    else:
+        save_dir = os.path.join(RUNS_PATH, 'stroke2instruction', run_name)
+        model = StrokeToInstructionModel(hp, save_dir)
+        utils.save_run_data(save_dir, hp)
+        model.train_loop()
 
+
+
+    # Testing / debugging data
     # val_dataset = ProgressionPairDataset('valid')
     # val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False,
     #                         collate_fn=ProgressionPairDataset.collate_fn)

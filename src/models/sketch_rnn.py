@@ -141,6 +141,8 @@ class SketchDataset(Dataset):
         :param dataset_split: str, ('train', 'valid', 'test')
         """
         self.hp = hp
+        # TODO : refactor so that we don't need to pass in hp (used for hp.max_len (different from self.max_len),
+        # and self.hp.batch_size, which I don't think is necessary anymore)
 
         data_path = os.path.join(NPZ_DATA_PATH, '{}.npz'.format(category))
         full_data = np.load(data_path, encoding='latin1')[dataset_split]  # e.g. cat.npz is in 3-stroke format
@@ -396,20 +398,23 @@ class SketchRNN(TrainNN):
         super().__init__(hp, save_dir)
 
         self.eta_step = hp.eta_min
-        self.tr_loader, self.val_loader, self.gen_data_loader = self.get_data_loaders(hp.category)
+        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.category, shuffle=True)
+        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.category, shuffle=False)
+        self.end_epoch_loader = self.get_data_loader('train', 1, hp.category, shuffle=False)
 
     #
     # Data
     #
-    def get_data_loaders(self, category):
-        tr_dataset = SketchDataset(category, 'train', self.hp)
-        val_dataset = SketchDataset(category, 'valid', self.hp)
-        tr_loader = DataLoader(tr_dataset, batch_size=self.hp.batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=self.hp.batch_size, shuffle=False)
-
-        gen_data_loader = DataLoader(tr_dataset, batch_size=1, shuffle=False)  # TODO: change to val_dataset
-
-        return tr_loader, val_loader, gen_data_loader
+    def get_data_loader(self, dataset_split, batch_size, category, shuffle=True):
+        """
+        Args:
+            dataset_split: str
+            batch_size: int
+            category: str
+        """
+        ds = SketchDataset(category, dataset_split, self.hp)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+        return loader
 
     def make_target(self, inputs, lengths, M):
         """
@@ -471,8 +476,8 @@ class SketchRNN(TrainNN):
     def pre_forward_train_hook(self):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R  # update eta for LKL
 
-    def end_of_epoch_hook(self, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
-        self.save_generation(self.gen_data_loader, epoch, n_gens=1, outputs_path=outputs_path)
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
+        self.save_generation(data_loader, epoch, n_gens=1, outputs_path=outputs_path)
 
     def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
         pass
