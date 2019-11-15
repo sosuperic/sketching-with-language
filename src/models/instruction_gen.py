@@ -3,11 +3,8 @@
 import argparse
 import matplotlib
 matplotlib.use('Agg')
-from nltk.tokenize import word_tokenize  # TODO: add the download punkt to requirements.txt
 import numpy as np
 import os
-
-from rouge_score import rouge_scorer
 
 import torch
 from torch import nn
@@ -21,6 +18,7 @@ from src.models.train_nn import TrainNN, RUNS_PATH
 from src.models.transformer_utils import *
 import src.utils as utils
 import src.models.nn_utils as nn_utils
+from src.eval.stroke_to_instruction import InstructionScorer
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
 LABELED_PROGRESSION_PAIRS_VALID_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'valid.pkl')
@@ -79,10 +77,6 @@ class HParams():
 
 PAD_ID, OOV_ID, SOS_ID, EOS_ID = 0, 1, 2, 3 # TODO: this should be a part of dataset maybe?
 
-def normalize(sentence):
-    """Tokenize"""
-    return word_tokenize(sentence.lower())
-
 def build_vocab(data):
     """
     Returns mappings from index to token and vice versa.
@@ -91,7 +85,7 @@ def build_vocab(data):
     """
     tokens = set()
     for sample in data:
-        text = normalize(sample['annotation'])
+        text = utils.normalize_sentence(sample['annotation'])
         for token in text:
             tokens.add(token)
 
@@ -162,8 +156,8 @@ def save_progression_pair_dataset_splits_and_vocab():
                       (cat2idx, LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)]:
         utils.save_file(data, fp)
 
-def map_str_to_index(s, token2idx):
-    return [int(token2idx[tok]) for tok in normalize(s)]
+def map_sentence_to_index(sentence, token2idx):
+    return [int(token2idx[tok]) for tok in utils.normalize_sentence(sentence)]
 
 
 def normalize_data(data):
@@ -262,7 +256,7 @@ class ProgressionPairDataset(Dataset):
 
         # Map
         text = sample['annotation']
-        text_indices = map_str_to_index(text, self.token2idx)
+        text_indices = map_sentence_to_index(text, self.token2idx)
         text_indices = [SOS_ID] + text_indices + [EOS_ID]
 
         # Additional metadata
@@ -316,7 +310,8 @@ class ProgressionPairDataset(Dataset):
 ##############################################################################
 
 class StrokeEncoderCNN(nn.Module):
-    def __init__(self, filter_sizes=[3,4,5], n_feat_maps=128, input_dim=None, emb_dim=None, dropout=None):
+    def __init__(self, filter_sizes=[3,4,5], n_feat_maps=128, input_dim=None, emb_dim=None, dropout=None,
+                 use_categories=False):
         """
         Args:
             filter_sizes: list of ints
@@ -326,6 +321,7 @@ class StrokeEncoderCNN(nn.Module):
             input_dim: int (size of inputs)
             emb_dim: int (size of embedded inputs)
             dropout_prob: float
+            use_categories: bool
         """
         super().__init__()
         self.filter_sizes = filter_sizes
@@ -347,6 +343,7 @@ class StrokeEncoderCNN(nn.Module):
         Returns:  [bsz, dim]
         """
         # TODO: shouldn't I be using stroke_lens to mask?
+        # TODO: implement use_categories
 
         strokes = self.input_fc(strokes)  # [seq_len, bsz, emb_dim]
         strokes = strokes.transpose(0,1).unsqueeze(1)  # [bsz, 1, seq_len, emb_dim]
@@ -668,7 +665,7 @@ class StrokeToInstructionModel(TrainNN):
             if hp.model_type == 'cnn_lstm':
                 self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout,
                                             use_categories=hp.use_categories_enc)
-                raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
+                # raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
             elif hp.model_type == 'transformer_lstm':
                 self.enc = StrokeEncoderTransformer(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
@@ -715,6 +712,7 @@ class StrokeToInstructionModel(TrainNN):
         # Optimizers
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
+        self.scorers = [InstructionScorer('rouge')]
     #
     # Data
     #
@@ -896,8 +894,6 @@ class StrokeToInstructionModel(TrainNN):
             out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
             utils.save_file(inference, out_fp, verbose=True)
 
-            self.compute_metrics_on_generations(inference)
-
     def inference_loop(self, loader, writer=None, epoch=None):
         """
         Args:
@@ -968,26 +964,29 @@ class StrokeToInstructionModel(TrainNN):
                     idx2token=self.tr_loader.dataset.idx2token)
 
             for j, instruction in enumerate(texts):
-                inference.append({
-                    'ground_truth': instruction,
-                    'generated': decoded_texts[j],
+                gt, gen = instruction, decoded_texts[j]
+
+                # construct results
+                result = {
+                    'ground_truth': gt,
+                    'generated': gen,
                     'url': urls[j],
                     'category': cats[j],
-                })
+                }
+                for scorer in self.scorers:
+                    for name, value in scorer.score(gt, gen).items():
+                        result[name] = value
+                        if writer:
+                            writer.add_scalar('inference/{}'.format(name), value, epoch * self.val_loader.__len__() + j)
+                inference.append(result)
+
+                # log
                 text = 'Ground truth: {}  \n  \nGenerated: {}  \n  \nURL: {}'.format(
                     instruction, decoded_texts[j], urls[j])
                 if writer:
                     writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + j)
 
         return inference
-
-    def compute_metrics_on_generations(self, inference):
-        """
-        Args:
-            inference: list of dicts with 'ground_truth' and 'generated'
-        """
-        # TODO: compute ROUGE, BLEU
-        pass
 
 
 if __name__ == '__main__':

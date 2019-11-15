@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime
 import json
+from nltk.tokenize import word_tokenize  # TODO: add the download punkt to requirements.txt
 import os
 import pickle
 import shutil
@@ -45,6 +46,21 @@ def load_file(path):
         with open(path, 'r') as f:
             data = json.load(f)
     return data
+
+
+
+#################################################
+#
+# Data
+#
+#################################################
+
+def normalize_sentence(sentence):
+    """
+    Args:
+        sentence: str
+    """
+    return word_tokenize(sentence.lower())
 
 #################################################
 #

@@ -13,9 +13,8 @@ from nltk.translate.bleu_score import sentence_bleu
 
 
 import src.utils as utils
-from src.models.instruction_gen import normalize
 
-class Scorer(object):
+class InstructionScorer(object):
     def __init__(self, metric):
         self.metric = metric
 
@@ -32,7 +31,8 @@ class Scorer(object):
             dict from metric_name (str) to score (float)
         """
         if self.metric == 'bleu':
-            score = sentence_bleu(normalize(reference), normalize(candidate))
+            score = sentence_bleu(utils.normalize_sentence(reference),
+                                  utils.normalize_sentence(candidate))
             result = {'bleu': score}
         elif self.metric == 'rouge':
             result = {}
@@ -48,7 +48,7 @@ def calc_bleu_and_rouge_on_samples(samples_fp):
     """
     samples = utils.load_file(samples_fp)
 
-    scorers = [Scorer('bleu'), Scorer('rouge')]
+    scorers = [InstructionScorer('bleu'), InstructionScorer('rouge')]
 
     m2scores = defaultdict(list)
     m2cat2scores = defaultdict(lambda: defaultdict(list))
@@ -84,9 +84,9 @@ def calc_rare_words_stats(samples_fp):
     gen_toks = set()
     for sample in samples:
         gt, gen = sample['ground_truth'], sample['generated']
-        for tok in normalize(gt):
+        for tok in utils.normalize_sentence(gt):
             gt_toks.add(tok)
-        for tok in normalize(gen):
+        for tok in utils.normalize_sentence(gen):
             gen_toks.add(tok)
 
     print('\nRare words stats:')
