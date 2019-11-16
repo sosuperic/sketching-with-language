@@ -137,6 +137,8 @@ class SketchRNNModel(TrainNN):
         Returns:
             batch: [max_len, bsz, 5]
             stroke_lens: list of ints
+            cats: list of strs
+            cats_idx: [bsz]
         """
         strokes, stroke_lens, cats, cats_idx = batch
         strokes = strokes.transpose(0, 1).float()
@@ -231,9 +233,9 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
-        self.fc_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
+        self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
         self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M)
-        self.models.extend([self.enc, self.fc_hc, self.dec])
+        self.models.extend([self.enc, self.fc_z_to_hc, self.dec])
         if USE_CUDA:
             for model in self.models:
                 model.cuda()
@@ -265,7 +267,7 @@ class SketchRNNVAEModel(SketchRNNModel):
         dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
 
         # init hidden and cell states is tanh(fc(z)) (Page 3)
-        hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_dim, 1)
+        hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, 1)
         hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
         # TODO: if we want multiple layers, we need to replicate hidden and cell n_layers times
 
@@ -339,7 +341,7 @@ class SketchRNNVAEModel(SketchRNNModel):
             seq_y = []  # delta-y
             seq_pen = []  # pen-down
             # init hidden and cell states is tanh(fc(z)) (Page 3)
-            hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_dim, 1)
+            hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, 1)
             hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
             for _ in range(max_len):
                 input = torch.cat([s, z.unsqueeze(0)], 2)  # [1,1,133]

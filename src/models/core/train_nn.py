@@ -185,7 +185,7 @@ class TrainNN(nn.Module):
 
         stdout_f.close()
 
-    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None):
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
         pass
 
 

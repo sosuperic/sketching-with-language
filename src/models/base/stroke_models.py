@@ -367,8 +367,9 @@ class SketchRNNDecoderGMM(nn.Module):
         self.input_dim = input_dim
         self.dec_dim = dec_dim
         self.M = M
+        self.num_layers = 1
 
-        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=1, dropout=dropout)
+        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
         self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
 
@@ -453,7 +454,6 @@ class SketchRNNDecoderGMM(nn.Module):
         q = F.softmax(params_pen, dim=-1).view(len_out, -1, 3)
 
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
-
 
     #
     # Loss
