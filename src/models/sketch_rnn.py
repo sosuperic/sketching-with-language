@@ -208,6 +208,8 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
                                             dx, dy, p,
                                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                                             q)
+        if (pi != pi).any():
+            import pdb; pdb.set_trace()
         result = {'loss': loss, 'loss_R': loss}
 
         return result
