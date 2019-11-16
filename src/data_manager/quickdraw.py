@@ -223,6 +223,7 @@ def normalize_strokes(data, scale_factor=None, scale_factor_key='stroke3',
     """
     if scale_factor is None:
         scale_factor = _calculate_normalizing_scale_factor(data, scale_factor_key)
+    print('Scale factor: ', scale_factor)
 
     normalized_data = []
     for sample in data:

@@ -26,6 +26,9 @@ NPZ_DATA_PATH = 'data/quickdraw/npz/'
 #
 ##############################################################################
 
+# This was precomputed once on the training set of all 35 categories
+STROKE3_SCALE_FACTOR = 41.712997
+
 class StrokeDataset(Dataset):
     """
     Dataset to load sketches
@@ -69,7 +72,7 @@ class StrokeDataset(Dataset):
                 full_data.append({'stroke3': stroke3, 'category': category})
 
         self.data = self.filter_and_clean_data(full_data)
-        self.data = normalize_strokes(self.data)
+        self.data = normalize_strokes(self.data, scale_factor=STROKE3_SCALE_FACTOR)
         self.idx2cat, self.cat2idx = build_category_index(self.data)
 
         print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
