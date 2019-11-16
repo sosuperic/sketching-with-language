@@ -125,6 +125,22 @@ class StrokeToInstructionModel(TrainNN):
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
         self.scorers = [InstructionScorer('rouge')]
+
+    def load_enc_weights_from_autoencoder(self, dir):
+        """
+        Copy pretrained encoder weights to self.encoder.
+
+        Args:
+            dir: str
+        """
+        print('Loading encoder weights from pretrained autoencoder: ', dir)
+        fp = os.path.join(dir, 'model.pt')
+        trained_state_dict = torch.load(fp)
+        self_state_dict = self.state_dict()
+        for name, param in trained_state_dict.items():
+            if name.startswith('enc'):
+                self_state_dict[name].copy_(param)
+
     #
     # Data
     #
@@ -405,6 +421,8 @@ if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
     # Add additional arguments to parser
+    parser.add_argument('--load_autoencoder_dir', default=None, help='directory that contains pretrained autoencoder'
+                        'from which we can load the encoder weights')
     parser.add_argument('--inference', action='store_true')
     parser.add_argument('--inference_split', default='valid', help='dataset split to perform inference on')
     opt = parser.parse_args()
@@ -422,6 +440,10 @@ if __name__ == '__main__':
         save_dir = os.path.join(RUNS_PATH, 'stroke2instruction', run_name)
         model = StrokeToInstructionModel(hp, save_dir)
         utils.save_run_data(save_dir, hp)
+
+        if opt.load_autoencoder_dir:
+            model.load_enc_weights_from_autoencoder(opt.load_autoencoder_dir)
+
         model.train_loop()
 
 

@@ -143,6 +143,8 @@ class ProgressionPairDataset(Dataset):
 
         # TODO: should I be using stroke3_SEGMENT for the factor or stroke3? or
         # pass in the factor computed on the entire dataset?
+        # TODO: Probably should just pass ins cale factor on entire sketch rnn data (which is already precomputed
+        # and in stroke_models.py
         self.data = normalize_strokes(data, scale_factor_key='stroke3_segment',
                                       stroke_keys=['stroke3', 'stroke3_segment'])
 
