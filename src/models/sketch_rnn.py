@@ -51,7 +51,7 @@ class HParams():
         self.enc_num_layers = 1  # 2
         self.z_dim = 128  # dimension of z for VAE
         self.M = 20  # number of mixtures
-        self.dropout = 0.9  #
+        self.dropout = 0.1
         self.wKL = 0.5  # weight for Kl-loss (eq. 11)
         self.temperature = 0.4  # randomness (1=determinstic) in sampling (eq.8)
         self.max_len = 200  # maximum number of strokes in a drawing
@@ -204,12 +204,11 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
 
         # Calculate losses
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
+
         loss = self.dec.reconstruction_loss(mask,
                                             dx, dy, p,
                                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                                             q)
-        if (pi != pi).any():
-            import pdb; pdb.set_trace()
         result = {'loss': loss, 'loss_R': loss}
 
         return result

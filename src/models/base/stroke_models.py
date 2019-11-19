@@ -334,11 +334,6 @@ class SketchRNNVAEEncoder(nn.Module):
         mu = self.fc_mu(last_hidden)  # [bsz, z_dim]
         sigma_hat = self.fc_sigma(last_hidden)  # [bsz, z_dim]
 
-        if (sigma_hat != sigma_hat).any():
-            import pdb;
-            pdb.set_trace()
-            print('Nans in encoder sigma_hat')
-
         # Get z for VAE using mu and sigma, N ~ N(0,1)
         # Turn sigma_hat vector into non-negative std parameter
         sigma = torch.exp(sigma_hat / 2.)
@@ -512,10 +507,16 @@ class SketchRNNDecoderGMM(nn.Module):
 
         Args:
             mask: [max_len + 1, bsz]
-            dx: [max_len + 1, bsz, num_mixtures]
-            dy: [max_len + 1, bsz, num_mixtures]
+            dx: [max_len + 1, bsz, M]
+            dy: [max_len + 1, bsz, M]
             p:  [max_len + 1, bsz, 3]
-            pi: [max_len + 1, bsz, M] 
+            pi: [max_len + 1, bsz, M]
+            mu_x: [max_len + 1, bsz, M]
+            mu_y: [max_len + 1, bsz, M]
+            sigma_x: [max_len + 1, bsz, M]
+            sigma_y: [max_len + 1, bsz, M]
+            rho_xy: [max_len + 1, bsz, M]
+            q:
 
         These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
         end of sequence stroke appended in make_targets()
@@ -552,7 +553,10 @@ class SketchRNNDecoderGMM(nn.Module):
 
         # Eq. 24
         norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
-        exp = torch.exp(-z / (2 * (1 - rho_xy ** 2)))
+        exp_denom = (2 * (1 - rho_xy ** 2))
+        exp_denom += 1e-5
+        exp = torch.exp(-z / exp_denom)
 
-        return exp / norm
+        prob = exp / norm
 
+        return prob
