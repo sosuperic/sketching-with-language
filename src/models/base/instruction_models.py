@@ -110,7 +110,7 @@ def map_sentence_to_index(sentence, token2idx):
 
 
 class ProgressionPairDataset(Dataset):
-    def __init__(self, dataset_split, use_prestrokes=False):
+    def __init__(self, dataset_split, use_prestrokes=False, return_full_stroke=False):
         """
         
         Args:
@@ -120,6 +120,7 @@ class ProgressionPairDataset(Dataset):
         super().__init__()
         self.dataset_split = dataset_split
         self.use_prestrokes = use_prestrokes
+        self.return_full_stroke = return_full_stroke
 
         # Get data
         fp = None
@@ -156,7 +157,11 @@ class ProgressionPairDataset(Dataset):
         sample = self.data[idx]
 
         # Get subsequence of drawing that was annotated
-        stroke3 = sample['stroke3_segment']
+
+        if self.return_full_stroke:
+            stroke3 = sample['stroke3']
+        else:
+            stroke3 = sample['stroke3_segment']
         stroke5 = stroke3_to_stroke5(stroke3)
 
         if self.use_prestrokes:

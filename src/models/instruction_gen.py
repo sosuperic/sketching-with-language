@@ -209,8 +209,7 @@ class StrokeToInstructionModel(TrainNN):
             return self.one_forward_pass_transformer(batch)
 
     def one_forward_pass_cnn_lstm(self, batch):
-        strokes, stroke_lens, \
-            texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
         embedded = self.enc(strokes, stroke_lens,

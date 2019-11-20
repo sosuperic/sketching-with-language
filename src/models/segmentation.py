@@ -17,6 +17,7 @@ from src import utils
 from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, convert_stroke5_to_ndjson_seq, \
     create_progression_image_from_ndjson_seq
 from src.models.base.stroke_models import StrokeDataset
+from src.models.base.instruction_models import ProgressionPairDataset
 from src.models.core import nn_utils
 from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
 
@@ -64,7 +65,41 @@ class SegmentationModel(object):
         model.load_model(load_model)
         self.stroke2instruction = model
 
-    def segment_all_data(self):
+    def segment_all_progressionpair_data(self):
+        for split in ['train', 'valid', 'test']:
+        # for split in ['train', 'valid', 'test']:
+            ds = ProgressionPairDataset(split, return_full_stroke=True)
+            # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
+            # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
+            # stroke3 from ndjson and was already normalized / potentially normalized differently).
+            loader = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=ProgressionPairDataset.collate_fn)
+            for i, sample in enumerate(loader):
+                try:
+                    category = sample[5][0]
+                    strokes, segmented = self.segment_sample(sample, dataset='progressionpair')  # [len, 5]
+                    # data = {'sample': sample, 'segmented': segmented}
+                    # out_fp = os.path.join(SEGMENTATIONS_PATH, split, '{}.pkl'.format(i))
+                    out_fp = os.path.join(self.save_dir, 'progressionpair_ds', split, '{}_{}.json'.format(category, i))
+                    utils.save_file(segmented, out_fp)
+
+                    # Save original image too for comparisons
+                    # TODO: this doesn't work properly because the conversion to ndjson seq isn't correct
+                    strokes = strokes.cpu().numpy()
+                    strokes[:, :2] *= 60  # THIS IS TOTALLY WRONG unnormalize
+                    ndjson_seq = convert_stroke5_to_ndjson_seq(strokes)
+                    img = create_progression_image_from_ndjson_seq(ndjson_seq)
+                    out_fp = os.path.join(self.save_dir, 'progressionpair_ds', split, '{}_{}.jpg'.format(category, i))
+                    img.save(out_fp)
+
+                except Exception as e:
+                    print(e)
+                    continue
+
+
+                if i == 200:
+                    break
+
+    def segment_all_stroke_data(self):
         for category in final_categories():
             for split in ['train']:
                 print(category, split)
@@ -75,10 +110,10 @@ class SegmentationModel(object):
                 # stroke3 from ndjson and was already normalized / potentially normalized differently).
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
                 for i, sample in enumerate(loader):
-                    strokes, segmented = self.segment_sample(sample)  # [len, 5]
+                    strokes, segmented = self.segment_sample(sample, dataset='stroke')  # [len, 5]
                     # data = {'sample': sample, 'segmented': segmented}
                     # out_fp = os.path.join(SEGMENTATIONS_PATH, split, '{}.pkl'.format(i))
-                    out_fp = os.path.join(self.save_dir, category, split, '{}.json'.format(i))
+                    out_fp = os.path.join(self.save_dir, 'stroke_ds', category, split, '{}.json'.format(i))
                     utils.save_file(segmented, out_fp)
 
                     # Save original image too for comparisons
@@ -87,7 +122,7 @@ class SegmentationModel(object):
                     strokes[:, :2] *= 41.7  # unnormalize
                     ndjson_seq = convert_stroke5_to_ndjson_seq(strokes)
                     img = create_progression_image_from_ndjson_seq(ndjson_seq)
-                    out_fp = os.path.join(self.save_dir, category, split, '{}.jpg'.format(i))
+                    out_fp = os.path.join(self.save_dir, 'stroke_ds', category, split, '{}.jpg'.format(i))
                     img.save(out_fp)
 
                     if i == 20:
@@ -185,17 +220,20 @@ class SegmentationGreedyParsingModel(SegmentationModel):
     def __init__(self, hp, save_dir, load_model):
         super().__init__(hp, save_dir, load_model)
 
-    def segment_sample(self, sample):
+    def segment_sample(self, sample, dataset):
         """
         
         Args:
-            batch_sample: sample from DataLoader of Strokedataset (batch_size=1)
+            sample: batch of samples from DataLoader of Strokedataset (batch_size=1)
+            dataset: 
 
         Returns:
-            
-
         """
-        strokes, stroke_lens, cats, cats_idx = sample
+        if dataset == 'stroke':
+            strokes, stroke_lens, cats, cats_idx = sample
+        elif dataset == 'progressionpair':
+            strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = sample
+
         strokes = strokes.transpose(0, 1).float()  # strokes: [len, 1, 5]
         strokes = nn_utils.move_to_cuda(strokes)
         strokes = strokes.squeeze(1)  # [len, 5]
@@ -204,8 +242,6 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         cats_idx = cats_idx.repeat(len(seg_lens))
         cats_idx = nn_utils.move_to_cuda(cats_idx)
         seg_probs, seg_texts = self.calculate_seg_probs(segs, seg_lens, cats_idx)
-
-        from pprint import pprint
 
         # top level segmentation
         seg_idx = seg_idx_map[(0, n_penups)]
@@ -320,7 +356,8 @@ if __name__ == '__main__':
     elif opt.method == 'greedy_parsing':
         model = SegmentationGreedyParsingModel(hp, save_dir, load_model)
 
-    model.segment_all_data()
+    model.segment_all_progressionpair_data()
+    # model.segment_all_stroke_data()
 
     # Debugging saving of progressions from stroke data
     #
