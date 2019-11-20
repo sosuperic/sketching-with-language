@@ -4,20 +4,16 @@
 SketchRNN model as in "Neural Representation of Sketch Drawings"
 """
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import numpy as np
 import os
-import PIL
 
 import torch
 from torch import nn
 from torch import optim
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
 
 from src import utils
+from src.data_manager.quickdraw import save_strokes_as_img
 from src.models.core import nn_utils
 from src.models.base.stroke_models import StrokeDataset, SketchRNNDecoderGMM, SketchRNNVAEEncoder
 from src.models.core.train_nn import TrainNN, RUNS_PATH
@@ -66,32 +62,6 @@ class HParams():
 
         self.notes = ''
 
-##############################################################################
-#
-# UTILS
-#
-##############################################################################
-
-def save_sequence_as_img(sequence, output_fp):
-    """
-    TODO: move to quickdraw?
-    
-    Args:
-        sequence: [len, TODO: is it 3 or 5]
-            [delta_x, delta_y, pen up / down]  # TODO: is it up or down
-        output_fp: str
-    """
-    strokes = np.split(sequence, np.where(sequence[:, 2] > 0)[0] + 1)
-    fig = plt.figure()
-    ax1 = fig.add_subplot(111)
-    for s in strokes:
-        plt.plot(s[:, 0], -s[:, 1])
-    canvas = plt.get_current_fig_manager().canvas
-    canvas.draw()
-    pil_image = PIL.Image.frombytes('RGB', canvas.get_width_height(), canvas.tostring_rgb())
-    pil_image.save(output_fp)
-    plt.close('all')
-
 
 ##############################################################################
 #
@@ -106,7 +76,7 @@ class SketchRNNModel(TrainNN):
         self.eta_step = hp.eta_min
         self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, shuffle=True)
         self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, shuffle=False)
-        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, shuffle=False)
+        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, shuffle=True)
 
     #
     # Data
@@ -318,9 +288,12 @@ class SketchRNNVAEModel(SketchRNNModel):
     ##############################################################################
     # Conditional generation
     ##############################################################################
-    def save_generation(self, data_loader, epoch, n_gens=1, outputs_path=None):
+    def save_generation(self, data_loader, epoch, n_gens=5, outputs_path=None):
         """
         Generate sequence conditioned on output of encoder
+        
+        TODO: refactor this slightly so we can use it with the DecoderOnly model as well.
+        Only thing that needs to change is whether or not we concatenate the state with z
         """
         n = 0
         for i, batch in enumerate(data_loader):
@@ -330,10 +303,10 @@ class SketchRNNVAEModel(SketchRNNModel):
             max_len, bsz, _ = strokes.size()
 
             # Encode
-            z, _, _ = self.enc(strokes)  # z: [1, 1, 128]  # TODO: is z actually [1, 128]?
+            z, _, _ = self.enc(strokes)  # z: [bsz, 128]
 
             # initialize state with start of sequence stroke-5 stroke
-            sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1)
+            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # [1 (len), bsz, 5 (stroke-5)]
             sos = nn_utils.move_to_cuda(sos)
 
             # generate until end of sequence or maximum sequence length
@@ -342,10 +315,11 @@ class SketchRNNVAEModel(SketchRNNModel):
             seq_y = []  # delta-y
             seq_pen = []  # pen-down
             # init hidden and cell states is tanh(fc(z)) (Page 3)
-            hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, 1)
+            hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, dim=1)
             hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
             for _ in range(max_len):
-                input = torch.cat([s, z.unsqueeze(0)], 2)  # [1,1,133]
+                # input is current state, z, (and also the hidden and cell)
+                input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
 
                 # decode
                 pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
@@ -353,10 +327,10 @@ class SketchRNNVAEModel(SketchRNNModel):
                 hidden_cell = (hidden, cell)
 
                 # sample next state
-                s, dx, dy, pen_down, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
+                s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
                 seq_x.append(dx)
                 seq_y.append(dy)
-                seq_pen.append(pen_down)
+                seq_pen.append(pen_up)
 
                 if eos:  # done drawing
                     break
@@ -367,8 +341,18 @@ class SketchRNNVAEModel(SketchRNNModel):
             sample_y = np.cumsum(seq_y, 0)
             sample_pen = np.array(seq_pen)
             sequence = np.stack([sample_x, sample_y, sample_pen]).T
-            output_fp = os.path.join(outputs_path, '{}-{}.jpg'.format(epoch, n))
-            save_sequence_as_img(sequence, output_fp)
+            output_fp = os.path.join(outputs_path, 'e{}-gen{}.jpg'.format(epoch, n))
+            save_strokes_as_img(sequence, output_fp)
+
+            # Save original as well
+            output_fp = os.path.join(outputs_path, 'e{}-gt{}.jpg'.format(epoch, n))
+            strokes_x = strokes[:,0,0]  # first 0 for x because sample_next_state etc. only using 0-th batch item; 2nd 0 for dx
+            strokes_y = strokes[:,0,1]  # 1 for dy
+            strokes_x = np.cumsum(strokes_x.cpu().numpy())
+            strokes_y = np.cumsum(strokes_y.cpu().numpy())
+            strokes_pen = strokes[:,0,3].cpu().numpy()
+            strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
+            save_strokes_as_img(strokes_out, output_fp)
 
             n += 1
             if n == n_gens:
@@ -381,18 +365,22 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         Args:
             pi: [len, bsz, M]
-            # TODO!! This is currently hardcoded with save_conditional_generation
-            # When we do pi.data[0,0,:] down below,
-                The 0-th index 0: Currently, pi is being calculated with output_all=False, which means it's just ouputting the last pi.
-                The 1-th index 0: first in batch
-        # TODO: refactor so that the above isn't the case.
+            mu_x: [len, bsz, M]
+            mu_y: [len, bsz, M]
+            sigma_x: [len, bsz, M]
+            sigma_y: [len, bsz, M]
+            rho_xy: [len, bsz, M]
+            q: [len, bsz, 3]
+            
+            When used during generation, len should be 1 (decoding step by step)
 
         Returns:
-            # TODO: what does it return exactly?
-            s, dx, dy, pen_down, eos
+            s: [1, 1, 5]
+            dx: [M]
+            dy: [M]
+            pen_up: bool 
+            eos: bool
         """
-        M = pi.size(-1)
-
         def adjust_temp(pi_pdf):
             """Not super sure why this instead of just dividing by temperauture as in eq. 8, but
             magenta sketch_run/model.py does it this way(adjust_temp())"""
@@ -402,25 +390,31 @@ class SketchRNNVAEModel(SketchRNNModel):
             pi_pdf /= pi_pdf.sum()
             return pi_pdf
 
+        _, bsz, M = pi.size()
+
+        # TODO: currently, this method (and sample_bivariate_normal) only doesn't work produce samples
+        # for every item in batch. It only does it for BATCH_ITEM-th point.
+        BATCH_ITEM = 0  # index in batch
+
         # Get mixture index
-        # pi is weights for mixtures
-        pi = pi.data[0, 0, :].cpu().numpy()
+        pi = pi.data[-1, BATCH_ITEM, :].cpu().numpy()  # [M]
         pi = adjust_temp(pi)
 
         pi_idx = np.random.choice(M, p=pi)  # choose Gaussian weighted by pi
 
         # Get mixture params
-        mu_x = mu_x.data[0, 0, pi_idx]
-        mu_y = mu_y.data[0, 0, pi_idx]
-        sigma_x = sigma_x.data[0, 0, pi_idx]
-        sigma_y = sigma_y.data[0, 0, pi_idx]
-        rho_xy = rho_xy.data[0, 0, pi_idx]
+        mu_x = mu_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        mu_y = mu_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        sigma_x = sigma_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        sigma_y = sigma_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        rho_xy = rho_xy.data[-1, BATCH_ITEM, pi_idx]  # [M]
 
         # Get next x andy by using mixture params and sampling from bivariate normal
         dx, dy = self.sample_bivariate_normal(mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False)
 
         # Get pen state
-        q = q.data[0, 0, :].cpu().numpy()
+        q = q.data[-1, BATCH_ITEM, :].cpu().numpy()  # [3]
+        # q = adjust_temp(q)  # TODO: they don't adjust the temp for q in the magenta repo...
         q_idx = np.random.choice(3, p=q)
 
         # Create next_state vector
@@ -431,13 +425,23 @@ class SketchRNNVAEModel(SketchRNNModel):
         next_state = nn_utils.move_to_cuda(next_state)
         s = next_state.view(1, 1, -1)
 
-        pen_down = q_idx == 1  # TODO: isn't this pen up?
+        pen_up = q_idx == 1
         eos = q_idx == 2
 
-        return s, dx, dy, pen_down, eos
+        return s, dx, dy, pen_up, eos
 
     def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False):
         """
+        Args:
+            mu_x: [M]
+            mu_y: [M]
+            sigma_x: [M]
+            sigma_y: [M]
+            rho_xy: [M]
+            greedy: bool
+            
+        Return:
+            Tuple of [M]
         """
         if greedy:
             return mu_x, mu_y

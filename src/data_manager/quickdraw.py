@@ -15,6 +15,10 @@ import random
 import subprocess
 from time import sleep
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 import cairocffi as cairo
 import numpy as np
 import pandas as pd
@@ -254,6 +258,27 @@ def _calculate_normalizing_scale_factor(data, scale_factor_key):  #
     deltas = np.array(deltas)
     scale_factor = np.std(deltas)
     return scale_factor
+
+
+def save_strokes_as_img(sequence, output_fp):
+    """
+    TODO: move to quickdraw?
+
+    Args:
+        sequence: [len, 3] np array
+            [x, y, pen up] (this is x-y positions, not delta x and delta y's)
+        output_fp: str
+    """
+    strokes = np.split(sequence, np.where(sequence[:, 2] == 1)[0] + 1)
+    fig = plt.figure()
+    ax1 = fig.add_subplot(111)
+    for s in strokes:
+        plt.plot(s[:, 0], -s[:, 1])
+    canvas = plt.get_current_fig_manager().canvas
+    canvas.draw()
+    pil_image = Image.frombytes('RGB', canvas.get_width_height(), canvas.tostring_rgb())
+    pil_image.save(output_fp)
+    plt.close('all')
 
 
 

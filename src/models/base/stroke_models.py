@@ -4,8 +4,6 @@
 StrokeDataset and stroke related models
 """
 
-import matplotlib
-matplotlib.use('Agg')
 import numpy as np
 import os
 
@@ -412,20 +410,19 @@ class SketchRNNDecoderGMM(nn.Module):
             y = self.fc_params(hidden.view(-1, self.dec_dim))
 
         # Separate pen and mixture params
-        params = torch.split(y, 6,
-                             1)  # splits into tuple along 1st dim; tuple of num_mixture [(max_len + 1) * bsz, 6]'s, 1 [(max_len + 1) * bsz, 3]
-        params_mixture = torch.stack(params[:-1])  # trajectories; [num_mixtures, (max_len + 1) * bsz, 6]
+        params = torch.split(y, 6, dim=1)  # tuple of M [(max_len + 1) * bsz, 6] tensors, 1 [(max_len + 1) * bsz, 3] tensor
+        params_mixture = torch.stack(params[:-1])  # trajectories; [M, (max_len + 1) * bsz, 6]
         params_pen = params[-1]  # pen up/down;  [(max_len + 1) * bsz, 3]
 
         # Split trajectories into each mixture param
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, 2)
-        # TODO: these all have [num_mix, (max_len+1) * bsz, 1]
-        pi = pi.squeeze(2)
-        mu_x = mu_x.squeeze(2)
-        mu_y = mu_y.squeeze(2)
-        sigma_x = sigma_x.squeeze(2)
-        sigma_y = sigma_y.squeeze(2)
-        rho_xy = rho_xy.squeeze(2)
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, dim=2)
+        # These all have [M, (max_len+1) * bsz, 1]; squeeze
+        pi = pi.squeeze(2)  # [M, (max_len+1) * bsz]
+        mu_x = mu_x.squeeze(2)  # [M, (max_len+1) * bsz]
+        mu_y = mu_y.squeeze(2)  # [M, (max_len+1) * bsz]
+        sigma_x = sigma_x.squeeze(2)  # [M, (max_len+1) * bsz]
+        sigma_y = sigma_y.squeeze(2)  # [M, (max_len+1) * bsz]
+        rho_xy = rho_xy.squeeze(2)  # [M, (max_len+1) * bsz]
 
         # When training, lstm receives whole input, use all outputs from lstm
         # When generating, input is just last generated sample
@@ -435,21 +432,22 @@ class SketchRNNDecoderGMM(nn.Module):
         else:
             len_out = 1
 
-        # TODO: don't think I actually need the squeeze's
-        # if len_out == 1:
-        #     import pdb; pdb.set_trace()  # squeeze may be related to generation with len_out = 1
-        # TODO: add dimensions
-        pi = F.softmax(pi.t().squeeze(), dim=-1).view(len_out, -1, self.M)
-        mu_x = mu_x.t().squeeze().contiguous().view(len_out, -1, self.M)
-        mu_y = mu_y.t().squeeze().contiguous().view(len_out, -1, self.M)
+        # Compute softmax over mixtures
+        pi = F.softmax(pi.t(), dim=-1).view(len_out, bsz, self.M)
+        
+        mu_x = mu_x.t().contiguous().view(len_out, bsz, self.M)
+        mu_y = mu_y.t().contiguous().view(len_out, bsz, self.M)
 
         # Eq. 6
-        sigma_x = torch.exp(sigma_x.t().squeeze()).view(len_out, -1, self.M)
-        sigma_y = torch.exp(sigma_y.t().squeeze()).view(len_out, -1, self.M)
-        rho_xy = torch.tanh(rho_xy.t().squeeze()).view(len_out, -1, self.M)
+        sigma_x = torch.exp(sigma_x.t()).view(len_out, bsz, self.M)
+        sigma_y = torch.exp(sigma_y.t()).view(len_out, bsz, self.M)
+        rho_xy = torch.tanh(rho_xy.t()).view(len_out, bsz, self.M)
 
         # Eq. 7
-        q = F.softmax(params_pen, dim=-1).view(len_out, -1, 3)
+        q = F.softmax(params_pen, dim=-1).view(len_out, bsz, 3)
+
+        if (q != q).any():
+            import pdb; pdb.set_trace()
 
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
 
@@ -516,7 +514,7 @@ class SketchRNNDecoderGMM(nn.Module):
             sigma_x: [max_len + 1, bsz, M]
             sigma_y: [max_len + 1, bsz, M]
             rho_xy: [max_len + 1, bsz, M]
-            q:
+            q: [max_len + 1, bsz]
 
         These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
         end of sequence stroke appended in make_targets()
@@ -530,6 +528,7 @@ class SketchRNNDecoderGMM(nn.Module):
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
         # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
+
         LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
         #  TODO: check arguments for above BCE
 
