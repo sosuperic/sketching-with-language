@@ -68,6 +68,20 @@ def normalize_sentence(sentence):
 #
 #################################################
 
+def load_hp(hp_obj, dir):
+    """
+    Args:
+        hp_obj: existing HParams object
+        dir: directory with existing hp_obj, saved as 'hp.json'
+
+    Returns:
+        hp_object updated
+    """
+    existing_hp = load_file(os.path.join(dir, 'hp.json'))
+    for k, v in existing_hp.items():
+        setattr(hp_obj, k, v)
+    return hp_obj
+
 def save_run_data(path_to_dir, hp):
     """
     1) Save stdout to file

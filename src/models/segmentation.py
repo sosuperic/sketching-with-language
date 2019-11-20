@@ -1,31 +1,31 @@
 # segmentation.py
 
 """
-Model for training / doing DP segmentation method
+Currently uses trained Stroke2Instruction model to segment unseen sequences.
 """
 
 import argparse
 import numpy as np
 import os
+from pprint import pprint
 
 import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
-from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH
-from src.models.core import nn_utils
 from src import utils
-
+from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories
 from src.models.base.stroke_models import StrokeDataset
-from src.data_manager.quickdraw import final_categories
+from src.models.core import nn_utils
+from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
 
 
-from torch.utils.data import Dataset, DataLoader
-# TODO: import StrokeDataset
 
 SEGMENTATIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'segmentations')
 
 ##############################################################################
 #
-# HYPERPARAMETERS
+# Hyperparameters
 #
 ##############################################################################
 class HParams():
@@ -33,41 +33,207 @@ class HParams():
         self.max_k = None  # for DP method; int or None
         self.notes = ''
 
+        # TODO: these are only necessary because we instantiate a StrokeToInstructionModel...
+        # which loads the ProgressionPairsDataset. Should refactor
+        # self.batch_size = 1
+        # self.use_prestrokes = False
+
 ##############################################################################
 #
 # Model
 #
 ##############################################################################
 
-class Segmentation(object):
-    def __init__(self, hp, save_dir=None):
+class SegmentationModel(object):
+    def __init__(self, hp, save_dir, load_model):
+        """
+        
+        Args:
+            hp: HParams object
+            save_dir: str
+            load_model: str (directory with model and hparams)
+        """
         self.hp = hp
         self.save_dir = save_dir
+        self.load_model = load_model
+
+        # TODO: should refactor StrokeToInstruction model
+        hp = utils.load_hp(hp, load_model)
+        model = StrokeToInstructionModel(hp, save_dir=None)  # save_dir=None means inference mode
+        model.load_model(load_model)
+        self.stroke2instruction = model
 
     def segment_all_data(self):
         for category in final_categories():
             for split in ['train', 'valid', 'test']:
-                ds = StrokeDataset(split, category=category)
+                ds = StrokeDataset(category, split)
+                # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
+                # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
+                # stroke3 from ndjson and was already normalized / potentially normalized differently).
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
-                for segmented in self.segment(loader):
-                    pass # TODO: save segmented
+                for i, sample in enumerate(loader):
+                    segmented = self.segment_sample(sample)
+                    data = {'sample': sample, 'segmented': segmented}
+                    out_fp = os.path.join(SEGMENTATIONS_PATH, split, '{}.pkl'.format(i))
+                    utils.save_file(data, out_fp)
 
-    def segment(self, data_loader):
-        for sample in data_loader:
-            yield self.segment_sample(sample)
+    def construct_batch_of_segments_from_one_sample(self, strokes):
+        """
+        Args:
+            strokes: [len, 5]
+            
+
+        Returns:
+            batch: [n_pts (seq_len), n_segs, 5] FloatTensor
+            n_penups: int
+            seg_lens: list of ints, length n_segs
+            seg_idx_map: dict
+                
+                {(0, 1): 0,
+                 (0, 2): 1,
+                 (0, 3): 2,
+                 (0, 4): 3,
+                 (0, 5): 4,
+                 (1, 2): 5,
+                 (1, 3): 6,
+                 (1, 4): 7,
+                 (1, 5): 8,
+                 (2, 3): 9,
+                 (2, 4): 10,
+                 (2, 5): 11,
+                 (3, 4): 12,
+                 (3, 5): 13,
+                 (4, 5): 14}
+        """
+        # get locations of segments using penup (4th point in stroke5 format)
+        n_pts = strokes.size(0)
+        strokes = strokes.cpu().numpy()
+        pen_up = (np.where(strokes[:, 3] == 1)[0]).tolist()
+        n_penups = len(pen_up)
+        n_segs = int(n_penups * (n_penups + 1) / 2)
+
+        # construct tensor of segments
+        batch = np.zeros((n_segs, n_pts, 5))
+        seg_lens = []
+        seg_idx = 0
+        seg_idx_map = {}  # maps tuple of (left_idx, right_idx) in terms of penups to seg_idx in batch
+        pen_up = [0] + pen_up  # insert dummy
+        for i in range(len(pen_up) - 1):  # i is left index
+            for j in range(i+1, len(pen_up)):  # j is right index
+                start_stroke_idx = pen_up[i]
+                end_stroke_idx = pen_up[j]
+                seg = strokes[start_stroke_idx:end_stroke_idx + 1]
+                seg_len = len(seg)
+                batch[seg_idx, :seg_len, :] = seg
+                seg_lens.append(seg_len)
+                seg_idx_map[(i,j)] = seg_idx
+                seg_idx += 1
+
+        batch = torch.Tensor(batch)
+        batch = batch.transpose(0,1)  # [n_pts, n_segs, 5]
+        batch = nn_utils.move_to_cuda(batch)
+
+        return batch, n_penups, seg_lens, seg_idx_map
+
+    def calculate_seg_probs(self, batch_of_segs, seg_lens, cats_idx):
+        """
+        Calculate the (log) probability of each segment
+        (To be used as a error/goodness of fit for each segment)
+
+        Args:
+            batch_of_segs: [n_pts (seq_len), n_segs, 5]
+            seg_lens: list of ints, length n_segs
+            cats_idx: list of the same int, length n_segs
+
+        Returns:
+            final_probs [n_segs] array
+        """
+        probs, ids, texts = self.stroke2instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+        # probs: [n_segs, max_len, vocab]; texts: list of strs of length [n_segs]
+
+        probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
+        final_probs = []
+
+        # normalize by generated length
+        n_segs = probs.size(0)
+        for i in range(n_segs):
+            eos_idx = (ids[i] == EOS_ID).nonzero()
+            eos_idx = eos_idx.item() if (len(eos_idx) > 0) else probs.size(1)
+            p = probs[i,:eos_idx + 1].log().sum() / float(eos_idx + 1)
+            final_probs.append(p.item())
+        final_probs = np.array(final_probs)  # [n_segs]
+
+        return final_probs, texts
+
+class SegmentationGreedyParsingModel(SegmentationModel):
+    def __init__(self, hp, save_dir, load_model):
+        super().__init__(hp, save_dir, load_model)
 
     def segment_sample(self, sample):
         """
+        
         Args:
-            sample: one sample from  
+            batch_sample: sample from DataLoader of Strokedataset (batch_size=1)
 
-        Returns: dict? TODO
+        Returns:
+            
+
         """
-        pass
+        strokes, stroke_lens, cats, cats_idx = sample
+        strokes = strokes.transpose(0, 1).float()  # strokes: [len, 1, 5]
+        strokes = nn_utils.move_to_cuda(strokes)
+        strokes = strokes.squeeze(1)  # [len, 5]
 
-class SegmentationDP(Segmentation):
-    def __init__(self, hp, load_model=None, save_dir=None):
-        super().__init__(hp, save_dir)
+        segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample(strokes)
+        cats_idx = cats_idx.repeat(len(seg_lens))
+        cats_idx = nn_utils.move_to_cuda(cats_idx)
+        seg_probs, seg_texts = self.calculate_seg_probs(segs, seg_lens, cats_idx)
+
+        from pprint import pprint
+
+        # top level segmentation
+        seg_idx = seg_idx_map[(0, n_penups)]
+        segmented = [{'left': 0, 'right': n_penups, 'prob': seg_probs[seg_idx], 'text': seg_texts[seg_idx]}]
+        segmented = self.split(0, n_penups, seg_idx_map, seg_probs, seg_texts, segmented)  # + 1see how seg_idx_map is calculated
+        pprint(segmented)
+        import pdb; pdb.set_trace()
+        return segmented
+
+    def split(self, left_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented):
+        # TODO: how best to store these?
+        if (left_idx + 1) >= right_idx:
+            return segmented
+        else:
+            max_prob = float('-inf')
+            best_split_idx = None
+
+            best_left_seg_text, best_right_seg_text = None, None
+            best_left_seg_prob, best_right_seg_prob = None, None
+            for split_idx in range(left_idx + 1, right_idx):
+                left_seg_idx = seg_idx_map[(left_idx, split_idx)]
+                right_seg_idx = seg_idx_map[(split_idx, right_idx)]
+                left_seg_prob = seg_probs[left_seg_idx]
+                right_seg_prob = seg_probs[right_seg_idx]
+                prob = left_seg_prob + right_seg_prob
+
+                if prob > max_prob:
+                    best_left_seg_text, best_right_seg_text = seg_texts[left_seg_idx], seg_texts[right_seg_idx]
+                    best_left_seg_prob, best_right_seg_prob = left_seg_prob, right_seg_prob
+                    max_prob = prob
+                    best_split_idx = split_idx
+
+            segmented.append({'left': left_idx, 'right': best_split_idx,
+                              'prob': best_left_seg_prob, 'text': best_left_seg_text})
+            segmented.append({'left': best_split_idx, 'right': right_idx,
+                              'prob': best_right_seg_prob, 'text': best_right_seg_text})
+
+            segmented = self.split(left_idx, best_split_idx, seg_idx_map, seg_probs, seg_texts, segmented)
+            segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented)
+            return segmented
+
+class SegmentationBellmanModel(SegmentationModel):
+    def __init__(self, hp, save_dir, load_model):
+        super().__init__(hp, save_dir, load_model)
 
         self.model = None  # TODO: Load Model
 
@@ -109,67 +275,27 @@ class SegmentationDP(Segmentation):
         # TODO: save stroke segments, segment instructions, etc.
         utils.save_file(None, None)
 
-    def construct_costs(self, batch_of_segments, n_segs):
-        """
-        Make cost matrix to be used in DP
-
-        Args:
-            batch_of_segments: [n_segs^2, sample_len] (n_segs = number of pen_ups)
-            n_segs: int
-
-        Returns: [N, N] numpy array
-        """
-        costs = -torch.log(self.model.one_forward_pass(batch_of_segments)['normed_probs'])  # TODO: add this key in instruction_gen   # [n_segs ^ 2] LongTensor?
-        # TODO: do -torch.log here?
-        costs = costs.view(n_segs, n_segs)
-        costs = costs.cpu().numpy()
-        return costs
-
-
-    def construct_batch_of_segments_from_one_sample(self, strokes):
-        """
-        Args:
-            strokes: [len, 3 or 5] np array (either stroke3 or stroke5 format)
-
-        Returns: [N^2, sample_len]
-            N^2 where N is number of penups 
-            sample_len (max length of a segment is sample len)
-        """
-        n_pts = strokes.size(0)
-
-        pen_up = np.where(strokes[:, 2] == 1)[0].tolist()
-        n_segs = len(pen_up)  # TODO: look into off by one, penup vs pendown nonsense
-
-        batch = np.zeros(n_segs, n_pts)
-        cur = 0
-        for i in range(n_segs-1):
-            for j in range(i+1, n_segs):
-                start_stroke_idx = pen_up[i]
-                end_stroke_idx = pen_up[j]
-                seg = strokes[start_stroke_idx:end_stroke_idx]  # +1 somewhere? TODO
-                batch[cur,:len(seg)] = seg
-
-        batch = torch.Tensor(batch)
-
-        return batch, n_segs
 
 
 
 
 
 if __name__ == '__main__':
-
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
     parser = argparse.ArgumentParser()
-    parser.add_argument('--method', default=None)
+    parser.add_argument('--method', default='greedy_parsing')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    if opt.method == 'dp':
-        # TODO: should dataset be part of directory path name? Where is data loaded?
-        save_dir = os.path.join(SEGMENTATIONS_PATH, 'dp', run_name)
-        model = SegmentationDP(hp, save_dir)
-        utils.save_run_data(save_dir, hp)
-        model = SegmentationDP(hp)
-        model.segment_all_data()
+    save_dir = os.path.join(SEGMENTATIONS_PATH, opt.method, run_name)
+
+    # load_model = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
+    load_model = 'runs/stroke2instruction/load_ae_556011f8/'
+
+    if opt.method == 'bellman':
+        model = SegmentationBellmanModel(hp, save_dir, load_model)
+    elif opt.method == 'greedy_parsing':
+        model = SegmentationGreedyParsingModel(hp, save_dir, load_model)
+
+    model.segment_all_data()
