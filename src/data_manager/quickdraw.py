@@ -191,7 +191,6 @@ def ndjson_to_stroke3(sample):
 
     return np_ink, class_name
 
-
 def stroke3_to_stroke5(seq, max_len=None):
     """
     Convert from stroke-3 to stroke-5 format
@@ -262,8 +261,6 @@ def _calculate_normalizing_scale_factor(data, scale_factor_key):  #
 
 def save_strokes_as_img(sequence, output_fp):
     """
-    TODO: move to quickdraw?
-
     Args:
         sequence: [len, 3] np array
             [x, y, pen up] (this is x-y positions, not delta x and delta y's)
@@ -280,7 +277,102 @@ def save_strokes_as_img(sequence, output_fp):
     pil_image.save(output_fp)
     plt.close('all')
 
+def convert_stroke5_to_ndjson_seq(stroke5):
+    """
 
+
+    drawings[0]['drawing']
+[[[130, 113, 99, 109, 76, 64, 55, 48, 48, 51, 59, 86, 133, 154, 170, 203, 214, 217, 215, 208, 186, 176, 162, 157, 132], [72, 40, 27, 79, 82, 88, 100, 120, 134, 152, 165, 184, 189, 186, 179, 152, 131, 114, 100, 89, 76, 0, 31, 65, 70]], [[76, 28, 7], [136, 128, 128]], [[76, 23, 0], [160, 164, 175]], [[87, 52, 37], [175, 191, 204]], [[174, 220, 246, 251], [134, 132, 136, 139]], [[175, 255], [147, 168]], [[171, 208, 215], [164, 198, 210]], [[130, 110, 108, 111, 130, 139, 139, 119], [129, 134, 137, 144, 148, 144, 136, 130]], [[107, 106], [96, 113]]]
+# >>> len(drawings[0]['drawing'])
+9
+# >>> drawings[0]['drawing'][0]
+[[130, 113, 99, 109, 76, 64, 55, 48, 48, 51, 59, 86, 133, 154, 170, 203, 214, 217, 215, 208, 186, 176, 162, 157, 132], [72, 40, 27, 79, 82, 88, 100, 120, 134, 152, 165, 184, 189, 186, 179, 152, 131, 114, 100, 89, 76, 0, 31, 65, 70]]
+
+    Args:
+        stroke5: [len, 5] numpy array
+
+    Returns:
+
+    TODO: may have to unnormalize stroke5 before
+
+    https://github.com/hardmaru/sketch-rnn-datasets/blob/master/draw_strokes.py
+    """
+    ndjson_seq = []
+    pen_up = np.where(stroke5[:,3] == 1)[0].tolist()
+    pen_up = [0] + pen_up
+
+    cur_x, cur_y = 0, 0
+    min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
+    # cur_x, cur_y = 123, 123   # TODO: shouldn't have negative values... hacking it right now
+    for seg_idx in range(len(pen_up) - 1):
+        seg_x = []
+        seg_y = []
+        start_stroke_idx, end_stroke_idx = pen_up[seg_idx], pen_up[seg_idx+1]
+        for stroke_idx in range(start_stroke_idx, end_stroke_idx + 1):
+
+            dx, dy = stroke5[stroke_idx, 0], stroke5[stroke_idx, 1]
+
+            # TODO: this is just some manual super hack right now to get the positions to show up
+            dx /= 2
+            dy /= 2
+
+            cur_x += dx
+            cur_y += dy
+            seg_x.append(cur_x)
+            seg_y.append(cur_y)
+
+            # min_x = min(cur_x, min_x)
+            # min_y = min(cur_x, min_y)
+            # max_x = max(cur_x, max_x)
+            # max_y = max(cur_x, max_y)
+        ndjson_seq.append([seg_x, seg_y])
+
+
+    return ndjson_seq
+
+def create_progression_image_from_ndjson_seq(strokes):
+    """
+    Args:
+        strokes: list (A) of list (B) of lists (C)
+            - A is of length n_penups
+            - B is the ith segment
+            - B contains two lists (C's) one for each x and y
+
+    Returns: Image
+    """
+
+    font_size = int(SIDE * 0.2)
+    font_space = 2 * font_size  # space for numbering
+    font = ImageFont.truetype(FONT_PATH, font_size)
+    segs_in_row = 8
+    border = 3
+
+
+    n_segs = len(strokes)
+    x_segs = n_segs if (n_segs < segs_in_row) else segs_in_row
+    y_segs = math.ceil(n_segs / segs_in_row)
+    x_height = SIDE * x_segs + border * (x_segs + 1)
+    y_height = SIDE * y_segs + border * (y_segs + 1) + (font_space) * y_segs
+    img = Image.new('L', (x_height, y_height))
+    img.paste(255, [0, 0, img.size[0], img.size[1]])  # fill in image with white
+    for s_idx, s in enumerate(strokes):
+        segments = strokes[:s_idx + 1]
+        vec = vector_to_raster([segments], side=SIDE, line_diameter=LINE)[0]
+        seg_vec = vec.reshape(SIDE, SIDE)
+
+        seg_img = Image.fromarray(seg_vec, 'L')
+        seg_img = ImageOps.expand(seg_img, (0, font_space, 0, 0))  # add white space above for number
+        seg_img = ImageOps.invert(seg_img)
+        seg_img = ImageOps.expand(seg_img, border=border, fill='gray')
+        num_offset = 0.5 * font_size
+        draw = ImageDraw.Draw(seg_img)
+        draw.text((num_offset, num_offset), str(s_idx + 1), (0), font=font)
+
+        x_offset = (s_idx % segs_in_row) * (border + SIDE)
+        y_offset = (s_idx // segs_in_row) * (border + font_space + SIDE)
+        img.paste(seg_img, (x_offset, y_offset))
+
+    return img
 
 ###################################################################
 #
@@ -346,12 +438,6 @@ def save_progressions(n=None):
     """
     Saw progressions of strokes of data
     """
-    font_size = int(SIDE * 0.2)
-    font_space = 2 * font_size  # space for numbering
-    font = ImageFont.truetype(FONT_PATH, font_size)
-    segs_in_row = 8
-    border = 3
-
     categories = animal_categories()
     for cat in categories:
         print(cat)
@@ -370,30 +456,7 @@ def save_progressions(n=None):
                 break
 
             id, strokes = d['key_id'], d['drawing']
-
-            n_segs = len(strokes)
-            x_segs = n_segs if (n_segs < segs_in_row) else segs_in_row
-            y_segs = math.ceil(n_segs / segs_in_row)
-            x_height = SIDE * x_segs + border * (x_segs + 1)
-            y_height = SIDE * y_segs + border * (y_segs + 1) + (font_space) * y_segs
-            img = Image.new('L', (x_height, y_height))
-            img.paste(255, [0,0,img.size[0], img.size[1]])  # fill in image with white
-            for s_idx, s in enumerate(strokes):
-                segments = strokes[:s_idx+1]
-                vec = vector_to_raster([segments], side=SIDE, line_diameter=LINE)[0]
-                seg_vec =  vec.reshape(SIDE, SIDE)
-
-                seg_img = Image.fromarray(seg_vec, 'L')
-                seg_img = ImageOps.expand(seg_img, (0, font_space, 0, 0))  # add white space above for number
-                seg_img = ImageOps.invert(seg_img)
-                seg_img = ImageOps.expand(seg_img, border=border, fill='gray')
-                num_offset = 0.5 * font_size
-                draw = ImageDraw.Draw(seg_img)
-                draw.text((num_offset, num_offset), str(s_idx+1), (0), font=font)
-
-                x_offset = (s_idx % segs_in_row) * (border + SIDE)
-                y_offset = (s_idx // segs_in_row) * (border + font_space + SIDE)
-                img.paste(seg_img, (x_offset, y_offset))
+            img = create_progression_image_from_ndjson_seq(strokes)
 
             # save
             img.save(os.path.join(out_dir_progress, '{}.jpg'.format(id)))
