@@ -290,7 +290,7 @@ class StrokeEncoderTransformer(nn.Module):
 ##############################################################################
 
 class SketchRNNVAEEncoder(nn.Module):
-    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=1.0):
+    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=0.0):
         super().__init__()
         self.enc_dim = enc_dim
 
@@ -350,7 +350,7 @@ class SketchRNNVAEEncoder(nn.Module):
 ##############################################################################
 
 class SketchRNNDecoderGMM(nn.Module):
-    def __init__(self, input_dim, dec_dim, M, dropout=1.0):
+    def __init__(self, input_dim, dec_dim, M, dropout=0.0):
         """
         Args:
             input_dim: int (size of input)
@@ -446,9 +446,6 @@ class SketchRNNDecoderGMM(nn.Module):
         # Eq. 7
         q = F.softmax(params_pen, dim=-1).view(len_out, bsz, 3)
 
-        if (q != q).any():
-            import pdb; pdb.set_trace()
-
         return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
 
     #
@@ -524,6 +521,14 @@ class SketchRNNDecoderGMM(nn.Module):
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
         LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
+        
+
+        if (LS != LS).any():
+            import pdb; pdb.set_trace()
+        if (LS == float('inf')).any():
+            import pdb; pdb.set_trace()
+        if (LS == float('-inf')).any():
+            import pdb; pdb.set_trace()
 
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
@@ -557,5 +562,8 @@ class SketchRNNDecoderGMM(nn.Module):
         exp = torch.exp(-z / exp_denom)
 
         prob = exp / norm
+
+        if (prob != prob).any():
+            import pdb; pdb.set_trace()
 
         return prob

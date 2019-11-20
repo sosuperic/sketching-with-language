@@ -34,7 +34,7 @@ class HParams():
 
         # Training
         self.batch_size = 64  # 100
-        self.lr = 0.001  # 0.0001
+        self.lr = 0.001  # 0.0001 when enc_dim=512, dec_dim=2048
         self.lr_decay = 0.9999
         self.min_lr = 0.00001  #
         self.grad_clip = 1.0
@@ -181,6 +181,13 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
                                             q)
         result = {'loss': loss, 'loss_R': loss}
 
+        if (loss != loss).any():
+            import pdb; pdb.set_trace()
+        if (loss == float('inf')).any():
+            import pdb; pdb.set_trace()
+        if (loss == float('-inf')).any():
+            import pdb; pdb.set_trace()
+
         return result
 
     def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
@@ -205,7 +212,7 @@ class SketchRNNVAEModel(SketchRNNModel):
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
         self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
-        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M)
+        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M, dropout=hp.dropout)
         self.models.extend([self.enc, self.fc_z_to_hc, self.dec])
         if USE_CUDA:
             for model in self.models:
