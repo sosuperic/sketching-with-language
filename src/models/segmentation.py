@@ -66,13 +66,13 @@ class SegmentationModel(object):
         self.stroke2instruction = model
 
     def segment_all_progressionpair_data(self):
-        for split in ['train', 'valid', 'test']:
+        for split in ['test']:
         # for split in ['train', 'valid', 'test']:
             ds = ProgressionPairDataset(split, return_full_stroke=True)
             # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
             # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
             # stroke3 from ndjson and was already normalized / potentially normalized differently).
-            loader = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=ProgressionPairDataset.collate_fn)
+            loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=ProgressionPairDataset.collate_fn)
             for i, sample in enumerate(loader):
                 try:
                     category = sample[5][0]
@@ -83,11 +83,9 @@ class SegmentationModel(object):
                     utils.save_file(segmented, out_fp)
 
                     # Save original image too for comparisons
-                    # TODO: this doesn't work properly because the conversion to ndjson seq isn't correct
-                    strokes = strokes.cpu().numpy()
-                    strokes[:, :2] *= 60  # THIS IS TOTALLY WRONG unnormalize
-                    ndjson_seq = convert_stroke5_to_ndjson_seq(strokes)
-                    img = create_progression_image_from_ndjson_seq(ndjson_seq)
+
+                    ndjson_strokes = loader.dataset.data[i]['ndjson_strokes']
+                    img = create_progression_image_from_ndjson_seq(ndjson_strokes)
                     out_fp = os.path.join(self.save_dir, 'progressionpair_ds', split, '{}_{}.jpg'.format(category, i))
                     img.save(out_fp)
 
@@ -96,8 +94,8 @@ class SegmentationModel(object):
                     continue
 
 
-                if i == 200:
-                    break
+                # if i == 200:
+                #     break
 
     def segment_all_stroke_data(self):
         for category in final_categories():
