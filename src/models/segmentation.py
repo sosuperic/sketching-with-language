@@ -284,55 +284,6 @@ class SegmentationGreedyParsingModel(SegmentationModel):
             segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented)
             return segmented
 
-class SegmentationBellmanModel(SegmentationModel):
-    def __init__(self, hp, save_dir, load_model):
-        super().__init__(hp, save_dir, load_model)
-
-        self.model = None  # TODO: Load Model
-
-    def segment_sample(self, sample):
-        """
-        
-        Args:
-            sample: 
-
-        Returns:
-
-        """
-        # TODO: unpack sample?
-        segs, n_segs = self.construct_batch_of_segments_from_one_sample(sample)
-        costs = self.construct_costs(segs, n_segs)  # [n_segs, n_segs]
-
-        # dynamic programming
-        max_segs = self.hp.max_k if (self.hp.max_k) else n_segs
-        Es = np.zeros(n_segs, max_segs + 1)  # TODO: off by 1 bs
-
-        # Base case:
-        # TODO do we have to fill in Es[:,0] ?
-        Es[:,1] = costs[0,:]
-
-        for i in range(n_segs):
-            for k in range(1, max_segs + 1):
-                min_cost = float('inf')
-                for j in range(i):
-                    cost = Es[j-1,k-1] + costs[j,i]  # TODO: out of bounds rn
-                    if cost < min_cost:
-                        min_cost = cost
-                Es[i,k] = min_cost
-
-        # TODO: backtrack
-        # TODO: maybe refactor construct_costs to also return generated texts?
-        # would need to generate text itself or modify one_forward_pass
-
-
-        # TODO: save stroke segments, segment instructions, etc.
-        utils.save_file(None, None)
-
-
-
-
-
-
 if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
@@ -349,9 +300,7 @@ if __name__ == '__main__':
 
     # load_model = 'runs/stroke2instruction/load_ae_556011f8/'
 
-    if opt.method == 'bellman':
-        model = SegmentationBellmanModel(hp, save_dir, load_model)
-    elif opt.method == 'greedy_parsing':
+    if opt.method == 'greedy_parsing':
         model = SegmentationGreedyParsingModel(hp, save_dir, load_model)
 
     model.segment_all_progressionpair_data()
