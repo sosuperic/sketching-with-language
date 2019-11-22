@@ -92,11 +92,12 @@ class NdjsonStrokeDataset(StrokeDataset):
             drawings = ndjson_drawings(category)
             drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
             for i, d in enumerate(drawings):
-                ndjson_format = d['drawing']
-                stroke3 = ndjson_to_stroke3(ndjson_format)  # convert to stroke3 format
+                id, ndjson_strokes = d['key_id'], d['drawing']
+                stroke3 = ndjson_to_stroke3(ndjson_strokes)  # convert to stroke3 format
                 sample_len = stroke3.shape[0]
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
-                full_data.append({'stroke3': stroke3, 'category': category})
+                full_data.append({'stroke3': stroke3, 'category': category,
+                                  'id': id, 'ndjson_strokes': ndjson_strokes})
 
                 if i == max_per_category:
                     break

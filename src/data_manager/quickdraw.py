@@ -285,23 +285,15 @@ def save_strokes_as_img(sequence, output_fp):
 
 def convert_stroke5_to_ndjson_seq(stroke5):
     """
-
-
-    drawings[0]['drawing']
-[[[130, 113, 99, 109, 76, 64, 55, 48, 48, 51, 59, 86, 133, 154, 170, 203, 214, 217, 215, 208, 186, 176, 162, 157, 132], [72, 40, 27, 79, 82, 88, 100, 120, 134, 152, 165, 184, 189, 186, 179, 152, 131, 114, 100, 89, 76, 0, 31, 65, 70]], [[76, 28, 7], [136, 128, 128]], [[76, 23, 0], [160, 164, 175]], [[87, 52, 37], [175, 191, 204]], [[174, 220, 246, 251], [134, 132, 136, 139]], [[175, 255], [147, 168]], [[171, 208, 215], [164, 198, 210]], [[130, 110, 108, 111, 130, 139, 139, 119], [129, 134, 137, 144, 148, 144, 136, 130]], [[107, 106], [96, 113]]]
-# >>> len(drawings[0]['drawing'])
-9
-# >>> drawings[0]['drawing'][0]
-[[130, 113, 99, 109, 76, 64, 55, 48, 48, 51, 59, 86, 133, 154, 170, 203, 214, 217, 215, 208, 186, 176, 162, 157, 132], [72, 40, 27, 79, 82, 88, 100, 120, 134, 152, 165, 184, 189, 186, 179, 152, 131, 114, 100, 89, 76, 0, 31, 65, 70]]
-
+    TODO: this is a WIP. 
+        - may have to unnormalize stroke5 before
+        - What should the offset be? stroke5 contains positive and negative numbers for x / y, ndjson_seq doesn't
+        - Possible reference: https://github.com/hardmaru/sketch-rnn-datasets/blob/master/draw_strokes.py
+    
     Args:
         stroke5: [len, 5] numpy array
 
-    Returns:
-
-    TODO: may have to unnormalize stroke5 before
-
-    https://github.com/hardmaru/sketch-rnn-datasets/blob/master/draw_strokes.py
+    Returns: drawing in ndjson format
     """
     ndjson_seq = []
     pen_up = np.where(stroke5[:,3] == 1)[0].tolist()
@@ -332,7 +324,6 @@ def convert_stroke5_to_ndjson_seq(stroke5):
             # max_x = max(cur_x, max_x)
             # max_y = max(cur_x, max_y)
         ndjson_seq.append([seg_x, seg_y])
-
 
     return ndjson_seq
 
