@@ -126,10 +126,193 @@ class SketchRNNModel(TrainNN):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
-        self.save_generation(data_loader, epoch, n_gens=1, outputs_path=outputs_path)
+        self.generate_and_save(data_loader, epoch, n_gens=5, outputs_path=outputs_path)
 
-    def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
-        pass
+    ##############################################################################
+    # Generate
+    ##############################################################################
+    def generate_and_save(self, data_loader, epoch, n_gens=1, outputs_path=None):
+        """
+        Generate sequence
+
+        TODO: refactor this slightly so we can use it with the DecoderOnly model as well.
+        Only thing that needs to change is whether or not we concatenate the state with z
+        """
+        n = 0
+        for i, batch in enumerate(data_loader):
+            batch = self.preprocess_batch_from_data_loader(batch)
+            strokes, stroke_lens, cats, cats_idx = batch
+
+            max_len, bsz, _ = strokes.size()
+
+            # Encode
+            if self.hp.model_type == 'vae':
+                z, _, _ = self.enc(strokes)  # z: [bsz, 128]
+                # init hidden and cell states is tanh(fc(z)) (Page 3)
+                hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, dim=1)
+                hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
+            elif self.hp.model_type == 'decoder':
+                hidden_cell =  (nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)),
+                                nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)))
+
+            # initialize state with start of sequence stroke-5 stroke
+            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # [1 (len), bsz, 5 (stroke-5)]
+            sos = nn_utils.move_to_cuda(sos)
+
+            # generate until end of sequence or maximum sequence length
+            s = sos
+            seq_x = []  # delta-x
+            seq_y = []  # delta-y
+            seq_pen = []  # pen-down
+            for _ in range(max_len):
+                if self.hp.model_type == 'vae':  # input is last state, z, and hidden_cell
+                    input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
+                elif self.hp.model_type == 'decoder':  # input is last state and hidden_cell
+                    input = s
+
+                # decode
+                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
+                    self.dec(input, output_all=False, hidden_cell=hidden_cell)
+                hidden_cell = (hidden, cell)
+
+                # sample next state
+                s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
+                seq_x.append(dx)
+                seq_y.append(dy)
+                seq_pen.append(pen_up)
+
+                if eos:  # done drawing
+                    break
+
+            # get in format to draw image
+            # Cumulative sum because seq_x and seq_y are deltas, so get x (or y) at each stroke
+            sample_x = np.cumsum(seq_x, 0)
+            sample_y = np.cumsum(seq_y, 0)
+            sample_pen = np.array(seq_pen)
+            sequence = np.stack([sample_x, sample_y, sample_pen]).T
+            output_fp = os.path.join(outputs_path, 'e{}-gen{}.jpg'.format(epoch, n))
+            save_strokes_as_img(sequence, output_fp)
+
+            # Save original as well
+            output_fp = os.path.join(outputs_path, 'e{}-gt{}.jpg'.format(epoch, n))
+            strokes_x = strokes[:, 0,
+                        0]  # first 0 for x because sample_next_state etc. only using 0-th batch item; 2nd 0 for dx
+            strokes_y = strokes[:, 0, 1]  # 1 for dy
+            strokes_x = np.cumsum(strokes_x.cpu().numpy())
+            strokes_y = np.cumsum(strokes_y.cpu().numpy())
+            strokes_pen = strokes[:, 0, 3].cpu().numpy()
+            strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
+            save_strokes_as_img(strokes_out, output_fp)
+
+            n += 1
+            if n == n_gens:
+                break
+
+    def sample_next_state(self, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q):
+        """
+        Return state using current mixture parameters etc. set from decoder call.
+        Note that this state is different from the stroke-5 format.
+
+        Args:
+            pi: [len, bsz, M]
+            mu_x: [len, bsz, M]
+            mu_y: [len, bsz, M]
+            sigma_x: [len, bsz, M]
+            sigma_y: [len, bsz, M]
+            rho_xy: [len, bsz, M]
+            q: [len, bsz, 3]
+
+            When used during generation, len should be 1 (decoding step by step)
+
+        Returns:
+            s: [1, 1, 5]
+            dx: [M]
+            dy: [M]
+            pen_up: bool 
+            eos: bool
+        """
+
+        def adjust_temp(pi_pdf):
+            """Not super sure why this instead of just dividing by temperauture as in eq. 8, but
+            magenta sketch_run/model.py does it this way(adjust_temp())"""
+            pi_pdf = np.log(pi_pdf) / self.hp.temperature
+            pi_pdf -= pi_pdf.max()
+            pi_pdf = np.exp(pi_pdf)
+            pi_pdf /= pi_pdf.sum()
+            return pi_pdf
+
+        _, bsz, M = pi.size()
+
+        # TODO: currently, this method (and sample_bivariate_normal) only doesn't work produce samples
+        # for every item in batch. It only does it for BATCH_ITEM-th point.
+        BATCH_ITEM = 0  # index in batch
+
+        # Get mixture index
+        pi = pi.data[-1, BATCH_ITEM, :].cpu().numpy()  # [M]
+        pi = adjust_temp(pi)
+
+        pi_idx = np.random.choice(M, p=pi)  # choose Gaussian weighted by pi
+
+        # Get mixture params
+        mu_x = mu_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        mu_y = mu_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        sigma_x = sigma_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        sigma_y = sigma_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
+        rho_xy = rho_xy.data[-1, BATCH_ITEM, pi_idx]  # [M]
+
+        # Get next x andy by using mixture params and sampling from bivariate normal
+        dx, dy = self.sample_bivariate_normal(mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False)
+
+        # Get pen state
+        q = q.data[-1, BATCH_ITEM, :].cpu().numpy()  # [3]
+        # q = adjust_temp(q)  # TODO: they don't adjust the temp for q in the magenta repo...
+        q_idx = np.random.choice(3, p=q)
+
+        # Create next_state vector
+        next_state = torch.zeros(5)
+        next_state[0] = dx
+        next_state[1] = dy
+        next_state[q_idx + 2] = 1
+        next_state = nn_utils.move_to_cuda(next_state)
+        s = next_state.view(1, 1, -1)
+
+        pen_up = q_idx == 1
+        eos = q_idx == 2
+
+        return s, dx, dy, pen_up, eos
+
+    def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False):
+        """
+        Args:
+            mu_x: [M]
+            mu_y: [M]
+            sigma_x: [M]
+            sigma_y: [M]
+            rho_xy: [M]
+            greedy: bool
+
+        Return:
+            Tuple of [M]
+        """
+        if greedy:
+            return mu_x, mu_y
+
+        mean = [mu_x, mu_y]
+
+        # randomness controlled by temperature (eq. 8)
+        sigma_x *= np.sqrt(self.hp.temperature)
+        sigma_y *= np.sqrt(self.hp.temperature)
+
+        cov = [[sigma_x * sigma_x, rho_xy * sigma_x * sigma_y],
+               [rho_xy * sigma_x * sigma_y, sigma_y * sigma_y]]
+
+        # TODO: is this right
+        mean = [v.item() for v in mean]
+        for i, row in enumerate(cov):
+            cov[i] = [v.item() for v in row]
+        x = np.random.multivariate_normal(mean, cov, 1)
+
+        return x[0][0], x[0][1]
 
 
 ##############################################################################
@@ -190,10 +373,6 @@ class SketchRNNDecoderOnlyModel(SketchRNNModel):
             import pdb; pdb.set_trace()
 
         return result
-
-    def save_generation(self, gen_data_loader, epoch, n_gens=1, outputs_path=None):
-        # TODO: generation not implemented yet (need to generalize the conditional generation of the VAE)
-        pass
 
 
 ##############################################################################
@@ -292,184 +471,6 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         LKL = wKL * eta_step * torch.max(LKL, KL_min)
         return LKL
-
-    ##############################################################################
-    # Conditional generation
-    ##############################################################################
-    def save_generation(self, data_loader, epoch, n_gens=5, outputs_path=None):
-        """
-        Generate sequence conditioned on output of encoder
-        
-        TODO: refactor this slightly so we can use it with the DecoderOnly model as well.
-        Only thing that needs to change is whether or not we concatenate the state with z
-        """
-        n = 0
-        for i, batch in enumerate(data_loader):
-            batch = self.preprocess_batch_from_data_loader(batch)
-            strokes, stroke_lens, cats, cats_idx = batch
-
-            max_len, bsz, _ = strokes.size()
-
-            # Encode
-            z, _, _ = self.enc(strokes)  # z: [bsz, 128]
-
-            # initialize state with start of sequence stroke-5 stroke
-            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # [1 (len), bsz, 5 (stroke-5)]
-            sos = nn_utils.move_to_cuda(sos)
-
-            # generate until end of sequence or maximum sequence length
-            s = sos
-            seq_x = []  # delta-x
-            seq_y = []  # delta-y
-            seq_pen = []  # pen-down
-            # init hidden and cell states is tanh(fc(z)) (Page 3)
-            hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, dim=1)
-            hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
-            for _ in range(max_len):
-                # input is current state, z, (and also the hidden and cell)
-                input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
-
-                # decode
-                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
-                    self.dec(input, output_all=False, hidden_cell=hidden_cell)
-                hidden_cell = (hidden, cell)
-
-                # sample next state
-                s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
-                seq_x.append(dx)
-                seq_y.append(dy)
-                seq_pen.append(pen_up)
-
-                if eos:  # done drawing
-                    break
-
-            # get in format to draw image
-            # Cumulative sum because seq_x and seq_y are deltas, so get x (or y) at each stroke
-            sample_x = np.cumsum(seq_x, 0)
-            sample_y = np.cumsum(seq_y, 0)
-            sample_pen = np.array(seq_pen)
-            sequence = np.stack([sample_x, sample_y, sample_pen]).T
-            output_fp = os.path.join(outputs_path, 'e{}-gen{}.jpg'.format(epoch, n))
-            save_strokes_as_img(sequence, output_fp)
-
-            # Save original as well
-            output_fp = os.path.join(outputs_path, 'e{}-gt{}.jpg'.format(epoch, n))
-            strokes_x = strokes[:,0,0]  # first 0 for x because sample_next_state etc. only using 0-th batch item; 2nd 0 for dx
-            strokes_y = strokes[:,0,1]  # 1 for dy
-            strokes_x = np.cumsum(strokes_x.cpu().numpy())
-            strokes_y = np.cumsum(strokes_y.cpu().numpy())
-            strokes_pen = strokes[:,0,3].cpu().numpy()
-            strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
-            save_strokes_as_img(strokes_out, output_fp)
-
-            n += 1
-            if n == n_gens:
-                break
-
-    def sample_next_state(self, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q):
-        """
-        Return state using current mixture parameters etc. set from decoder call.
-        Note that this state is different from the stroke-5 format.
-
-        Args:
-            pi: [len, bsz, M]
-            mu_x: [len, bsz, M]
-            mu_y: [len, bsz, M]
-            sigma_x: [len, bsz, M]
-            sigma_y: [len, bsz, M]
-            rho_xy: [len, bsz, M]
-            q: [len, bsz, 3]
-            
-            When used during generation, len should be 1 (decoding step by step)
-
-        Returns:
-            s: [1, 1, 5]
-            dx: [M]
-            dy: [M]
-            pen_up: bool 
-            eos: bool
-        """
-        def adjust_temp(pi_pdf):
-            """Not super sure why this instead of just dividing by temperauture as in eq. 8, but
-            magenta sketch_run/model.py does it this way(adjust_temp())"""
-            pi_pdf = np.log(pi_pdf) / self.hp.temperature
-            pi_pdf -= pi_pdf.max()
-            pi_pdf = np.exp(pi_pdf)
-            pi_pdf /= pi_pdf.sum()
-            return pi_pdf
-
-        _, bsz, M = pi.size()
-
-        # TODO: currently, this method (and sample_bivariate_normal) only doesn't work produce samples
-        # for every item in batch. It only does it for BATCH_ITEM-th point.
-        BATCH_ITEM = 0  # index in batch
-
-        # Get mixture index
-        pi = pi.data[-1, BATCH_ITEM, :].cpu().numpy()  # [M]
-        pi = adjust_temp(pi)
-
-        pi_idx = np.random.choice(M, p=pi)  # choose Gaussian weighted by pi
-
-        # Get mixture params
-        mu_x = mu_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
-        mu_y = mu_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
-        sigma_x = sigma_x.data[-1, BATCH_ITEM, pi_idx]  # [M]
-        sigma_y = sigma_y.data[-1, BATCH_ITEM, pi_idx]  # [M]
-        rho_xy = rho_xy.data[-1, BATCH_ITEM, pi_idx]  # [M]
-
-        # Get next x andy by using mixture params and sampling from bivariate normal
-        dx, dy = self.sample_bivariate_normal(mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False)
-
-        # Get pen state
-        q = q.data[-1, BATCH_ITEM, :].cpu().numpy()  # [3]
-        # q = adjust_temp(q)  # TODO: they don't adjust the temp for q in the magenta repo...
-        q_idx = np.random.choice(3, p=q)
-
-        # Create next_state vector
-        next_state = torch.zeros(5)
-        next_state[0] = dx
-        next_state[1] = dy
-        next_state[q_idx + 2] = 1
-        next_state = nn_utils.move_to_cuda(next_state)
-        s = next_state.view(1, 1, -1)
-
-        pen_up = q_idx == 1
-        eos = q_idx == 2
-
-        return s, dx, dy, pen_up, eos
-
-    def sample_bivariate_normal(self, mu_x, mu_y, sigma_x, sigma_y, rho_xy, greedy=False):
-        """
-        Args:
-            mu_x: [M]
-            mu_y: [M]
-            sigma_x: [M]
-            sigma_y: [M]
-            rho_xy: [M]
-            greedy: bool
-            
-        Return:
-            Tuple of [M]
-        """
-        if greedy:
-            return mu_x, mu_y
-
-        mean = [mu_x, mu_y]
-
-        # randomness controlled by temperature (eq. 8)
-        sigma_x *= np.sqrt(self.hp.temperature)
-        sigma_y *= np.sqrt(self.hp.temperature)
-
-        cov = [[sigma_x * sigma_x, rho_xy * sigma_x * sigma_y],
-               [rho_xy * sigma_x * sigma_y, sigma_y * sigma_y]]
-
-        # TODO: is this right
-        mean = [v.item() for v in mean]
-        for i, row in enumerate(cov):
-            cov[i] = [v.item() for v in row]
-        x = np.random.multivariate_normal(mean, cov, 1)
-
-        return x[0][0], x[0][1]
 
 
 if __name__ == "__main__":
