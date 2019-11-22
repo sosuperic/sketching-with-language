@@ -1,7 +1,7 @@
 # stroke_models.py
 
 """
-StrokeDataset and stroke related models
+StrokeDataset(s) and stroke related models
 """
 
 import numpy as np
@@ -12,7 +12,8 @@ from torch import nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 
-from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories
+from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories, \
+    ndjson_drawings, ndjson_to_stroke3
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
 
@@ -27,13 +28,106 @@ NPZ_DATA_PATH = 'data/quickdraw/npz/'
 # This was precomputed once on the training set of all 35 categories
 STROKE3_SCALE_FACTOR = 41.712997
 
+
 class StrokeDataset(Dataset):
     """
-    Dataset to load sketches
+    Returns drawing in stroke3 or stroke5 format
+    """
+    def filter_and_clean_data(self, data):
+        """
+        Removes short and large sequences;
+        Remove large gaps (stroke has large delta, i.e. takes place far away from previous stroke)
 
-    Stroke-3 format: (delta-x, delta-y, binary for if pen is lifted)
-    Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
-        one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
+        Args:
+            data: list of dicts
+            data: [len, 3 or 5] array (stroke3 or stroke5 format)
+        """
+        filtered = []
+        for sample in data:
+            stroke = sample['stroke3']
+            stroke_len = stroke.shape[0]
+            if (stroke_len > 10) and (stroke_len <= self.max_len):
+                # Following means absolute value of offset is at most 1000
+                stroke = np.minimum(stroke, 1000)
+                stroke = np.maximum(stroke, -1000)
+                stroke = np.array(stroke, dtype=np.float32)  # type conversion
+                sample['stroke3'] = stroke
+                filtered.append(sample)
+        return filtered
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        sample = self.data[idx]
+        category = sample['category']
+        cat_idx = self.cat2idx[category]
+        stroke3 = sample['stroke3']
+        stroke_len = len(stroke3)
+        stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
+        return stroke5, stroke_len, category, cat_idx
+
+        # TODO: do I need to write my own collate_fn like in InstructionGen?
+
+class NdjsonStrokeDataset(StrokeDataset):
+    """
+    Load from the simplified_ndjson files
+    """
+    def __init__(self, categories, dataset_split, max_len=200, max_per_category=70000):
+        self.dataset_split = dataset_split
+        self.max_len = max_len
+
+        if categories == 'all':
+            self.categories = final_categories()
+        elif ',' in categories:
+            self.categories = categories.split(',')
+        else:
+            self.categories = [categories]
+
+        # Load data
+        full_data = []  # list of dicts
+        self.max_len_in_data = 0
+        for i, category in enumerate(self.categories):
+            print('Loading {} ({}/{})'.format(category, i + 1, len(self.categories)))
+            drawings = ndjson_drawings(category)
+            drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
+            for i, d in enumerate(drawings):
+                ndjson_format = d['drawing']
+                stroke3 = ndjson_to_stroke3(ndjson_format)  # convert to stroke3 format
+                sample_len = stroke3.shape[0]
+                self.max_len_in_data = max(self.max_len_in_data, sample_len)
+                full_data.append({'stroke3': stroke3, 'category': category})
+
+                if i == max_per_category:
+                    break
+
+        self.data = self.filter_and_clean_data(full_data)
+        self.data = normalize_strokes(self.data)
+        self.idx2cat, self.cat2idx = build_category_index(self.data)
+
+        print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
+
+    def get_split(self, drawings, dataset_split):
+        """
+        Given list of ndjson data, returns subset corresponding to that split
+        """
+        tr_amt, val_amt, te_amt = 0.9, 0.05, 0.05
+
+        l = len(drawings)
+        tr_idx = int(tr_amt * l)
+        val_idx = int((tr_amt + val_amt) * l)
+
+        if dataset_split == 'train':
+            return drawings[:tr_idx]
+        elif dataset_split == 'valid':
+            return drawings[tr_idx:val_idx]
+        elif dataset_split == 'test':
+            return drawings[val_idx:]
+
+
+class NpzStrokeDataset(StrokeDataset):
+    """
+    Load from the npz files
     """
 
     def __init__(self, categories, dataset_split, max_len=200):
@@ -75,41 +169,6 @@ class StrokeDataset(Dataset):
 
         print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
 
-    def filter_and_clean_data(self, data):
-        """
-        Removes short and large sequences;
-        Remove large gaps (stroke has large delta, i.e. takes place far away from previous stroke)
-
-        Args:
-            data: list of dicts
-            data: [len, 3 or 5] array (stroke3 or stroke5 format)
-        """
-        filtered = []
-        for sample in data:
-            stroke = sample['stroke3']
-            stroke_len = stroke.shape[0]
-            if (stroke_len > 10) and (stroke_len <= self.max_len):
-                # Following means absolute value of offset is at most 1000
-                stroke = np.minimum(stroke, 1000)
-                stroke = np.maximum(stroke, -1000)
-                stroke = np.array(stroke, dtype=np.float32)  # type conversion
-                sample['stroke3'] = stroke
-                filtered.append(sample)
-        return filtered
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        sample = self.data[idx]
-        category = sample['category']
-        cat_idx = self.cat2idx[category]
-        stroke3 = sample['stroke3']
-        stroke_len = len(stroke3)
-        stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
-        return stroke5, stroke_len, category, cat_idx
-
-        # TODO: do I need to write my own collate_fn like in InstructionGen?
 
 ##############################################################################
 #
@@ -556,12 +615,10 @@ class SketchRNNDecoderGMM(nn.Module):
         z = z_x + z_y - 2 * rho_xy * z_xy
 
         # Eq. 24
-        norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
         exp_denom = (2 * (1 - rho_xy ** 2))
-        exp_denom += 1e-5
-        exp = torch.exp(-z / exp_denom)
-
-        prob = exp / norm
+        exp = torch.exp(-z / (exp_denom + 1e-5))
+        norm = 2 * np.pi * sigma_x * sigma_y * torch.sqrt(1 - rho_xy ** 2)
+        prob = exp / (norm + 1e-10)
 
         if (prob != prob).any():
             import pdb; pdb.set_trace()

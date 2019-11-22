@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from src import utils
 from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, convert_stroke5_to_ndjson_seq, \
     create_progression_image_from_ndjson_seq
-from src.models.base.stroke_models import StrokeDataset
+from src.models.base.stroke_models import NpzStrokeDataset
 from src.models.base.instruction_models import ProgressionPairDataset
 from src.models.core import nn_utils
 from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
@@ -69,7 +69,7 @@ class SegmentationModel(object):
         for split in ['test']:
         # for split in ['train', 'valid', 'test']:
             ds = ProgressionPairDataset(split, return_full_stroke=True)
-            # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
+            # TODO: make sure that NpzStrokeDataset is properly normalized (main concern being that we used
             # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
             # stroke3 from ndjson and was already normalized / potentially normalized differently).
             loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=ProgressionPairDataset.collate_fn)
@@ -102,8 +102,8 @@ class SegmentationModel(object):
             for split in ['train']:
                 print(category, split)
             # for split in ['train', 'valid', 'test']:
-                ds = StrokeDataset(category, split)
-                # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
+                ds = NpzStrokeDataset(category, split)
+                # TODO: make sure that NpzStrokeDataset is properly normalized (main concern being that we used
                 # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
                 # stroke3 from ndjson and was already normalized / potentially normalized differently).
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
@@ -308,8 +308,8 @@ if __name__ == '__main__':
 
     # Debugging saving of progressions from stroke data
     #
-    # ds = StrokeDataset('cat', 'test')
-    # # TODO: make sure that StrokeDataset is properly normalized (main concern being that we used
+    # ds = NpzStrokeDataset('cat', 'test')
+    # # TODO: make sure that NpzStrokeDataset is properly normalized (main concern being that we used
     # # the Stroke2Instruction model is trained on the ProgressionPair dataset, which uses the
     # # stroke3 from ndjson and was already normalized / potentially normalized differently).
     # loader = DataLoader(ds, batch_size=1, shuffle=False)

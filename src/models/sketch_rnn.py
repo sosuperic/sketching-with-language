@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader
 from src import utils
 from src.data_manager.quickdraw import save_strokes_as_img
 from src.models.core import nn_utils
-from src.models.base.stroke_models import StrokeDataset, SketchRNNDecoderGMM, SketchRNNVAEEncoder
+from src.models.base.stroke_models import SketchRNNDecoderGMM, SketchRNNVAEEncoder, \
+    NdjsonStrokeDataset, NpzStrokeDataset
 from src.models.core.train_nn import TrainNN, RUNS_PATH
 
 
@@ -89,7 +90,7 @@ class SketchRNNModel(TrainNN):
             categories: str
             shuffle: bool
         """
-        ds = StrokeDataset(categories, dataset_split, self.hp.max_len)
+        ds = NdjsonStrokeDataset(categories, dataset_split, self.hp.max_len)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         return loader
 

@@ -12,7 +12,7 @@ from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
 from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN, \
-    StrokeDataset, SketchRNNDecoderGMM
+    NpzStrokeDataset, NdjsonStrokeDataset, SketchRNNDecoderGMM
 
 USE_CUDA = torch.cuda.is_available()
 
@@ -86,7 +86,7 @@ class StrokeAutoencoderModel(TrainNN):
 
     def get_data_loader(self, dataset_split, batch_size, shuffle=True):
         """
-        Uses the StrokeDataset, all categories.
+        Uses the NpzStrokeDataset, all categories.
         
         Args:
             dataset_split: str
@@ -94,7 +94,7 @@ class StrokeAutoencoderModel(TrainNN):
             categories: str
             shuffle: bool
         """
-        ds = StrokeDataset('all', dataset_split)
+        ds = NdjsonStrokeDataset('all', dataset_split)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         return loader
 

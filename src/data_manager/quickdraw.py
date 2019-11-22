@@ -2,6 +2,16 @@
 Analyzing and preparing QuickDraw data
 
 Original data obtained from: https://github.com/googlecreativelab/quickdraw-dataset
+
+
+ndjson format: list (A) of lists (B) of two lists (C)
+    - Each list B corresponds to one segment of the drawing until a "penup" point
+    - Each list C corresponds to the x or y points in that segment
+
+Stroke-3 format: (delta-x, delta-y, binary for if pen is lifted)
+Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
+    one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
+
 """
 
 import argparse
@@ -152,44 +162,39 @@ def build_category_index(data):
 
     return idx2cat, cat2idx
 
-def ndjson_to_stroke3(sample):
+def ndjson_to_stroke3(ndjson_format):
     """
     Parse an ndjson sample and return ink (as np array) and classname.
     
     Taken from https://github.com/tensorflow/docs/blob/master/site/en/r1/tutorials/sequences/recurrent_quickdraw.md
     
-    :param sample: drawing in ndjson format (list of x y points)
-    :return
-        np_ink: drawing in stroke3-format 
-        class_name: str (category, e.g. "cat")
+    Args:
+        ndjson_format: drawing in ndjson format
+    
+    Returns: [len, 3] np array
     """
-    # Think this converts ndjson format to stroke-3
-    #
-    # sample = json.loads(ndjson_line)
-    class_name = sample["word"]
-    inkarray = sample["drawing"]
-    stroke_lengths = [len(stroke[0]) for stroke in inkarray]
+    stroke_lengths = [len(stroke[0]) for stroke in ndjson_format]
     total_points = sum(stroke_lengths)
-    np_ink = np.zeros((total_points, 3), dtype=np.float32)
+    stroke3 = np.zeros((total_points, 3), dtype=np.float32)
     current_t = 0
-    for stroke in inkarray:
+    for stroke in ndjson_format:
         for i in [0, 1]:
-            np_ink[current_t:(current_t + len(stroke[0])), i] = stroke[i]
+            stroke3[current_t:(current_t + len(stroke[0])), i] = stroke[i]
         current_t += len(stroke[0])
-        np_ink[current_t - 1, 2] = 1  # stroke_end
+        stroke3[current_t - 1, 2] = 1  # stroke_end
 
     # Size normalization
-    lower = np.min(np_ink[:, 0:2], axis=0)
-    upper = np.max(np_ink[:, 0:2], axis=0)
+    lower = np.min(stroke3[:, 0:2], axis=0)
+    upper = np.max(stroke3[:, 0:2], axis=0)
     scale = upper - lower
     scale[scale == 0] = 1
-    np_ink[:, 0:2] = (np_ink[:, 0:2] - lower) / scale
+    stroke3[:, 0:2] = (stroke3[:, 0:2] - lower) / scale
 
     # Compute deltas
-    np_ink[1:, 0:2] -= np_ink[0:-1, 0:2]
-    np_ink = np_ink[1:, :]
+    stroke3[1:, 0:2] -= stroke3[0:-1, 0:2]
+    stroke3 = stroke3[1:, :]
 
-    return np_ink, class_name
+    return stroke3
 
 def stroke3_to_stroke5(seq, max_len=None):
     """
@@ -771,7 +776,7 @@ def save_annotated_progression_pairs_data():
         for data in drawings:
             id = data['key_id']
             id_to_strokes[id]['ndjson_strokes'] = data['drawing']
-            stroke3, class_name = ndjson_to_stroke3(data)
+            stroke3 = ndjson_to_stroke3(data['drawing'])
             id_to_strokes[id]['stroke3'] = stroke3
 
         # map annotations to strokes

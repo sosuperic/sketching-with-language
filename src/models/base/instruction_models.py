@@ -195,7 +195,7 @@ class ProgressionPairDataset(Dataset):
         """
         Method to passed into a DataLoader that defines how to combine samples in a batch
         
-        TODO: why did I write my own collate_fn? Is there something wrong with not using one for the StrokeDataset?
+        TODO: why did I write my own collate_fn? Is there something wrong with not using one for the NpzStrokeDataset?
         
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
