@@ -9,6 +9,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
+from src.data_manager.instructions import INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
 from src.models.core.train_nn import TrainNN, RUNS_PATH
 from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
@@ -33,6 +34,7 @@ class HParams():
         self.min_lr = 0.00001  #
         self.grad_clip = 1.0
         self.max_epochs = 1000
+        self.unlikelihood_loss = False
 
         # Model
         self.dim = 512
@@ -121,6 +123,28 @@ class StrokeToInstructionModel(TrainNN):
         for model in self.models:
             model.cuda()
 
+        if hp.unlikelihood_loss:
+            assert hp.model_type == 'cnn_lstm'
+
+            # load true vocab distribution
+            token2idx = self.tr_loader.dataset.token2idx
+            vocab_prob = utils.load_file(INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH)
+            self.vocab_prob = torch.zeros(len(token2idx)).fill_(1e-6)  # fill with eps
+            for token, prob in vocab_prob.items():
+                try:
+                    idx = token2idx[token]
+                    self.vocab_prob[idx] = prob
+                except KeyError as e:  # not sure why 'lion' isn't in vocab
+                    print(e)
+                    continue
+            self.vocab_prob = nn_utils.move_to_cuda(self.vocab_prob)  # [vocab]
+
+            # create running of vocab distribution
+            n_past = 256  # number of minibatches to store
+            self.model_vocab_prob = torch.zeros(n_past, len(token2idx))  # [n, vocab]
+            self.model_vocab_prob = nn_utils.move_to_cuda(self.model_vocab_prob)
+
+
         # Optimizers
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
@@ -182,6 +206,43 @@ class StrokeToInstructionModel(TrainNN):
         logits = logits.reshape(-1, vocab_size)
         targets = targets.reshape(-1)
         loss = F.cross_entropy(logits, targets, ignore_index=pad_id)
+
+        return loss
+
+    def compute_unlikelihood_loss(self, logits, text_lens):
+        loss = torch.FloatTensor([0])
+
+        # Keep track of last n batches of probs. Shift by 1, add latest
+        # updated = nn_utils.move_to_cuda(torch.zeros_like(self.model_vocab_prob))
+        updated = self.model_vocab_prob.clone().detach()  # TODO: where to detach...
+        updated[:updated.size(0) - 1, :] = self.model_vocab_prob[1:,:].detach()  # detach?
+        self.model_vocab_prob = updated
+
+        # Detaching above so that it doesn't backprop through all entire model_vocab_probs, just the current one?
+
+        # compute models' vocab prob in current batch
+        probs = F.softmax(logits, dim=-1)  # [len, bsz, vocab]
+        logits_len, bsz, _ = logits.size()
+        mask = nn_utils.move_to_cuda(torch.zeros(logits_len, bsz))  # [len, bsz]
+        for i in range(bsz):
+            mask[:text_lens[i]] = 1
+        mask = mask.unsqueeze(-1)       # [len, bsz, vocab]
+
+        batch_model_prob = (probs * mask).mean(dim=0).mean(dim=0)  # [vocab]
+        self.model_vocab_prob[-1] = batch_model_prob
+
+        # Only compute after having seen n batches
+        if self.model_vocab_prob[0].sum() == 0:
+            return loss
+
+        cur_model_vocab = self.model_vocab_prob.mean(dim=0)  # [vocab]
+        mismatch = cur_model_vocab * torch.log(cur_model_vocab / self.vocab_prob.detach())
+        unlikelihood = torch.log(1 - probs) * mask  # [len, bsz, vocab]
+        loss = -(mismatch * unlikelihood).mean()
+
+        loss *= 10000  # mixing parameter
+        # print('ull, ', loss.item())
+
         return loss
 
     def one_forward_pass(self, batch):
@@ -208,6 +269,8 @@ class StrokeToInstructionModel(TrainNN):
         elif self.hp.model_type == 'transformer':
             return self.one_forward_pass_transformer(batch)
 
+
+
     def one_forward_pass_cnn_lstm(self, batch):
         strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
@@ -226,6 +289,10 @@ class StrokeToInstructionModel(TrainNN):
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
         result = {'loss': loss}
+
+        if self.hp.unlikelihood_loss:
+            loss_UL = self.compute_unlikelihood_loss(logits, text_lens)
+            result['loss_unlikelihood'] = loss_UL
 
         return result
 
