@@ -1,10 +1,74 @@
 # instructions.py
 
-"""
-TODO: might refactor this into another file.
-"""
+import argparse
+from collections import defaultdict, Counter
+import os
+from pprint import pprint
+import pandas as pd
 
 import src.utils as utils
+from src.data_manager.quickdraw import ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH
+
+INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'vocab_distribution.json')
+
+
+
+###################################################################
+#
+# Analyzing annotated data
+#
+###################################################################
+
+def analyze_progression_pairs_annotations():
+    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+
+    words = Counter()
+    for i in range(len(df)):
+        id = df.iloc[i]['Input.id']
+        annotation = df.iloc[i]['Answer.annotation'].replace('\r', '')
+        for word in annotation.replace('.', '').lower().split():
+            if word not in ['the', 'a', 'an', 'of']:
+                words[word] += 1
+    pprint(sorted(words.items(), key=lambda x: x[1]))
+
+    # Count words by category
+    for cat in df['Input.category'].unique():
+        df_cat = df[df['Input.category'] == cat]
+        words = Counter()
+        for i in range(len(df_cat)):
+            id = df_cat.iloc[i]['Input.id']
+            annotation = df_cat.iloc[i]['Answer.annotation'].replace('\r', '')
+            for word in annotation.replace('.', '').lower().split():
+                if word not in ['the', 'a', 'an', 'of']:
+                    words[word] += 1
+
+        print('-' * 100)
+        print
+        print('CATEGORY: {}'.format(cat))
+        pprint(sorted(words.items(), key=lambda x: x[1]))
+        print('CATEGORY: {}'.format(cat))
+        print
+
+def save_instruction_vocabulary_distribution():
+
+    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+
+    tokens = Counter()
+    for i in range(len(df)):
+        annotation = df.iloc[i]['Answer.annotation'].replace('\r', '')
+        for token in utils.normalize_sentence(annotation):
+            tokens[token] += 1
+
+    norm = sum(tokens.values())
+    distribution = {tok: count / norm for tok, count in tokens.items()}
+    utils.save_file(distribution, INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH, verbose=True)
+
+
+###################################################################
+#
+# Instruction Generation Outputs
+#
+###################################################################
 
 def convert_generated_instruction_samples_to_html(samples_fp):
     """
@@ -80,7 +144,10 @@ def convert_generated_instruction_samples_to_html(samples_fp):
         </html>
         """)
 
-
 if __name__ == '__main__':
-    samples_fp = 'samples_e11.json'
-    convert_generated_instruction_samples_to_html(samples_fp)
+    # samples_fp = 'samples_e11.json'
+    # convert_generated_instruction_samples_to_html(samples_fp)
+
+    # analyze_progression_pairs_annotations()
+
+    save_instruction_vocabulary_distribution()

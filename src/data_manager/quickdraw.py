@@ -60,6 +60,7 @@ QUICKDRAW_DRAWINGS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings')
 QUICKDRAW_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings_pairs')
 QUICKDRAW_PROGRESSIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progressions')
 QUICKDRAW_PROGRESSIONS_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progression_pairs_fullinput')
+QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'data')
 
 # For MTurk
 S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
@@ -480,7 +481,7 @@ def save_progression_pairs(n=None):
         print(cat)
 
         # make directories
-        out_dir_base = QUICKDRAW_PROGRESSIONS_PAIRS_PATH
+        out_dir_base = QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH
         out_dir_progress = os.path.join(out_dir_base, cat, 'progress')
         out_dir_meta = os.path.join(out_dir_base, cat, 'meta')
         for dir in [out_dir_base, out_dir_progress, out_dir_meta]:
@@ -545,7 +546,7 @@ def prep_progressions_data_for_turk(data, n):
     """
     data_dir, s3_url = None, None
     if data == 'progression_pairs':
-        data_dir = QUICKDRAW_PROGRESSIONS_PAIRS_PATH
+        data_dir = QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH
         s3_url = S3_PROGRESSION_PAIRS_URL
         out_fn = 'mturk_progressions_pairs_fullinput0.csv'
     elif data == 'progressions':
@@ -637,7 +638,7 @@ def push_to_aws():
     AWS_CP_CMD = 'aws --profile {} s3 cp {} {}'
 
     categories = final_categories()
-    for local_data_path, s3_path in [(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, S3_PROGRESSION_PAIRS_PATH)]:
+    for local_data_path, s3_path in [(QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH, S3_PROGRESSION_PAIRS_PATH)]:
         for root, dirs, fns in os.walk(local_data_path):
             if os.path.basename(root) == 'progress':
                 category = os.path.basename(os.path.dirname(root))
@@ -816,39 +817,9 @@ def save_annotated_progression_pairs_data():
 
         # save
         out_fn = '{}.pkl'.format(cat)
-        out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, out_fn)
+        out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_DATA_PATH, out_fn)
         utils.save_file(result, out_fp)
 
-def analyze_progression_pairs_annotations():
-    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
-
-    words = Counter()
-    for i in range(len(df)):
-        id = df.iloc[i]['Input.id']
-        annotation = df.iloc[i]['Answer.annotation'].replace('\r', '')
-        for word in annotation.replace('.', '').lower().split():
-            if word not in ['the', 'a', 'an', 'of']:
-                words[word] += 1
-
-    pprint(sorted(words.items(), key=lambda x: x[1]))
-
-    # By category
-    for cat in df['Input.category'].unique():
-        df_cat = df[df['Input.category'] == cat]
-        words = Counter()
-        for i in range(len(df_cat)):
-            id = df_cat.iloc[i]['Input.id']
-            annotation = df_cat.iloc[i]['Answer.annotation'].replace('\r', '')
-            for word in annotation.replace('.', '').lower().split():
-                if word not in ['the', 'a', 'an', 'of']:
-                    words[word] += 1
-
-        print('-' * 100)
-        print
-        print('CATEGORY: {}'.format(cat))
-        pprint(sorted(words.items(), key=lambda x: x[1]))
-        print('CATEGORY: {}'.format(cat))
-        print
 
     # TODO: calculate tfidf on annotaitons
 
@@ -865,7 +836,6 @@ if __name__ == '__main__':
     parser.add_argument('--push_to_aws', action='store_true')
     parser.add_argument('--html', action='store_true')
     parser.add_argument('--save_annotated_progression_pairs_data', action='store_true')
-    parser.add_argument('--analyze_progression_pairs_annotations', action='store_true')
     args = parser.parse_args()
 
     if args.pairs:
@@ -884,5 +854,3 @@ if __name__ == '__main__':
         convert_turk_results_to_html()
     if args.save_annotated_progression_pairs_data:
         save_annotated_progression_pairs_data()
-    if args.analyze_progression_pairs_annotations:
-        analyze_progression_pairs_annotations()
