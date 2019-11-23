@@ -87,7 +87,7 @@ class StrokeAutoencoderModel(TrainNN):
     def get_data_loader(self, dataset_split, batch_size, shuffle=True):
         """
         Uses the NpzStrokeDataset, all categories.
-        
+
         Args:
             dataset_split: str
             batch_size: int
@@ -178,7 +178,7 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'stroke_autoencoder', run_name)
+    save_dir = RUNS_PATH / 'stroke_autoencoder' / run_name
     model = StrokeAutoencoderModel(hp, save_dir)
     utils.save_run_data(save_dir, hp)
     model.train_loop()

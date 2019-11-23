@@ -190,11 +190,11 @@ class SketchRNNModel(TrainNN):
             sample_y = np.cumsum(seq_y, 0)
             sample_pen = np.array(seq_pen)
             sequence = np.stack([sample_x, sample_y, sample_pen]).T
-            output_fp = os.path.join(outputs_path, 'e{}-gen{}.jpg'.format(epoch, n))
+            output_fp = os.path.join(outputs_path, f'e{epoch}-gen{n}.jpg')
             save_strokes_as_img(sequence, output_fp)
 
             # Save original as well
-            output_fp = os.path.join(outputs_path, 'e{}-gt{}.jpg'.format(epoch, n))
+            output_fp = os.path.join(outputs_path, f'e{epoch}-gt{n}.jpg')
             strokes_x = strokes[:, 0,
                         0]  # first 0 for x because sample_next_state etc. only using 0-th batch item; 2nd 0 for dx
             strokes_y = strokes[:, 0, 1]  # 1 for dy
@@ -228,7 +228,7 @@ class SketchRNNModel(TrainNN):
             s: [1, 1, 5]
             dx: [M]
             dy: [M]
-            pen_up: bool 
+            pen_up: bool
             eos: bool
         """
 

@@ -27,7 +27,7 @@ from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
 
 
 
-SEGMENTATIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'segmentations')
+SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
 
 ##############################################################################
 #
@@ -47,7 +47,7 @@ class HParams():
 class SegmentationModel(object):
     def __init__(self, hp, save_dir, load_model):
         """
-        
+
         Args:
             hp: HParams object
             save_dir: str
@@ -74,18 +74,18 @@ class SegmentationModel(object):
             for i, sample in enumerate(loader):
                 try:
                     id, category = loader.dataset.data[i]['id'], loader.dataset.data[i]['category']
-                    out_dir = os.path.join(self.save_dir, split)
+                    out_dir = self.save_dir / split
 
                     # save segmentations
                     strokes, segmented = self.segment_sample(sample, dataset='progressionpair')
                     # TODO: save sample / strokes as well so that we have all the data in one place?
-                    out_fp = os.path.join(out_dir, '{}_{}.json'.format(category, id))
+                    out_fp = out_dir / f'{category}_{id}.json'
                     utils.save_file(segmented, out_fp)
 
                     # save original image too for comparisons
                     ndjson_strokes = loader.dataset.data[i]['ndjson_strokes']
                     img = create_progression_image_from_ndjson_seq(ndjson_strokes)
-                    out_fp = os.path.join(out_dir, '{}_{}.jpg'.format(category, id))
+                    out_fp = out_dir / f'{category}_{id}.jpg'
                     img.save(out_fp)
 
                 except Exception as e:
@@ -98,13 +98,13 @@ class SegmentationModel(object):
         """
         for split in ['train', 'valid', 'test']:
             for category in final_categories():
-                print('{}: {}'.format(split, category))
+                print(f'{split}: {category}')
                 ds = NdjsonStrokeDataset(category, split)
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
                 for i, sample in enumerate(loader):
                     try:
                         id, category = loader.dataset.data[i]['id'], loader.dataset.data[i]['category']
-                        out_dir = os.path.join(self.save_dir, category)
+                        out_dir = self.save_dir / category
                         # note: we are NOT saving it into separate split categories in the case that
                         # we want to train on 30 categories and then do test on 5 held out categories.
                         # (i.e. keep it flexible to splitting within categories vs. across categories, which
@@ -114,13 +114,13 @@ class SegmentationModel(object):
                         # save segmentations
                         strokes, segmented = self.segment_sample(sample, dataset='ndjson')
                         # TODO: save sample / strokes as well so that we have all the data in one place?
-                        out_fp = os.path.join(out_dir, '{}.json'.format(id))
+                        out_fp = out_dir / f'{id}.json'
                         utils.save_file(segmented, out_fp)
 
                         # save original image too for comparisons
                         ndjson_strokes = loader.dataset.data[i]['ndjson_strokes']
                         img = create_progression_image_from_ndjson_seq(ndjson_strokes)
-                        out_fp = os.path.join(out_dir, '{}.jpg'.format(id))
+                        out_fp = out_dir / f'{id}.jpg'
                         img.save(out_fp)
 
                     except Exception as e:
@@ -131,7 +131,7 @@ class SegmentationModel(object):
         """
         Args:
             strokes: [len, 5] np array
-            
+
         Returns:
             batch: [n_pts (seq_len), n_segs, 5] FloatTensor
             n_penups: int
@@ -252,13 +252,13 @@ class SegmentationGreedyParsingModel(SegmentationModel):
 
     def split(self, left_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented):
         """
-        
+
         Args:
             left_idx: int
             right_idx: int
             seg_idx_map: dict (construct_batch_of_segments_from_one_sample())
             seg_probs: [n_segs] array
-            seg_texts: [n_segs] strs 
+            seg_texts: [n_segs] strs
             segmented: list of dicts
 
         Returns: list of dicts
@@ -308,7 +308,7 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(SEGMENTATIONS_PATH, opt.method, opt.segment_dataset)
+    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset
 
     load_model = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
     hp.use_categories_enc = False

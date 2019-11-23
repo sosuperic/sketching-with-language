@@ -6,6 +6,7 @@ StrokeDataset(s) and stroke related models
 
 import numpy as np
 import os
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -17,7 +18,7 @@ from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, bu
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
 
-NPZ_DATA_PATH = 'data/quickdraw/npz/'
+NPZ_DATA_PATH = Path('data/quickdraw/npz/')
 
 ##############################################################################
 #
@@ -88,7 +89,7 @@ class NdjsonStrokeDataset(StrokeDataset):
         full_data = []  # list of dicts
         self.max_len_in_data = 0
         for i, category in enumerate(self.categories):
-            print('Loading {} ({}/{})'.format(category, i + 1, len(self.categories)))
+            print(f'Loading {category} ({i + 1}/{len(self.categories)}')
             drawings = ndjson_drawings(category)
             drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
             for i, d in enumerate(drawings):
@@ -106,7 +107,7 @@ class NdjsonStrokeDataset(StrokeDataset):
         self.data = normalize_strokes(self.data)
         self.idx2cat, self.cat2idx = build_category_index(self.data)
 
-        print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
+        print(f'Number of examples in {dataset_split}: {len(self.data)}')
 
     def get_split(self, drawings, dataset_split):
         """
@@ -155,7 +156,7 @@ class NpzStrokeDataset(StrokeDataset):
         self.max_len_in_data = 0
         for i, category in enumerate(self.categories):
             print('Loading {} ({}/{})'.format(category, i + 1, len(self.categories)))
-            data_path = os.path.join(NPZ_DATA_PATH, '{}.npz'.format(category))
+            data_path = NPZ_DATA_PATH / f'{category}.npz'
             category_data = np.load(data_path, encoding='latin1')[dataset_split]  # e.g. cat.npz is in 3-stroke format
             n_samples = len(category_data)
             for i in range(n_samples):
@@ -168,7 +169,7 @@ class NpzStrokeDataset(StrokeDataset):
         self.data = normalize_strokes(self.data, scale_factor=STROKE3_SCALE_FACTOR)
         self.idx2cat, self.cat2idx = build_category_index(self.data)
 
-        print('Number of examples in {}: {}'.format(dataset_split, len(self.data)))
+        print(f'Number of examples in {dataset_split}: {len(self.data)}')
 
 
 ##############################################################################
@@ -444,9 +445,9 @@ class SketchRNNDecoderGMM(nn.Module):
             sigma_y: var y for each mixture         [max_len + 1, bsz, M]
             rho_xy:  covariance for each mixture    [max_len + 1, bsz, M]
             q: [max_len + 1, bsz, 3]
-                models p (3 pen strokes in stroke-5) as categorical distribution (page 3);   
+                models p (3 pen strokes in stroke-5) as categorical distribution (page 3);
             hidden: [1, bsz, dec_dim]
-                 last hidden state      
+                 last hidden state
             cell: [1, bsz, dec_dim]
                   last cell state
         """
@@ -494,7 +495,7 @@ class SketchRNNDecoderGMM(nn.Module):
 
         # Compute softmax over mixtures
         pi = F.softmax(pi.t(), dim=-1).view(len_out, bsz, self.M)
-        
+
         mu_x = mu_x.t().contiguous().view(len_out, bsz, self.M)
         mu_y = mu_y.t().contiguous().view(len_out, bsz, self.M)
 
@@ -581,7 +582,7 @@ class SketchRNNDecoderGMM(nn.Module):
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
         LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
-        
+
 
         if (LS != LS).any():
             import pdb; pdb.set_trace()
@@ -601,9 +602,9 @@ class SketchRNNDecoderGMM(nn.Module):
 
     def bivariate_normal_pdf(self, dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy):
         """
-        Get probability of dx, dy using mixture parameters. 
+        Get probability of dx, dy using mixture parameters.
 
-        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with 
+        Reference: Eq. of https://arxiv.org/pdf/1308.0850.pdf (Graves' Generating Sequences with
         Recurrent Neural Networks)
         """
         # Eq. 25

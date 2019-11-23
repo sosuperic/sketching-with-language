@@ -9,7 +9,7 @@ import pandas as pd
 import src.utils as utils
 from src.data_manager.quickdraw import ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH
 
-INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'vocab_distribution.json')
+INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'vocab_distribution.json'
 
 
 
@@ -44,9 +44,9 @@ def analyze_progression_pairs_annotations():
 
         print('-' * 100)
         print
-        print('CATEGORY: {}'.format(cat))
+        print(f'CATEGORY: {cat}')
         pprint(sorted(words.items(), key=lambda x: x[1]))
-        print('CATEGORY: {}'.format(cat))
+        print(f'CATEGORY: {cat}')
         print
 
 def save_instruction_vocabulary_distribution():

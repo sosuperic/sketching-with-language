@@ -263,7 +263,7 @@ class StrokeToInstructionModel(TrainNN):
             text_indices_w_sos_eos: [max_text_len + 2, bsz] LongTensor (+2 for sos and eos)
             cats: list of strs (categories)
             cats_idx: list of ints
-        
+
         :return: dict: 'loss': float Tensor must exist
         """
         if self.hp.model_type == 'cnn_lstm':
@@ -396,7 +396,7 @@ class StrokeToInstructionModel(TrainNN):
 
     def inference_pass(self, strokes, stroke_lens, cats_idx):
         """
-        
+
         Args:
             strokes: [len, bsz, 5]
             stroke_lens: list of ints

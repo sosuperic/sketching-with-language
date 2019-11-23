@@ -3,6 +3,7 @@
 from collections import defaultdict
 import numpy as np
 import os
+from pathlib import Path
 import time
 
 import torch
@@ -11,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import src.utils as utils
 
-RUNS_PATH = 'runs/'
+RUNS_PATH = Path('runs/')
 
 
 class TrainNN(nn.Module):

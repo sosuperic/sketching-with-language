@@ -1,7 +1,7 @@
 # instruction_models.py
 
 """
-Instruction (annotations from MTurk) related models and dataset 
+Instruction (annotations from MTurk) related models and dataset
 """
 
 import numpy as np
@@ -18,15 +18,14 @@ from src.data_manager.quickdraw import  LABELED_PROGRESSION_PAIRS_PATH, LABELED_
 from src.models.core import nn_utils
 
 
-LABELED_PROGRESSION_PAIRS_TRAIN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'train.pkl')
-LABELED_PROGRESSION_PAIRS_VALID_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'valid.pkl')
-LABELED_PROGRESSION_PAIRS_TEST_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'test.pkl')
+LABELED_PROGRESSION_PAIRS_TRAIN_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'train.pkl'
+LABELED_PROGRESSION_PAIRS_VALID_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'valid.pkl'
+LABELED_PROGRESSION_PAIRS_TEST_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'test.pkl'
 
-LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2token.pkl')
-LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'token2idx.pkl')
-LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'idx2cat.pkl')
-LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = os.path.join(LABELED_PROGRESSION_PAIRS_PATH, 'cat2idx.pkl')
-
+LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2token.pkl'
+LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'token2idx.pkl'
+LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2cat.pkl'
+LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2idx.pkl'
 
 
 ##############################################################################
@@ -40,7 +39,7 @@ PAD_ID, OOV_ID, SOS_ID, EOS_ID = 0, 1, 2, 3 # TODO: this should be a part of dat
 def build_vocab(data):
     """
     Returns mappings from index to token and vice versa.
-    
+
     Args:
         data: list of dicts, each dict is one example.
     """
@@ -112,7 +111,7 @@ def map_sentence_to_index(sentence, token2idx):
 class ProgressionPairDataset(Dataset):
     def __init__(self, dataset_split, use_prestrokes=False, return_full_stroke=False):
         """
-        
+
         Args:
             dataset_split: str
             remove_question_marks: bool (whether to remove samples where annotation was '?')
@@ -194,9 +193,9 @@ class ProgressionPairDataset(Dataset):
     def collate_fn(batch):
         """
         Method to passed into a DataLoader that defines how to combine samples in a batch
-        
+
         TODO: why did I write my own collate_fn? Is there something wrong with not using one for the NpzStrokeDataset?
-        
+
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
         """
@@ -262,11 +261,11 @@ class InstructionDecoderLSTM(nn.Module):
             token_embedding: nn.Embedding(vocab, dim)
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
-            
+
         Returns:
             outputs:
-                if token_embedding is None: [len, bsz, dim] FloatTensor 
-                else: [len, bsz, vocab] FloatTensor 
+                if token_embedding is None: [len, bsz, dim] FloatTensor
+                else: [len, bsz, vocab] FloatTensor
             hidden: [n_layers * n_directions, bsz, dim]
             cell: [n_layers * n_directions, bsz, dim] FloatTensor
         """

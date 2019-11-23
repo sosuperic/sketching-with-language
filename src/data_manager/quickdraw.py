@@ -20,6 +20,7 @@ import csv
 import json
 import math
 import os
+from pathlib import Path
 from pprint import pprint
 import random
 import subprocess
@@ -43,8 +44,8 @@ import src.utils as utils
 ###################################################################
 
 # Original
-QUICKDRAW_DATA_PATH = 'data/quickdraw'
-NDJSON_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'simplified_ndjson', '{}.ndjson')
+QUICKDRAW_DATA_PATH = Path('data/quickdraw')
+NDJSON_PATH = str(QUICKDRAW_DATA_PATH / 'simplified_ndjson' / '{}.ndjson')
 
 # Selected categories
 CATEGORIES_ANIMAL_PATH = 'data/quickdraw/categories_animals.txt'
@@ -54,13 +55,13 @@ CATEGORIES_FINAL_PATH = 'data/quickdraw/categories_final.txt'
 SIDE = 112
 LINE = 6
 PAIRS_MIN_STROKES = 3
-FONT_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'ARIALBD.TTF')
+FONT_PATH = QUICKDRAW_DATA_PATH / 'ARIALBD.TTF'
 
-QUICKDRAW_DRAWINGS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings')
-QUICKDRAW_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'drawings_pairs')
-QUICKDRAW_PROGRESSIONS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progressions')
-QUICKDRAW_PROGRESSIONS_PAIRS_PATH = os.path.join(QUICKDRAW_DATA_PATH, 'progression_pairs_fullinput')
-QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'data')
+QUICKDRAW_DRAWINGS_PATH = QUICKDRAW_DATA_PATH / 'drawings'
+QUICKDRAW_PAIRS_PATH = QUICKDRAW_DATA_PATH / 'drawings_pairs'
+QUICKDRAW_PROGRESSIONS_PATH = QUICKDRAW_DATA_PATH / 'progressions'
+QUICKDRAW_PROGRESSIONS_PAIRS_PATH = QUICKDRAW_DATA_PATH / 'progression_pairs_fullinput'
+QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'data'
 
 # For MTurk
 S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
@@ -69,10 +70,9 @@ S3_PROGRESSION_PAIRS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws
 S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pairs_fullinput/{}/progress/{}'
 
 # MTurk annotated data
-ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = os.path.join(
-    QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'mturk_progressions_pairs_fullresults0.csv')
-LABELED_PROGRESSION_PAIRS_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'labeled_progression_pairs')
-LABELED_PROGRESSION_PAIRS_DATA_PATH = os.path.join(QUICKDRAW_PROGRESSIONS_PAIRS_PATH, 'labeled_progression_pairs', 'data')
+ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'mturk_progressions_pairs_fullresults0.csv'
+LABELED_PROGRESSION_PAIRS_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs'
+LABELED_PROGRESSION_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs' / 'data'
 
 
 ###################################################################
@@ -166,12 +166,12 @@ def build_category_index(data):
 def ndjson_to_stroke3(ndjson_format):
     """
     Parse an ndjson sample and return ink (as np array) and classname.
-    
+
     Taken from https://github.com/tensorflow/docs/blob/master/site/en/r1/tutorials/sequences/recurrent_quickdraw.md
-    
+
     Args:
         ndjson_format: drawing in ndjson format
-    
+
     Returns: [len, 3] np array
     """
     stroke_lengths = [len(stroke[0]) for stroke in ndjson_format]
@@ -285,11 +285,11 @@ def save_strokes_as_img(sequence, output_fp):
 
 def convert_stroke5_to_ndjson_seq(stroke5):
     """
-    TODO: this is a WIP. 
+    TODO: this is a WIP.
         - may have to unnormalize stroke5 before
         - What should the offset be? stroke5 contains positive and negative numbers for x / y, ndjson_seq doesn't
         - Possible reference: https://github.com/hardmaru/sketch-rnn-datasets/blob/master/draw_strokes.py
-    
+
     Args:
         stroke5: [len, 5] numpy array
 
@@ -404,9 +404,9 @@ def save_pairs(n=None):
             img = ImageOps.invert(img)
 
             # save image
-            out_dir = os.path.join(QUICKDRAW_PAIRS_PATH, cat)
+            out_dir = QUICKDRAW_PAIRS_PATH / cat
             os.makedirs(out_dir, exist_ok=True)
-            out_fp = os.path.join(out_dir, '{}.jpg'.format(d_idx))
+            out_fp = out_dir / f'{d_idx}.jpg'
             img.save(out_fp)
 
 def save_final_drawings(n=None):
@@ -427,9 +427,9 @@ def save_final_drawings(n=None):
             img_vec = vector_to_raster([strokes], side=SIDE, line_diameter=LINE)[0]
             img = Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L')
             img = ImageOps.invert(img)
-            out_dir = os.path.join(QUICKDRAW_DRAWINGS_PATH, cat)
+            out_dir = QUICKDRAW_DRAWINGS_PATH / cat
             os.makedirs(out_dir, exist_ok=True)
-            img.save(os.path.join(out_dir, '{}.jpg'.format(id)))
+            img.save(out_dir / f'{id}.jpg')
 
 def save_progressions(n=None):
     """
@@ -441,8 +441,8 @@ def save_progressions(n=None):
 
         # make directories
         out_dir_base = QUICKDRAW_PROGRESSIONS_PATH
-        out_dir_progress = os.path.join(out_dir_base, cat, 'progress')
-        out_dir_meta = os.path.join(out_dir_base, cat, 'meta')
+        out_dir_progress = out_dir_base / cat / 'progress'
+        out_dir_meta = out_dir_base / cat / 'meta'
         for dir in [out_dir_base, out_dir_progress, out_dir_meta]:
             os.makedirs(dir, exist_ok=True)
 
@@ -456,10 +456,10 @@ def save_progressions(n=None):
             img = create_progression_image_from_ndjson_seq(strokes)
 
             # save
-            img.save(os.path.join(out_dir_progress, '{}.jpg'.format(id)))
+            img.save(out_dir_progress / f'{id}.jpg')
 
             # Save start and end strokes
-            meta_fp = os.path.join(out_dir_meta, '{}.json'.format(id))
+            meta_fp = out_dir_meta / f'{id}.json'
             with open(meta_fp, 'w') as f:
                 json.dump({'id': id, 'start': None, 'end': None, 'n_segments': len(strokes)}, f)
 
@@ -473,8 +473,8 @@ def save_progression_pairs(n=None):
 
         # make directories
         out_dir_base = QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH
-        out_dir_progress = os.path.join(out_dir_base, cat, 'progress')
-        out_dir_meta = os.path.join(out_dir_base, cat, 'meta')
+        out_dir_progress = out_dir_base / cat / 'progress'
+        out_dir_meta = out_dir_base / cat / 'meta'
         for dir in [out_dir_base, out_dir_progress, out_dir_meta]:
             os.makedirs(dir, exist_ok=True)
 
@@ -521,10 +521,10 @@ def save_progression_pairs(n=None):
             img = Image.new('L', (SIDE * 2 + border * 3, SIDE + border * 2))
             img.paste(img1, (0, 0))
             img.paste(img2, (border + SIDE, 0))  # this way middle border overlaps
-            img.save(os.path.join(out_dir_progress, '{}.jpg'.format(id)))
+            img.save(out_dir_progress / f'{id}.jpg')
 
             # Save start and end strokes
-            strokes_fp = os.path.join(out_dir_meta, '{}.json'.format(id))
+            strokes_fp = out_dir_meta / f'{id}.json'
             with open(strokes_fp, 'w') as f:
                 json.dump({'id': id, 'start': start, 'end': end, 'n_segments': len(strokes)}, f)
 
@@ -549,7 +549,7 @@ def prep_progressions_data_for_turk(data, n):
 def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
     """
     Create the csv that will be input to MTurk
-    
+
     :param data_dir: str, location of data to be annotated
     :param s3_url: str, url of image
     :param out_fn: str, filename of csv
@@ -561,8 +561,8 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
     for root, dirs, fns in os.walk(data_dir):
         category = os.path.basename(root)
         if category in categories:
-            prog_dir = os.path.join(data_dir, category, 'progress')
-            meta_dir = os.path.join(data_dir, category, 'meta')
+            prog_dir = data_dir / category / 'progress'
+            meta_dir = data_dir / category / 'meta'
 
             count = 0
             for fn in os.listdir(prog_dir):
@@ -574,7 +574,7 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
                 try:
                     # save data to csv
                     meta_fn = fn.replace('.jpg', '.json')
-                    meta_fp = os.path.join(meta_dir, meta_fn)
+                    meta_fp = meta_dir / meta_fn
                     url = s3_url.format(category, fn)
                     meta = json.load(open(meta_fp, 'r'))
                     csv_data.append([category, url, str(meta['id']),
@@ -584,7 +584,7 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
                     pass
 
     # Write to csv
-    csv_out_fp = os.path.join(data_dir, out_fn)
+    csv_out_fp = data_dir / out_fn
     print(csv_out_fp)
     with open(csv_out_fp, 'w') as f:
         f.write('category,url,id,start,end,n_segments\n')
@@ -613,7 +613,7 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
         df[col].hist(by=df.category, figsize=(10,8), alpha=0.8, color=color)
         # plt.suptitle('Distribution of {}'.format(col), fontsize=24)
         plt.tight_layout()
-        out_fp = os.path.join(out_dir, '{}.png'.format(col))
+        out_fp = out_dir / f'{col}.png'
         plt.savefig(out_fp)
 
 
@@ -636,7 +636,7 @@ def push_to_aws():
                 if category in categories:
                     print(category)
                     for fn in fns:
-                        local_fp = os.path.join(root, fn)
+                        local_fp = root / fn
 
                         s3_fp = s3_path.format(category, fn)
                         cp_cmd = AWS_CP_CMD.format(AWS_PROFILE, local_fp, s3_fp)
@@ -667,7 +667,7 @@ def convert_turk_results_to_html():
               <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.0/js/bootstrap.min.js"></script>
             </head>
             <body>
-            
+
             <div class="container">
                 <h2>MTurk Results</h2>
         """)
@@ -739,14 +739,14 @@ def save_annotated_progression_pairs_data():
     Data is a dictionary that contains:
         url: S3 url of progression pair
         annotation: instruction written by MTurker
-        
+
         ndjson_strokes: drawing in ndjson format (list of subsegments, each subsegment is list of x y points)
         ndjson_start: ndjson_strokes index of start of annotated segment
-            - Offset by 1 relative to ndjson_strokes 
+            - Offset by 1 relative to ndjson_strokes
             - When 0, this is the start of the drawing (before any strokes)
         ndjson_end: ndjson_strokes index of end of annotated segment
             - Offset by 1 relative to ndjson_strokes
-            
+
         stroke3: drawing in stroke-3 format: numpy array of shape [len, 3] (x, y, pen_up)
         stroke3_start: stroke3 index of start of annotated segment
         stroke3_end: stroke3 index of end of annotated segment
@@ -807,8 +807,8 @@ def save_annotated_progression_pairs_data():
             result.append(data)
 
         # save
-        out_fn = '{}.pkl'.format(cat)
-        out_fp = os.path.join(LABELED_PROGRESSION_PAIRS_DATA_PATH, out_fn)
+        out_fn = f'{cat}.pkl'
+        out_fp = LABELED_PROGRESSION_PAIRS_DATA_PATH / out_fn
         utils.save_file(result, out_fp)
 
 
