@@ -1,9 +1,12 @@
 
+.vscode
 .DS_Store
 .idea/
 *__pycache__
 *.pyc
 
+archived_runs/
+best_models/
 data/
 papers/
 venv/
