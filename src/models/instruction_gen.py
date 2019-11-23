@@ -1,5 +1,11 @@
 # instruction_gen.py
 
+"""
+Usage:
+
+CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/instruction_gen.py --model_type cnn_lstm
+"""
+
 import matplotlib
 matplotlib.use('Agg')
 import os
