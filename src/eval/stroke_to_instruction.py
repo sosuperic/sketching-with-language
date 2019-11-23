@@ -2,6 +2,9 @@
 
 """
 Evaluating StrokeToInstruction model
+
+Usage:
+    PYTHONPATH=. python src/eval/stroke_to_instruction.py --fp <dir>/outputs/samples_e11.json
 """
 import argparse
 from collections import defaultdict
