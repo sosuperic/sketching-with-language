@@ -2,23 +2,26 @@
 
 """
 SketchRNN model as in "Neural Representation of Sketch Drawings"
+
+Usage:
+    PYTHONPATH=. python src/models/sketch_rnn.py --model_type vae
 """
 
-import numpy as np
 import os
 
+import numpy as np
 import torch
-from torch import nn
-from torch import optim
-from torch.utils.data import DataLoader
-
 from src import utils
 from src.data_manager.quickdraw import save_strokes_as_img
+from src.models.base.stroke_models import (NdjsonStrokeDataset,
+                                           NpzStrokeDataset,
+                                           SketchRNNDecoderGMM,
+                                           SketchRNNDecoderLSTM,
+                                           SketchRNNVAEEncoder)
 from src.models.core import nn_utils
-from src.models.base.stroke_models import SketchRNNDecoderGMM, SketchRNNVAEEncoder, \
-    NdjsonStrokeDataset, NpzStrokeDataset
-from src.models.core.train_nn import TrainNN, RUNS_PATH
-
+from src.models.core.train_nn import RUNS_PATH, TrainNN
+from torch import nn, optim
+from torch.utils.data import DataLoader
 
 USE_CUDA = torch.cuda.is_available()
 
@@ -42,7 +45,7 @@ class HParams():
         self.max_epochs = 100
 
         # Model
-        self.model_type = 'vae'  # 'vae', 'decoder'
+        self.model_type = 'vae'  # 'vae', 'decodergmm', 'decoderlstm'
         self.enc_dim = 256  # 512
         self.dec_dim = 512  # 2048
         self.enc_num_layers = 1  # 2
@@ -134,9 +137,6 @@ class SketchRNNModel(TrainNN):
     def generate_and_save(self, data_loader, epoch, n_gens=1, outputs_path=None):
         """
         Generate sequence
-
-        TODO: refactor this slightly so we can use it with the DecoderOnly model as well.
-        Only thing that needs to change is whether or not we concatenate the state with z
         """
         n = 0
         for i, batch in enumerate(data_loader):
@@ -151,9 +151,9 @@ class SketchRNNModel(TrainNN):
                 # init hidden and cell states is tanh(fc(z)) (Page 3)
                 hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, dim=1)
                 hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
-            elif self.hp.model_type == 'decoder':
-                hidden_cell =  (nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)),
-                                nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)))
+            elif 'decoder' in self.hp.model_type:
+                hidden_cell = (nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)),
+                               nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)))
 
             # initialize state with start of sequence stroke-5 stroke
             sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # [1 (len), bsz, 5 (stroke-5)]
@@ -167,16 +167,21 @@ class SketchRNNModel(TrainNN):
             for _ in range(max_len):
                 if self.hp.model_type == 'vae':  # input is last state, z, and hidden_cell
                     input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
-                elif self.hp.model_type == 'decoder':  # input is last state and hidden_cell
+                elif self.hp.model_type == 'decodergmm':  # input is last state and hidden_cell
                     input = s
+                    pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
+                        self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
+                    hidden_cell = (hidden, cell)
+                    # sample next state
+                    s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
+                elif self.hp.model_type == 'decoderlstm':  # input is last state and hidden_cell
+                    input = s
+                    xy, q, hidden, cell = self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
+                    hidden_cell = (hidden, cell)
+                    dx, dy = xy[-1,0,0].item(), xy[-1,0,1].item()  # last timestep, first batch item, x / y
+                    pen_up = q[-1,0,:].max(dim=0)[1].item() == 1  # max index is the 2nd one (penup)
+                    eos = q[-1,0,:].max(dim=0)[1].item() == 2  # max index is the 3rd one (eos)
 
-                # decode
-                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
-                    self.dec(input, output_all=False, hidden_cell=hidden_cell)
-                hidden_cell = (hidden, cell)
-
-                # sample next state
-                s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
                 seq_x.append(dx)
                 seq_y.append(dy)
                 seq_pen.append(pen_up)
@@ -213,6 +218,8 @@ class SketchRNNModel(TrainNN):
         Return state using current mixture parameters etc. set from decoder call.
         Note that this state is different from the stroke-5 format.
 
+        NOTE: currently only operates on first item in batch (hence the BATCH_ITEM)
+
         Args:
             pi: [len, bsz, M]
             mu_x: [len, bsz, M]
@@ -226,8 +233,8 @@ class SketchRNNModel(TrainNN):
 
         Returns:
             s: [1, 1, 5]
-            dx: [M]
-            dy: [M]
+            dx: [1]
+            dy: [1]
             pen_up: bool
             eos: bool
         """
@@ -292,7 +299,7 @@ class SketchRNNModel(TrainNN):
             greedy: bool
 
         Return:
-            Tuple of [M]
+            Tuple of floats
         """
         if greedy:
             return mu_x, mu_y
@@ -321,7 +328,50 @@ class SketchRNNModel(TrainNN):
 #
 ##############################################################################
 
-class SketchRNNDecoderOnlyModel(SketchRNNModel):
+class SketchRNNDecoderLSTMOnlyModel(SketchRNNModel):
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
+
+        # Model
+        self.dec = SketchRNNDecoderLSTM(5, hp.dec_dim, dropout=hp.dropout)
+        self.models.append(self.dec)
+        if USE_CUDA:
+            for model in self.models:
+                model.cuda()
+        self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
+
+    def one_forward_pass(self, batch):
+        """
+        Return loss and other items of interest for one forward pass
+
+        Args:
+            batch: tuple from DataLoaders
+
+        Returns:
+            dict where 'loss': float Tensor must exist
+        """
+        strokes, stroke_lens, cats, cats_idx = batch
+        max_len, bsz, _ = strokes.size()
+
+        # Create inputs to decoder
+        sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
+        sos = nn_utils.move_to_cuda(sos)
+        dec_inputs = torch.cat([sos, strokes], dim=0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
+
+        # Decode
+        xy, q, hidden, cell = self.dec(dec_inputs, stroke_lens=stroke_lens)
+
+        # Calculate losses
+        mask, dxdy, p = self.dec.make_target(strokes, stroke_lens)
+
+        loss = self.dec.reconstruction_loss(mask, dxdy, p,
+                                            xy, q)
+        result = {'loss': loss, 'loss_R': loss}
+
+        return result
+
+
+class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
 
@@ -485,8 +535,9 @@ if __name__ == "__main__":
     model = None
     if hp.model_type == 'vae':
         model = SketchRNNVAEModel(hp, save_dir)
-
-    elif hp.model_type == 'decoder':
-        model = SketchRNNDecoderOnlyModel(hp, save_dir)
+    elif hp.model_type == 'decodergmm':
+        model = SketchRNNDecoderGMMOnlyModel(hp, save_dir)
+    elif hp.model_type == 'decoderlstm':
+        model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir)
     model = nn_utils.AccessibleDataParallel(model)
     model.train_loop()

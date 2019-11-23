@@ -88,20 +88,21 @@ class NdjsonStrokeDataset(StrokeDataset):
         # Load data
         full_data = []  # list of dicts
         self.max_len_in_data = 0
+        n_cats = len(self.categories)
         for i, category in enumerate(self.categories):
-            print(f'Loading {category} ({i + 1}/{len(self.categories)}')
+            print(f'Loading {category} {i+1}/{n_cats}')
             drawings = ndjson_drawings(category)
             drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
             for i, d in enumerate(drawings):
+                if i == max_per_category:
+                    break
+
                 id, ndjson_strokes = d['key_id'], d['drawing']
                 stroke3 = ndjson_to_stroke3(ndjson_strokes)  # convert to stroke3 format
                 sample_len = stroke3.shape[0]
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category,
                                   'id': id, 'ndjson_strokes': ndjson_strokes})
-
-                if i == max_per_category:
-                    break
 
         self.data = self.filter_and_clean_data(full_data)
         self.data = normalize_strokes(self.data)
@@ -406,7 +407,7 @@ class SketchRNNVAEEncoder(nn.Module):
 
 ##############################################################################
 #
-# Decoder
+# GMM Decoder
 #
 ##############################################################################
 
@@ -430,7 +431,7 @@ class SketchRNNDecoderGMM(nn.Module):
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
         self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
 
-    def forward(self, strokes, output_all=True, hidden_cell=None):
+    def forward(self, strokes, stroke_lens=None, output_all=True, hidden_cell=None):
         """
         Args:
             strokes: [len, bsz, esz + 5]
@@ -626,3 +627,128 @@ class SketchRNNDecoderGMM(nn.Module):
             import pdb; pdb.set_trace()
 
         return prob
+
+##############################################################################
+#
+# LSTM Decoder
+#
+##############################################################################
+
+class SketchRNNDecoderLSTM(nn.Module):
+    def __init__(self, input_dim, dec_dim, dropout=0.0):
+        """
+        Args:
+            input_dim: int (size of input)
+            dec_dim: int (size of hidden states)
+            M: int (number of mixtures)
+            dropout: float
+        """
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.dec_dim = dec_dim
+        self.num_layers = 1
+
+        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
+        # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
+        self.fc_out_xypen = nn.Linear(dec_dim, 5)  # create mixture params and probs from hiddens
+
+    def forward(self, strokes, stroke_lens=None, hidden_cell=None, output_all=True):
+        """
+        Args:
+            strokes: [max_len + 1, bsz, input_dim]  (+ 1 for sos)
+            stroke_lens: list of ints, length len
+            hidden_cell: tuple of [n_layers, bsz, dec_dim]
+            output_all: bool (unused... for compatability with SketchRNNDecoderGMM)
+
+        Returns:
+            xy: [max_len + 1, bsz, 5] (+1 for sos)
+            q: [max_len + 1, bsz, 3]
+            # xy: [len, bsz, 5] (len may be less than max_len + 1)
+            # q: [len, bsz, 3]
+                models p (3 pen strokes in stroke-5) as categorical distribution (page 3)
+            hidden: [n_layers, bsz, dim]
+            cell: [n_layers, bsz, dim]
+        """
+        bsz = strokes.size(1)
+        if hidden_cell is None:  # init
+            hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+            cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
+            hidden_cell = (hidden, cell)
+
+        # decode
+        outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
+
+        # packed_inputs = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
+        # outputs, (hidden, cell) = self.lstm(packed_inputs, (hidden, cell))
+        # outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs)
+        # # [len, bsz, dim]; h/c = [n_layers * n_directions, bsz, dim]
+        # # NOTE: pad_packed will "trim" extra timesteps, so outputs may be shorter than strokes
+
+        outputs = self.fc_out_xypen(outputs)  # [len, bsz, 5]
+        xy = outputs[:,:,:2]  # [len, bsz, 2]
+        pen = outputs[:,:,2:]  # [len, bsz, 3]
+        q = F.softmax(pen, dim=-1)
+
+        return xy, q, hidden, cell
+
+    def make_target(self, strokes, stroke_lens):
+        """
+        Create target vector out of stroke-5 data and stroke_lens. Namely, use stroke_lens
+        to create mask for each sequence
+
+        Args:
+            strokes: [max_len, bsz, 5]
+            stroke_lens: list of ints
+
+        Returns:
+            mask: [max_len + 1, bsz]  (+ 1 for eos)
+            dxdy: [max_len + 1, bsz, 2]
+            p:  [max_len + 1, bsz, 3]
+        """
+        max_len, bsz, _ = strokes.size()
+
+        # add eos
+        eos = torch.stack([torch.Tensor([0, 0, 0, 0, 1])] * bsz).unsqueeze(0)  # ([1, bsz, 5])
+        eos = nn_utils.move_to_cuda(eos)
+        strokes = torch.cat([strokes, eos], 0)  # [max_len + 1, bsz, 5]
+
+        # calculate mask for each sequence using stroke_lens
+        mask = torch.zeros(max_len + 1, bsz)
+        for idx, length in enumerate(stroke_lens):
+            mask[:length, idx] = 1
+        mask = nn_utils.move_to_cuda(mask)
+        mask = mask.detach()
+
+        # ignore first element
+        dxdy = strokes.data[:, :, :2].detach()
+        p1 = strokes.data[:, :, 2].detach()
+        p2 = strokes.data[:, :, 3].detach()
+        p3 = strokes.data[:, :, 4].detach()
+        p = torch.stack([p1, p2, p3], dim=2)
+
+        return mask, dxdy, p
+
+    def reconstruction_loss(self, mask, dxdy, p, xy, q):
+        """
+        Args:
+            mask (FloatTensor): [max_len + 1, bsz]
+            dxdy (FloatTensor): [max_len + 1, bsz, 2] (target)
+            p (FloatTensor): [max_len + 1, bsz, 3] (target)
+            xy (FloatTensor): [max_len + 1, bsz, 2] (model output) (len may be less than max_len + 1)
+            q (FloatTensor): [max_len + , bsz, 3] (model output)
+            # xy (FloatTensor): [len, bsz, 2] (model output) (len may be less than max_len + 1)
+            # q (FloatTensor): [len, bsz, 3] (model output)
+        """
+        dxdy *= mask.unsqueeze(-1)
+        p *= mask.unsqueeze(-1)
+
+        # gen_len, bsz, _ = xy.size()
+        # dxdy = dxdy[:gen_len,:,:]
+        # p = p[:gen_len,:,:]
+
+        LS = F.mse_loss(xy, dxdy)
+        LP = F.mse_loss(q, p)
+        loss = LS + LP
+        return loss
