@@ -48,7 +48,7 @@ class HParams():
         self.n_dec_layers = 4
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
-        self.use_prestrokes = True
+        self.use_prestrokes = False
         self.use_categories_enc = False
         self.use_categories_dec = True
         self.dropout = 0.2
