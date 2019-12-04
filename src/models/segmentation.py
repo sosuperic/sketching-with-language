@@ -12,6 +12,7 @@ import argparse
 import numpy as np
 import os
 from pprint import pprint
+from uuid import uuid4
 
 import torch
 import torch.nn.functional as F
@@ -243,7 +244,8 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         # top level segmentation
         # initial instruction for entire sequence
         seg_idx = seg_idx_map[(0, n_penups)]
-        segmented = [{'left': 0, 'right': n_penups, 'prob': seg_probs[seg_idx], 'text': seg_texts[seg_idx]}]
+        segmented = [{'left': 0, 'right': n_penups, 'prob': seg_probs[seg_idx], 'text': seg_texts[seg_idx],
+                      'id': uuid4().hex, 'parent': ''}]
         # recursively segment
         segmented = self.split(0, n_penups, seg_idx_map, seg_probs, seg_texts, segmented)  # + 1see how seg_idx_map is calculated
         # pprint(segmented)
@@ -285,14 +287,16 @@ class SegmentationGreedyParsingModel(SegmentationModel):
                 best_split_idx = split_idx
 
         # add left and right segment information
-        segmented.append({'left': left_idx, 'right': best_split_idx,
-                          'prob': best_left_seg_prob, 'text': best_left_seg_text})
-        # TODO: call self.split on left side here so that it's prefix order? this way it's like a stack
-        segmented.append({'left': best_split_idx, 'right': right_idx,
-                          'prob': best_right_seg_prob, 'text': best_right_seg_text})
+        # Note: append and splits must be called in the following order to get correct parent id
+        parent_id = segmented[-1]['id']
 
-        # recursively split
+        segmented.append({'left': left_idx, 'right': best_split_idx,
+                          'prob': best_left_seg_prob, 'text': best_left_seg_text,
+                          'id': uuid4().hex, 'parent': parent_id})
         segmented = self.split(left_idx, best_split_idx, seg_idx_map, seg_probs, seg_texts, segmented)
+        segmented.append({'left': best_split_idx, 'right': right_idx,
+                          'prob': best_right_seg_prob, 'text': best_right_seg_text,
+                          'id': uuid4().hex, 'parent': parent_id})
         segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented)
         return segmented
 
