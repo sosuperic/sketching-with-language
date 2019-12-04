@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title></title>
+    <!-- stylesheets -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ url_for('static', filename='treant-js-master/Treant.css') }}" type="text/css"/>
+
+    <!-- javascript -->
+    <script src="{{ url_for('static', filename='treant-js-master/vendor/raphael.js') }}"></script>
+    <script src="{{ url_for('static', filename='treant-js-master/Treant.js') }}"></script>
+    <script src="{{ url_for('static', filename='treant-js-master/vendor/jquery.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='treant-js-master/vendor/jquery.easing.js') }}"></script>
+    <script src="{{ url_for('static', filename='treant-js-master/vendor/jquery.mousewheel.js') }}"></script>
+
+    <style>
+        body {
+            margin: auto;
+            width: 80%;
+        }
+        
+        #progression img {
+            max-width: 67%;
+        }
+
+        #tree-simple {
+            width: 1024px;
+        }
+
+        .node {
+            color: #333333;
+            font-size: 12px;
+            display: inline-block;
+            margin-top: 12px;
+            width: 150px;
+        }
+
+        /* .node p {
+            color: #42474A;
+            line-height: 1.4em;
+            margin-bottom: 0;
+            max-height: 4.2em;
+            overflow: hidden;
+        } */
+        .Treant .node { margin: 0; padding: 3px; border: 1px solid #ddd; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div>
+        <p>{{ img_fp }}</p>
+    </div>
+    <div>
+        <div id="progression">
+            <img src=" {{ img_fp }} "></img>
+        </div>
+        <div id="tree-simple"></div>
+    </div>
+    <script>
+        var config = {
+            container: "#tree-simple",
+            rootOrientation: "WEST",  // WEST
+            connectors: {
+                type: "step",
+                style: {
+                    "stroke": "green",
+                    "stroke-width": 2,
+                    "stroke-opacity": 0.5,
+                }
+            },
+            node: {
+                "collapsable": true,
+            },
+            nodeAlign: 'BOTTOM',
+            levelSeparation: 30,
+            // nodeSpeed: 100,
+            // connectorsSpeed: 100,
+        };
+    </script>
+
+    <script type="text/javascript" src="{{ js_fp }}">  // loads simple_chart_config
+    </script>
+    <script>
+        var chart = new Treant(simple_chart_config, function() {}, $ );
+    </script>
+
+</body>
+</html>
