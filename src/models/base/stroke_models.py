@@ -585,17 +585,12 @@ class SketchRNNDecoderGMM(nn.Module):
         LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
 
 
-        if (LS != LS).any():
-            import pdb; pdb.set_trace()
-        if (LS == float('inf')).any():
-            import pdb; pdb.set_trace()
-        if (LS == float('-inf')).any():
-            import pdb; pdb.set_trace()
+        if ((LS != LS).any() or (LS == float('inf')).any() or (LS == float('-inf')).any()):
+            raise Exception('Nan in SketchRNNDecoderGMM reconstruction loss')
 
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
         # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
-
         LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
         #  TODO: check arguments for above BCE
 
@@ -624,7 +619,7 @@ class SketchRNNDecoderGMM(nn.Module):
         prob = exp / (norm + 1e-10)
 
         if (prob != prob).any():
-            import pdb; pdb.set_trace()
+            raise Exception('Nan in SketchRNNDecoderGMM bivariate_normal_pdf')
 
         return prob
 

@@ -415,12 +415,8 @@ class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
                                             q)
         result = {'loss': loss, 'loss_R': loss}
 
-        if (loss != loss).any():
-            import pdb; pdb.set_trace()
-        if (loss == float('inf')).any():
-            import pdb; pdb.set_trace()
-        if (loss == float('-inf')).any():
-            import pdb; pdb.set_trace()
+        if ((loss != loss).any() or (loss == float('inf')).any() or (loss == float('-inf')).any()):
+            raise Exception('Nan in SketchRNnDecoderGMMOnly forward pass')
 
         return result
 
@@ -526,10 +522,11 @@ class SketchRNNVAEModel(SketchRNNModel):
 if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    parser.add_argument('--groupname', help='name of subdir to save runs')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'sketchrnn', run_name)
+    save_dir = os.path.join(RUNS_PATH, 'sketchrnn', opt.groupname, run_name)
     utils.save_run_data(save_dir, hp)
 
     model = None

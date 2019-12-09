@@ -28,7 +28,7 @@ from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
 
 
 
-SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
+sourSEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
 
 ##############################################################################
 #

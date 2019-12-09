@@ -2,14 +2,19 @@
 
 import argparse
 from datetime import datetime
+import GPUtil
 import json
 from nltk.tokenize import (
     word_tokenize,
 )
 import os
 import pickle
+from pprint import pprint
+import schedule
 import shutil
+import subprocess
 import sys
+import time
 import torch
 import torch.nn.functional as F
 import uuid
@@ -52,11 +57,10 @@ def load_file(path):
     return data
 
 
-#################################################
-#
+####################################################################
 # Data
 #
-#################################################
+###################################################################
 
 
 def normalize_sentence(sentence):
@@ -67,11 +71,90 @@ def normalize_sentence(sentence):
     return word_tokenize(sentence.lower())
 
 
-#################################################
+###################################################################
 #
-# Hyperparams and saving experiments data
+# Experiments, hyperparams and saving experiments data
 #
-#################################################
+###################################################################
+
+def get_available_GPUs():
+    """
+    Return list of ints (gpu ids)
+    """
+    return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=0.33, includeNan=False)
+
+def check_gpus_and_run(cmd):
+    """
+    Check if there is an available GPU. If there is run, run the command (asynchronously).
+
+    Args:
+        cmd (str)
+
+    Returns: bool (true if command was run)
+    """
+    available_gpu_ids = get_available_GPUs()
+    if len(available_gpu_ids) > 0:
+        gpu_id = available_gpu_ids[0]
+        print(f'Running: {cmd}')
+        subprocess.Popen(cmd)
+        return True
+    else:
+        return False
+
+def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
+                    prequeue_sleep_secs=120, check_queue_every_nmin=10):
+    """
+    Launch and queue multiple runs.
+
+    Args:
+        base_cmd (str): bash command used to run
+        grid (dict): keys are hyperparameters, values are list of grid values
+        ngpus_per_run (int): number of gpus to use for each command (> 1 if using multiGPU)
+    """
+    if ngpus_per_run > 1:
+        raise NotImplementedError('MultiGPU per run not handled yet')
+
+    # Generate all commands by creating sets of hyperparameters
+    combos = [[]]
+    for key, values in grid.items():
+        new_combos = []
+        for combo in combos:
+            for value in values:
+                param = f'--{key}={value}'
+                new_combo = combo + [param]
+                new_combos.append(new_combo)
+        combos = new_combos
+    for i, combo in enumerate(combos):
+        combos[i] = ' '.join(combo)
+    print(f'Number of runs: {len(combos)}')
+
+    # get gpus
+    system_gpus = GPUtil.getGPUs()
+    system_gpu_ids = [gpu.id for gpu in system_gpus]
+    available_gpu_ids = get_available_GPUs()
+    n_available = len(available_gpu_ids)
+
+    # Run commands on available GPUs
+    queued_combos = []
+    for i, combo in enumerate(combos):
+        if i < n_available:  # run immediately
+            gpu_id = available_gpu_ids[i]
+            cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
+            # print(f'{datetime.now()}: {cmd}')
+            subprocess.Popen(cmd, shell=True)
+        else:
+            queued_combos.append(combo)
+
+    # "Queue" the rest
+    # let programs start running and utilize the GPU. Some take a long time to initialize the dataset...
+    # print('Queueing the rest:')
+    time.sleep(prequeue_sleep_secs)
+    for i, combo in enumerate(queued_combos):
+        gpu_id = system_gpu_ids[i % system_gpu_ids]
+        cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
+        check_gpus_and_run(cmd)
+        # schedule.every(check_queue_every_nmin).minutes.do(check_gpus_and_run, cmd=cmd)
+        # TODO: schedule
 
 
 def load_hp(hp_obj, dir):
@@ -105,7 +188,7 @@ def save_run_data(path_to_dir, hp):
         inp = input(
             'Enter "y" if you are sure you want to remove all the old contents: '
         )
-        if inp == "y":
+        if inp in ["y", "yes"]:
             print("Removing old contents")
             shutil.rmtree(path_to_dir)
         else:
