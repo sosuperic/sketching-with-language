@@ -13,10 +13,10 @@ CMD = 'PYTHONPATH=. python src/models/sketch_rnn.py'
 NGPUS_PER_RUN = 1
 
 GRID = {
-    'model_type': ['decodergmm', 'decoderlstm'],
+    'model_type': ['decodergmm'],
+    'dataset': ['progressionpair'],
     'lr': [0.001, 0.0001],
     'enc_dim': ['256 --dec_dim 512', '512 --dec_dim 2048'],
-    'temperature': [0.4, 0.1],
 }
 
 if __name__ == "__main__":

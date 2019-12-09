@@ -5,6 +5,7 @@ SketchRNN model as in "Neural Representation of Sketch Drawings"
 
 Usage:
     PYTHONPATH=. python src/models/sketch_rnn.py --model_type vae
+    PYTHONPATH=. python src/models/sketch_rnn.py --model_type decodergmm
 """
 
 import os
@@ -13,6 +14,7 @@ import numpy as np
 import torch
 from src import utils
 from src.data_manager.quickdraw import save_strokes_as_img
+from src.models.base.instruction_models import (ProgressionPairDataset)
 from src.models.base.stroke_models import (NdjsonStrokeDataset,
                                            NpzStrokeDataset,
                                            SketchRNNDecoderGMM,
@@ -34,7 +36,8 @@ USE_CUDA = torch.cuda.is_available()
 class HParams():
     def __init__(self):
         # Data
-        self.categories = 'cat'  # comma separated categories or 'all'
+        self.dataset = 'progressionpair'  # 'annotated' or 'ndjson'
+        self.categories = 'cat'  # used with dataset='ndjson', comma separated categories or 'all'
 
         # Training
         self.batch_size = 64  # 100
@@ -88,13 +91,20 @@ class SketchRNNModel(TrainNN):
     def get_data_loader(self, dataset_split, batch_size, categories, shuffle=True):
         """
         Args:
-            dataset_split: str
-            batch_size: int
-            categories: str
-            shuffle: bool
+            dataset_split (str): 'train', 'valid', 'test'
+            batch_size (int)
+            categories (str)
+            shuffle (bool)
         """
-        ds = NdjsonStrokeDataset(categories, dataset_split, self.hp.max_len)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+        if self.hp.dataset == 'ndjson':
+            ds = NdjsonStrokeDataset(categories, dataset_split, self.hp.max_len)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+        elif self.hp.dataset == 'progressionpair':
+            # We are using the ProgressionPair dataset, which has segments annotated.
+            # In this case, we aren't using the segments or the instructions. We are using the full strokes.
+            ds = ProgressionPairDataset(dataset_split, use_full_drawings=True)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                collate_fn=ProgressionPairDataset.collate_fn_strokes_categories_only)
         return loader
 
     def preprocess_batch_from_data_loader(self, batch):
@@ -128,7 +138,7 @@ class SketchRNNModel(TrainNN):
         # update eta for LKL
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
-    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):  # TODO: is this how to use **kwargs
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
         self.generate_and_save(data_loader, epoch, n_gens=5, outputs_path=outputs_path)
 
     ##############################################################################

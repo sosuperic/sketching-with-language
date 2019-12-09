@@ -109,17 +109,23 @@ def map_sentence_to_index(sentence, token2idx):
 
 
 class ProgressionPairDataset(Dataset):
-    def __init__(self, dataset_split, use_prestrokes=False, return_full_stroke=False):
+    def __init__(self,
+                 dataset_split,
+                 use_prestrokes=False,
+                 use_full_drawings=False,
+                 ):
         """
+        Annotated dataset of segments of drawings.
 
         Args:
-            dataset_split: str
-            remove_question_marks: bool (whether to remove samples where annotation was '?')
+            dataset_split (str): 'train', 'valid', 'test'
+            use_prestrokes (bool): concatenate strokes that occurred before the annotated segment
+            use_full_drawings (bool): return the entire drawing, not just the annotated segment
         """
         super().__init__()
         self.dataset_split = dataset_split
         self.use_prestrokes = use_prestrokes
-        self.return_full_stroke = return_full_stroke
+        self.use_full_drawings = use_full_drawings
 
         # Get data
         fp = None
@@ -145,9 +151,9 @@ class ProgressionPairDataset(Dataset):
         # pass in the factor computed on the entire dataset?
         # TODO: Probably should just pass ins cale factor on entire sketch rnn data (which is already precomputed
         # and in stroke_models.py
-        self.data = normalize_strokes(data, scale_factor_key='stroke3_segment',
+        self.data = normalize_strokes(data,
+                                      scale_factor_key='stroke3_segment',
                                       stroke_keys=['stroke3', 'stroke3_segment'])
-
 
     def __len__(self):
         return len(self.data)
@@ -155,9 +161,8 @@ class ProgressionPairDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
 
-        # Get subsequence of drawing that was annotated
-
-        if self.return_full_stroke:
+        # Get subsequence of drawing that was annotated. Or full  drawing
+        if self.use_full_drawings:
             stroke3 = sample['stroke3']
         else:
             stroke3 = sample['stroke3_segment']
@@ -176,7 +181,6 @@ class ProgressionPairDataset(Dataset):
             stroke5_pre = stroke3_to_stroke5(stroke3_pre)
             stroke5 = np.vstack([stroke5_pre, sep_pt, stroke5])
 
-
         # Map
         text = sample['annotation']
         text_indices = map_sentence_to_index(text, self.token2idx)
@@ -190,11 +194,44 @@ class ProgressionPairDataset(Dataset):
         return (stroke5, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
+    def collate_fn_strokes_categories_only(batch):
+        """
+        Method to passed into a DataLoader that defines how to combine samples in a batch
+
+        When this is used, dataloader will only return the strokes, stroke lengths,
+        categories (strings), and category indices. This is sort of a hack to make it compatabile
+        with the StrokeDatasets, which return those 4 items.
+
+        Args:
+            batch: list of samples, one sample is returned from __getitem__(idx)
+        """
+        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        bsz = len(batch)
+        sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
+
+        # Create array of strokes, zeros for padding
+        stroke_lens = [stroke.shape[0] for stroke in strokes]
+        max_stroke_len = max(stroke_lens)
+        batch_strokes = np.zeros((bsz, max_stroke_len, sample_dim))
+        for i, stroke in enumerate(strokes):
+            l = stroke.shape[0]
+            batch_strokes[i,:l,:] = stroke
+
+        # Convert to Tensors
+        batch_strokes = torch.FloatTensor(batch_strokes)
+        stroke_lens = torch.LongTensor(stroke_lens)
+        cats_idx = torch.LongTensor(cats_idx)
+
+        return batch_strokes, stroke_lens, cats, cats_idx
+
+    @staticmethod
     def collate_fn(batch):
         """
         Method to passed into a DataLoader that defines how to combine samples in a batch
 
-        TODO: why did I write my own collate_fn? Is there something wrong with not using one for the NpzStrokeDataset?
+        Note: I wrote my own collate_fn in order to handle variable lengths. The StrokeDataset
+        uses the collate_fn because each drawing is padded to some maximum length (this is
+        how Magenta did it as well).
 
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
@@ -225,7 +262,7 @@ class ProgressionPairDataset(Dataset):
         cats_idx = torch.LongTensor(cats_idx)
 
         return batch_strokes, stroke_lens, \
-               texts, text_lens, batch_text_indices, cats, cats_idx, urls
+            texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
 ##############################################################################
 #
