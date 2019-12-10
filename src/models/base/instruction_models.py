@@ -270,13 +270,23 @@ class ProgressionPairDataset(Dataset):
 # Dataset for two-stage models
 #
 class SketchWithPlansDataset(Dataset):
-    def __init__(self, dataset='progressionpair', dataset_split='train'):
+    def __init__(self,
+                 dataset='progressionpair',
+                 dataset_split='train',
+                 instruction_set='toplevel'
+                 ):
         """
         Args:
             dataset (str): 'progressionpair'
+            dataset_split (str): 'train', 'valid', 'test'
+            instruction_set (str):
+                'toplevel': only use instruction generated for entire drawing
+                'toplevel_leaves': use toplevel and all leaf instructions
         """
         self.dataset = dataset
         self.dataset_split = dataset_split
+        self.instruction_set = instruction_set
+
         if dataset == 'progressionpair':
             self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True)
             plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
@@ -308,8 +318,19 @@ class SketchWithPlansDataset(Dataset):
         stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
         id = self.ds.data[idx]['id']
         plans = self.id_to_plans[id]
-        text = plans[0]['text']  # 0 = toplevel instruction
-        text_indices = map_sentence_to_index(text, self.ds.token2idx)
+
+        if self.instruction_set == 'toplevel':
+            text = plans[0]['text']  # 0 = toplevel instruction
+            text_indices = map_sentence_to_index(text, self.ds.token2idx)
+
+        elif self.instruction_set == 'toplevel_leaves':
+            text = plans[0]['text']
+            text_indices = map_sentence_to_index(text, self.ds.token2idx)
+            for subplan in plans[1:]:
+                if (subplan['right'] - subplan['left']) == 1:  # leaf
+                    # TODO: ideally we should have a different separator token...
+                    text += ' SOS ' + subplan['text']
+                    text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.ds.token2idx)
 
         return (stroke5, text, text_indices, cat, cat_idx, url)
 

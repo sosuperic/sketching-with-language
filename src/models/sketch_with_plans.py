@@ -2,7 +2,7 @@
 
 """
 Usage:
-    PYTHONPATH=. python src/models/sketch_with_plans.py --groupname test
+    PYTHONPATH=. python src/models/sketch_with_plans.py --groupname test --instruction_set toplevel_leaves
 """
 
 import os
@@ -26,11 +26,18 @@ from src.models.base.instruction_models import (
 from src.models.base.stroke_models import (
     SketchRNNDecoderGMM
 )
-from src.models.sketch_rnn import HParams, SketchRNNModel
+from src.models.sketch_rnn import SketchRNNModel
+from src.models.sketch_rnn import HParams as SketchRNNHParams
 
 USE_CUDA = torch.cuda.is_available()
 
-
+class HParams(SketchRNNHParams):
+    def __init__(self):
+        super().__init__()
+        self.instruction_set = 'toplevel'  # 'toplevel_leaves'
+        self.cond_instructions = 'initdec'  # 'initdec', 'decinputs'
+        self.enc_dim = 512
+        self.dec_dim = 512  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
 
 class SketchRNNWithTopLevelInstruction(SketchRNNModel):
     """"
@@ -43,24 +50,14 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
         # Model
         vocab_size = len(utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH))
         self.text_embedding = nn.Embedding(vocab_size, hp.enc_dim)
-
         self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
-
-
-        self.dec = SketchRNNDecoderGMM(5 + hp.enc_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
-        # self.dec = SketchRNNDecoderGMM(5, hp.dec_dim, hp.M)  # Method 2 (see one_forward_pass, i.e. initdec)
+        dec_input_dim = 5 if (hp.cond_instructions == 'initdec') else (5 + hp.enc_dim)  # dec_inputs
+        self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
 
         self.models.extend([self.text_embedding, self.enc, self.dec])
         if USE_CUDA:
             for model in self.models:
                 model.cuda()
-
-
-        # TODO: Initial test test with importing weights didn't help
-        instruction_gen_fp = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/model.pt'
-        weights = torch.load(instruction_gen_fp)
-        self.text_embedding.weight = nn.Parameter(weights['token_embedding.weight'])
-
 
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
@@ -72,7 +69,7 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
             categories (str
             shuffle (bool)
         """
-        ds = SketchWithPlansDataset(hp.dataset, dataset_split)
+        ds = SketchWithPlansDataset(hp.dataset, dataset_split, instruction_set=self.hp.instruction_set)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                             collate_fn=ProgressionPairDataset.collate_fn)
         return loader
@@ -113,15 +110,17 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
         dec_inputs = torch.cat([sos, strokes], dim=0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
 
         # Method 1: concatenate instruction embedding to every time step
-        hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-        hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
-        dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+        if self.hp.cond_instructions == 'decinputs':
+            hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
+            hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
+            dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
+            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
-        # # Method 2: initialize decoder's hidden state with instruction embedding
-        # hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-        # hidden_cell = (hidden, hidden.clone())
-        # pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
+        # Method 2: initialize decoder's hidden state with instruction embedding
+        elif self.hp.cond_instructions == 'initdec':
+            hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
+            hidden_cell = (hidden, hidden.clone())
+            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
 
         # Calculate losses
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)

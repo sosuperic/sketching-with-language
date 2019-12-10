@@ -96,7 +96,7 @@ def check_gpus_and_run(cmd):
     if len(available_gpu_ids) > 0:
         gpu_id = available_gpu_ids[0]
         print(f'Running: {cmd}')
-        subprocess.Popen(cmd)
+        subprocess.Popen(cmd, shell=True)
         return True
     else:
         return False
@@ -150,11 +150,12 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
     # "Queue" the rest
     # let programs start running and utilize the GPU. Some take a long time to initialize the dataset...
     # print('Queueing the rest:')
-    time.sleep(prequeue_sleep_secs)
+    # time.sleep(prequeue_sleep_secs)
     for i, combo in enumerate(queued_combos):
-        gpu_id = system_gpu_ids[i % system_gpu_ids]
+        gpu_id = system_gpu_ids[i % len(system_gpu_ids)]
         cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
-        check_gpus_and_run(cmd)
+        subprocess.Popen(cmd, shell=True)
+        # check_gpus_and_run(cmd)
         # schedule.every(check_queue_every_nmin).minutes.do(check_gpus_and_run, cmd=cmd)
         # TODO: schedule
 
