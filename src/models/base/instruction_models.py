@@ -13,9 +13,10 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 
 from src import utils
-from src.data_manager.quickdraw import  LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
+from src.data_manager.quickdraw import  QUICKDRAW_DATA_PATH, \
+    LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     build_category_index, normalize_strokes, stroke3_to_stroke5
-from src.models.core import nn_utils
+from src.models.core import nn_utils, transformer_utils
 
 
 LABELED_PROGRESSION_PAIRS_TRAIN_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'train.pkl'
@@ -27,6 +28,7 @@ LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'tok
 LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2cat.pkl'
 LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2idx.pkl'
 
+SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
 
 ##############################################################################
 #
@@ -264,11 +266,113 @@ class ProgressionPairDataset(Dataset):
         return batch_strokes, stroke_lens, \
             texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
+#
+# Dataset for two-stage models
+#
+class SketchWithPlansDataset(Dataset):
+    def __init__(self, dataset='progressionpair', dataset_split='train'):
+        """
+        Args:
+            dataset (str): 'progressionpair'
+        """
+        self.dataset = dataset
+        self.dataset_split = dataset_split
+        if dataset == 'progressionpair':
+            self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True)
+            plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
+
+        # Load plans (i.e. segmentations)
+        self.id_to_plans = self.load_greedy_segmentation_plans(plans_dir)
+
+    def load_greedy_segmentation_plans(self, plans_dir):
+        """
+        Return dict from example id (id originally found in ndjson files) to json of instruction tree plans
+        produced by a trained InstructionGen model in segmentation.py.
+
+        Args:
+            plans_dir (str)
+        """
+        id_to_plans = {}
+        for fn in os.listdir(plans_dir):
+            if fn.endswith('json'):
+                fp = os.path.join(plans_dir, fn)
+                category, id = fn.replace('.json', '').split('_')
+                plans = utils.load_file(fp)
+                id_to_plans[id] = plans
+        return id_to_plans
+
+    def __len__(self):
+        return len(self.ds.data)
+
+    def __getitem__(self, idx):
+        stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
+        id = self.ds.data[idx]['id']
+        plans = self.id_to_plans[id]
+        text = plans[0]['text']  # 0 = toplevel instruction
+        text_indices = map_sentence_to_index(text, self.ds.token2idx)
+
+        return (stroke5, text, text_indices, cat, cat_idx, url)
+
 ##############################################################################
 #
 # MODEL
 #
 ##############################################################################
+
+class InstructionEncoderTransformer(nn.Module):
+    def __init__(self,
+                 hidden_dim, num_layers=1, dropout=0,
+                 use_categories=False):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.use_categories = use_categories
+
+        enc_layer = nn.TransformerEncoderLayer(
+            hidden_dim, 2, dim_feedforward=hidden_dim * 4, dropout=dropout, activation='gelu'
+        )
+        self.enc = nn.TransformerEncoder(enc_layer, num_layers)
+
+        if use_categories:
+            self.dropout_mod = nn.Dropout(dropout)
+            self.instruction_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
+
+    def forward(self,
+                text_indices, text_lens, text_embedding,
+                category_embedding=None, categories=None):
+        """
+        Args:
+            text_indices:  [max_len, bsz]
+            text_lens: [bsz]
+            text_embedding: nn.Embedding(vocab_size, dim)
+            category_embedding: nn.Embedding(n_categories, dim)
+            categories: [bsz] LongTensor
+
+        Returns:
+            hidden: [bsz, dim]
+        """
+        bsz = text_indices.size(1)
+
+        text_embs = text_embedding(text_indices)  # [len, bsz, dim]
+
+        # if self.use_categories:
+        #     cats_emb =  category_embedding(categories)  # [bsz, dim]
+        #     cats_emb = self.dropout_mod(cats_emb)
+        #     instructions = torch.cat([instructions, cats_emb.repeat(instructions.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
+        #     instructions = self.instruction_cat_fc(instructions)  # [len, bsz, hidden]
+
+        instructions_pad_mask, _, _ = transformer_utils.create_transformer_padding_masks(src_lens=text_lens)
+        memory = self.enc(text_embs, src_key_padding_mask=instructions_pad_mask)  # [len, bsz, dim]
+
+        hidden = []
+        for i in range(bsz):  # TODO: what is a tensor op to do this?
+            item_len = text_lens[i]
+            item_emb = memory[:item_len,i,:].mean(dim=0)  # [dim]
+            hidden.append(item_emb)
+        hidden = torch.stack(hidden, dim=0)  # [bsz, dim]
+
+        return hidden
 
 class InstructionDecoderLSTM(nn.Module):
     def __init__(self,
