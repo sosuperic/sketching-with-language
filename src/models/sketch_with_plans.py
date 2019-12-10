@@ -39,6 +39,8 @@ class HParams(SketchRNNHParams):
         self.enc_dim = 512
         self.dec_dim = 512  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
 
+        self.grad_accum_steps = 1
+
 class SketchRNNWithTopLevelInstruction(SketchRNNModel):
     """"
     SketchRNN that also encodes and conditions on top-level instruction (i.e. instruction for entire

@@ -49,8 +49,8 @@ class HParams():
         self.max_epochs = 100
 
         # Model
-        self.model_type = 'vae'  # 'vae', 'decodergmm', 'decoderlstm'
-        self.enc_dim = 256  # 512
+        self.model_type = 'decodergmm'  # 'vae', 'decodergmm', 'decoderlstm'
+        self.enc_dim = 512  # 512
         self.dec_dim = 512  # 2048
         self.enc_num_layers = 1  # 2
         self.z_dim = 128  # dimension of z for VAE
