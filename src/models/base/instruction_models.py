@@ -292,7 +292,7 @@ class SketchWithPlansDataset(Dataset):
             plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
 
         # Load plans (i.e. segmentations)
-        self.id_to_plans = self.load_greedy_segmentation_plans(plans_dir)
+        self.id_to_plan = self.load_greedy_segmentation_plans(plans_dir)
 
     def load_greedy_segmentation_plans(self, plans_dir):
         """
@@ -302,22 +302,36 @@ class SketchWithPlansDataset(Dataset):
         Args:
             plans_dir (str)
         """
-        id_to_plans = {}
+        id_to_plan = {}
         for fn in os.listdir(plans_dir):
             if fn.endswith('json'):
                 fp = os.path.join(plans_dir, fn)
                 category, id = fn.replace('.json', '').split('_')
                 plans = utils.load_file(fp)
-                id_to_plans[id] = plans
-        return id_to_plans
+                id_to_plan[id] = plans
+        return id_to_plan
 
     def __len__(self):
         return len(self.ds.data)
 
+class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
+    """
+    ConditionEntireDrawing refers to how this dataset will be used. The instructions provided
+    will be used embedded once and used for the entire drawing. This is in contrast to
+    SketchWithPlansConditionSegmentsDataset, where segments of the drawing are conditioned
+    on different stacks of instructions.
+    """
+    def __init__(self,
+                 dataset='progressionpair',
+                 dataset_split='train',
+                 instruction_set='toplevel'
+                 ):
+        super().__init__(dataset=dataset, dataset_split=dataset_split, instruction_set=instruction_set)
+
     def __getitem__(self, idx):
         stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
         id = self.ds.data[idx]['id']
-        plans = self.id_to_plans[id]
+        plans = self.id_to_plan[id]
 
         if self.instruction_set == 'toplevel':
             text = plans[0]['text']  # 0 = toplevel instruction
@@ -333,6 +347,105 @@ class SketchWithPlansDataset(Dataset):
                     text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.ds.token2idx)
 
         return (stroke5, text, text_indices, cat, cat_idx, url)
+
+
+class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
+    """
+    ConditionSegments refers to how each segment in the sketch model will be conditioned
+    on a different stack of instructions, the stack being from leaf to root in the
+    instruction tree.
+    """
+    def __init__(self,
+                 dataset='progressionpair',
+                 dataset_split='train',
+                 instruction_set='stack'
+                 ):
+        super().__init__(dataset=dataset, dataset_split=dataset_split, instruction_set=instruction_set)
+
+    def __getitem__(self, idx):
+        stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
+
+        id = self.ds.data[idx]['id']
+        plan = self.id_to_plan[id]
+        stacks = self.get_stacks(plan)
+
+        # pen_up is indices of end-of-segment points in drawings
+        pen_up = np.where(stroke5[:,3] == 1)[0].tolist()
+        pen_up = [0] + pen_up
+        segs = []
+        for i in range(len(pen_up) - 1):
+            start_idx = pen_up[i]
+            end_idx = pen_up[i+1]
+            seg = stroke5[start_idx:end_idx+1]
+            segs.append(seg)
+
+        # Each sample corresponds to a bach of segments basically
+        # TODO: this is the same thing as the collate_fn for ProgressionPair. Could / should refactor
+        bsz = len(segs)
+
+        # Create array of segments, zeros for padding
+        seg_lens = [seg.shape[0] for seg in segs]
+        max_seg_len = max(seg_lens)
+        batch_segs = np.zeros((bsz, max_seg_len, 5))
+        for i, seg in enumerate(segs):
+            l = seg.shape[0]
+            batch_segs[i,:l,:] = seg
+
+        # Create array of text indices, zeros for padding
+        stacks_indices = {}
+        texts = []
+        for key, stack in stacks.items():
+            # TODO: join with a separator token?
+            text = ' '.join(stack)
+            texts.append(text)
+            stacks_indices[key] = map_sentence_to_index(text,  self.ds.token2idx)
+
+        text_lens = [len(indices) for indices in stacks_indices.values()]
+        max_text_len = max(text_lens)
+        batch_text_indices = np.zeros((bsz, max_text_len))
+        for key, text_indices in stacks_indices.items():
+            l = len(text_indices)
+            batch_text_indices[i,:l] = text_indices
+
+        # Convert to Tensors and expand to batch size
+        batch_segs = torch.FloatTensor(batch_segs)
+        batch_text_indices = torch.LongTensor(batch_text_indices)
+        cats_idx = torch.LongTensor([cat_idx for _ in range(bsz)])
+
+        cats = [cat for _ in range(bsz)]
+        urls = [url for _ in range(bsz)]
+
+        return batch_segs, seg_lens, \
+            texts, text_lens, batch_text_indices, cats, cats_idx, urls
+
+    @staticmethod
+    def collate_fn_bszone(batch):
+        """
+        'Dummy' collate_fn. Batching is done in __getitem__ essentially.
+        """
+        return batch[0]
+
+    def get_stacks(self, plan):
+        """
+        Args:
+            plan (list of dicts): instruction tree
+
+        Returns:
+            dict:
+                key: tuples (left, right)
+                value: list of texts (stack of instructions)
+        """
+        # initialize stacks. each stack is a list, one stack per segment
+        stacks = {}
+        for left in range(plan[0]['right']):
+            stacks[(left, left+1)] = []
+
+        for i, subplan in enumerate(plan):
+            # add this subplan to all relevant stacks
+            for left in range(subplan['left'], subplan['right']):
+                stacks[(left, left+1)].append(subplan['text'])
+
+        return stacks
 
 ##############################################################################
 #

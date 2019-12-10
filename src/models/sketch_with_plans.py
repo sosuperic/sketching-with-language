@@ -19,7 +19,8 @@ from src.models.core import nn_utils
 from src.models.core.train_nn import RUNS_PATH, TrainNN
 from src.models.base.instruction_models import (
     ProgressionPairDataset,
-    SketchWithPlansDataset,
+    SketchWithPlansConditionEntireDrawingDataset,
+    SketchWithPlansConditionSegmentsDataset,
     InstructionEncoderTransformer,
     LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH
 )
@@ -34,7 +35,7 @@ USE_CUDA = torch.cuda.is_available()
 class HParams(SketchRNNHParams):
     def __init__(self):
         super().__init__()
-        self.instruction_set = 'toplevel'  # 'toplevel_leaves'
+        self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
         self.cond_instructions = 'initdec'  # 'initdec', 'decinputs'
         self.enc_dim = 512
         self.dec_dim = 512  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
@@ -71,9 +72,14 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
             categories (str
             shuffle (bool)
         """
-        ds = SketchWithPlansDataset(hp.dataset, dataset_split, instruction_set=self.hp.instruction_set)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                            collate_fn=ProgressionPairDataset.collate_fn)
+        if self.hp.instruction_set in ['initdec', 'decinputs']:
+            ds = SketchWithPlansConditionEntireDrawingDataset(hp.dataset, dataset_split, instruction_set=self.hp.instruction_set)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                collate_fn=ProgressionPairDataset.collate_fn)
+        elif self.hp.instruction_set in ['stack']:
+            ds = SketchWithPlansConditionSegmentsDataset(hp.dataset, dataset_split, instruction_set=self.hp.instruction_set)
+            loader = DataLoader(ds, batch_size=1, shuffle=shuffle, collate_fn=SketchWithPlansConditionSegmentsDataset.collate_fn_bszone)
+
         return loader
 
     def preprocess_batch_from_data_loader(self, batch):
@@ -148,7 +154,7 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
 if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
-    parser.add_argument('--groupname', help='name of subdir to save runs')
+    parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 

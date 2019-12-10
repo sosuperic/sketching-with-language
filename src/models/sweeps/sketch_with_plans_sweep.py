@@ -4,7 +4,9 @@
 Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --instruction_set toplevel
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --instruction_set toplevel_leaves
+    PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --instruction_set stack
 """
+
 
 import argparse
 import copy
@@ -31,6 +33,12 @@ GRID_1['instruction_set'] = ['toplevel']
 GRID_2 = copy.deepcopy(BASE_GRID)
 GRID_2['instruction_set'] = ['toplevel_leaves']
 
+GRID_3 = copy.deepcopy(BASE_GRID)
+GRID_3['instruction_set'] = ['stack']
+GRID_3['grad_accum_steps'] = [
+    '64 --batch_size 1',
+]
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--instruction_set')
@@ -42,6 +50,8 @@ if __name__ == "__main__":
         grid = GRID_1
     elif args.instruction_set == 'toplevel_leaves':
         grid = GRID_2
+    elif args.instruction_set == 'stack':
+        grid = GRID_3
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_secs=10, check_queue_every_nmin=10)
