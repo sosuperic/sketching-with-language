@@ -5,6 +5,7 @@ Functions to run, manage, analyze experiments
 
 Usage:
     python src/models/core/experiments.py -mvd runs/sketchrnn
+    python src/models/core/experiments.py -mvd runs/sketchwplans/stack
 """
 
 import argparse

@@ -115,8 +115,11 @@ class ProgressionPairDataset(Dataset):
                  dataset_split,
                  use_prestrokes=False,
                  use_full_drawings=False,
+                 max_length=None,
                  ):
         """
+        TODO: should add a maximum length
+
         Annotated dataset of segments of drawings.
 
         Args:
@@ -140,6 +143,10 @@ class ProgressionPairDataset(Dataset):
         if not os.path.exists(fp):  # create splits and vocab first time
             save_progression_pair_dataset_splits_and_vocab()
         data = utils.load_file(fp)
+
+        # filter
+        if max_length:
+            data = [d for d in data if (len(d['stroke3']) <= max_length)]
 
         # Load vocab and category mappings
         self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
@@ -288,7 +295,7 @@ class SketchWithPlansDataset(Dataset):
         self.instruction_set = instruction_set
 
         if dataset == 'progressionpair':
-            self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True)
+            self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=200)
             plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
 
         # Load plans (i.e. segmentations)
@@ -369,61 +376,111 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
         plan = self.id_to_plan[id]
         stacks = self.get_stacks(plan)
 
-        # pen_up is indices of end-of-segment points in drawings
-        pen_up = np.where(stroke5[:,3] == 1)[0].tolist()
-        pen_up = [0] + pen_up
-        segs = []
-        for i in range(len(pen_up) - 1):
-            start_idx = pen_up[i]
-            end_idx = pen_up[i+1]
-            seg = stroke5[start_idx:end_idx+1]
-            segs.append(seg)
-
-        # Each sample corresponds to a bach of segments basically
-        # TODO: this is the same thing as the collate_fn for ProgressionPair. Could / should refactor
-        bsz = len(segs)
-
-        # Create array of segments, zeros for padding
-        seg_lens = [seg.shape[0] for seg in segs]
-        max_seg_len = max(seg_lens)
-        batch_segs = np.zeros((bsz, max_seg_len, 5))
-        for i, seg in enumerate(segs):
-            l = seg.shape[0]
-            batch_segs[i,:l,:] = seg
-
-        # Create array of text indices, zeros for padding
-        stacks_indices = {}
-        texts = []
-        for key, stack in stacks.items():
-            # TODO: join with a separator token?
-            text = ' '.join(stack)
-            texts.append(text)
-            stacks_indices[key] = map_sentence_to_index(text,  self.ds.token2idx)
-
-        text_lens = [len(indices) for indices in stacks_indices.values()]
-        max_text_len = max(text_lens)
-        batch_text_indices = np.zeros((bsz, max_text_len))
-        for key, text_indices in stacks_indices.items():
-            l = len(text_indices)
-            batch_text_indices[i,:l] = text_indices
-
-        # Convert to Tensors and expand to batch size
-        batch_segs = torch.FloatTensor(batch_segs)
-        batch_text_indices = torch.LongTensor(batch_text_indices)
-        cats_idx = torch.LongTensor([cat_idx for _ in range(bsz)])
-
-        cats = [cat for _ in range(bsz)]
-        urls = [url for _ in range(bsz)]
-
-        return batch_segs, seg_lens, \
-            texts, text_lens, batch_text_indices, cats, cats_idx, urls
+        return (stroke5, stacks, cat, cat_idx, url)
 
     @staticmethod
-    def collate_fn_bszone(batch):
+    def collate_fn(batch, token2idx=None):
         """
-        'Dummy' collate_fn. Batching is done in __getitem__ essentially.
+        Note: this is similar to ProgressionPair's collate_fn
+
+        Args:
+            batch: list of items from __getitem__(idx)
+            token2idx: passed in using functools.partial
+
+        Returns:
+            batch_strokes ([bsz, max_seq_len, 5])
+            ...
+            batch_text_indices, ([bsz, max_seq_len, max_instruction_len])
+            batch_text_lens ([bsz, max_seq_len]):
+                length of each instruction stack
+            batch_texts (list of lists): just used for debugging
+            ...
         """
-        return batch[0]
+        strokes, stacks, cats, cats_idx, urls = zip(*batch)  # each is a list
+        bsz = len(batch)
+        sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
+
+        #
+        # Create array of strokes, zeros for padding
+        #
+        stroke_lens = [stroke.shape[0] for stroke in strokes]
+        max_stroke_len = max(stroke_lens)
+        batch_strokes = np.zeros((bsz, max_stroke_len, sample_dim))
+        for i, stroke in enumerate(strokes):
+            l = stroke.shape[0]
+            batch_strokes[i,:l,:] = stroke
+
+        #
+        # Create array for instructions (vocab indices)
+        #
+
+        # First, get a) the maximum instruction length, b) the instruction vocab indices,
+        # c) the instruction lengths
+        max_text_len = -1
+        batch_text_indices_list = []  # list of lists of lists
+        batch_text_lens_list = []  # list of lists
+        batch_texts = []
+        for i in range(bsz):  # for each drawing
+            drawing_text_indices = []
+            drawing_text_lens = []
+            drawing_texts = []
+            for key, stack in stacks[i].items():
+                # key is left and right indices denoting one segment, i.e. (2,3)
+                # stack is a list of strings starting from the top-level instruction
+                text = ' '.join(stack)  # TODO: use a separator token?
+                text_indices = map_sentence_to_index(text, token2idx)
+                if len(text_indices) == 0:  # TODO: this is kind of hacky... few instructions may be empty string?
+                    text_indices = [EOS_ID]
+
+                text_len = len(text_indices)
+                max_text_len = max(max_text_len, text_len)
+                drawing_text_indices.append(text_indices)
+                drawing_text_lens.append(text_len)
+                drawing_texts.append(text)
+            batch_text_indices_list.append(drawing_text_indices)
+            batch_text_lens_list.append(drawing_text_lens)
+            batch_texts.append(drawing_texts)
+
+        # Next, convert text_indices to an array
+        batch_text_indices = np.zeros((bsz, max_stroke_len, max_text_len))
+        batch_text_lens = np.zeros((bsz, max_stroke_len))
+        batch_text_lens.fill(1)
+        # NOTE: lengths are filled with 1. This simply avoids having 0's, even
+        # for the padding elements (i.e. beyond the length of drawing i).
+        # This is a bit of a hack because otherwise nans are produced with the
+        # transformer encoder module. Functionaly, it shouldn't matter because
+        # extra values produced for the additional padding timesteps are
+        # ignored by the decoder -- in a nn.LSTM case, using the pack_padded_sequence
+        # to take in the lengths; in the GMMDecoder, by masking out the targets.
+        for i in range(bsz):
+            # Break drawing into segments so that we can map instruction stacks to
+            # corresponding part in drawing.
+            stroke = strokes[i]
+            pen_up = np.where(stroke[:,3] == 1)[0].tolist()  # use this to
+            pen_up = [0] + pen_up
+
+            # keep track of which segment we're currently in. There are as many
+            # stacks as there are segments.
+            cur_seg_idx = 0
+            for j in range(len(stroke)):
+                cur_seg_end = pen_up[cur_seg_idx + 1]
+                if (j > cur_seg_end):
+                    cur_seg_idx += 1
+
+                stack_text_indices = batch_text_indices_list[i][cur_seg_idx]
+                batch_text_indices[i,j,:len(stack_text_indices)] = stack_text_indices
+
+                # update length
+                batch_text_lens[i,j] = batch_text_lens_list[i][cur_seg_idx]
+
+        # Convert to appropriate data format
+        batch_strokes = torch.FloatTensor(batch_strokes)
+        batch_text_indices = torch.LongTensor(batch_text_indices)
+        batch_text_lens = torch.LongTensor(batch_text_lens)
+        cats_idx = torch.LongTensor(cats_idx)
+
+        return batch_strokes, stroke_lens, \
+            batch_texts, batch_text_lens, batch_text_indices, cats, cats_idx, urls
 
     def get_stacks(self, plan):
         """

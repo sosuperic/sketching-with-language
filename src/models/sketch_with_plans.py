@@ -2,9 +2,11 @@
 
 """
 Usage:
-    PYTHONPATH=. python src/models/sketch_with_plans.py --groupname test --instruction_set toplevel_leaves
+    PYTHONPATH=. python src/models/sketch_with_plans.py --instruction_set toplevel_leaves
+    PYTHONPATH=. python src/models/sketch_with_plans.py --instruction_set stack
 """
 
+from functools import partial
 import os
 from os.path import abspath
 
@@ -50,6 +52,9 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
 
+        if hp.instruction_set == 'stack':
+            assert hp.cond_instructions == 'decinputs'
+
         # Model
         vocab_size = len(utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH))
         self.text_embedding = nn.Embedding(vocab_size, hp.enc_dim)
@@ -78,8 +83,8 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
                                 collate_fn=ProgressionPairDataset.collate_fn)
         elif self.hp.instruction_set in ['stack']:
             ds = SketchWithPlansConditionSegmentsDataset(hp.dataset, dataset_split, instruction_set=self.hp.instruction_set)
-            loader = DataLoader(ds, batch_size=1, shuffle=shuffle, collate_fn=SketchWithPlansConditionSegmentsDataset.collate_fn_bszone)
-
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                collate_fn=partial(SketchWithPlansConditionSegmentsDataset.collate_fn, token2idx=ds.ds.token2idx))
         return loader
 
     def preprocess_batch_from_data_loader(self, batch):
@@ -107,30 +112,59 @@ class SketchRNNWithTopLevelInstruction(SketchRNNModel):
         """
         strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls = batch
 
-        # Encode instructions
-        hidden = self.enc(text_indices, text_lens, self.text_embedding,
-                          category_embedding=None, categories=cats_idx)  # [bsz, dim]
-
-        # Create inputs to decoder
+        # Create base inputs to decoder
         _, bsz, _ = strokes.size()
         sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # start of sequence
         sos = nn_utils.move_to_cuda(sos)
         dec_inputs = torch.cat([sos, strokes], dim=0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
 
-        # Method 1: concatenate instruction embedding to every time step
-        if self.hp.cond_instructions == 'decinputs':
-            hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-            hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
+        #
+        # Encode instructions, decode
+        #
+        if self.hp.instruction_set == 'stack':
+            # text_indices: [max_seq_len, bsz, max_instruction_len], # text_lens: [max_seq_len, bsz]
+            max_seq_len = strokes.size(0)
+            hidden = []
+            for i in range(max_seq_len):
+                drawing_text_indices = text_indices[i].t()               # [max_instruction_len, bsz]
+                drawing_text_lens = text_lens[i].cpu().numpy().tolist()  # [bsz]
+                # however, max_instruction_len is max across all drawings. Transformer encoder module
+                # must have input length equal to maximum length. Thus, do the following:
+                drawing_text_indices = drawing_text_indices[:max(drawing_text_lens),:]
+                hidden_i = self.enc(drawing_text_indices,
+                                    drawing_text_lens,
+                                    self.text_embedding,
+                                    category_embedding=None, categories=cats_idx)  # [bsz, dim]
+                hidden.append(hidden_i)
+            hidden = torch.stack(hidden)  # [max_seq_len, bsz, dim]
+
+            # Concat stack of instructions (which occur at every time step) to dec_inputs
+            hidden = torch.cat([hidden[0].unsqueeze(0), hidden], dim=0)  # sos adds a timestep
             dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
-        # Method 2: initialize decoder's hidden state with instruction embedding
-        elif self.hp.cond_instructions == 'initdec':
-            hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-            hidden_cell = (hidden, hidden.clone())
-            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
+        elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
+            # Encode instructions
+            # text_indices: [len, bsz], text_lens: [bsz]
+            hidden = self.enc(text_indices, text_lens, self.text_embedding,
+                              category_embedding=None, categories=cats_idx)  # [bsz, dim]
 
+            # Method 1: concatenate instruction embedding to every time step
+            if self.hp.cond_instructions == 'decinputs':
+                hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
+                hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
+                dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
+                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+
+            # Method 2: initialize decoder's hidden state with instruction embedding
+            elif self.hp.cond_instructions == 'initdec':
+                hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
+                hidden_cell = (hidden, hidden.clone())
+                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
+
+        #
         # Calculate losses
+        #
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
 
         loss = self.dec.reconstruction_loss(mask,

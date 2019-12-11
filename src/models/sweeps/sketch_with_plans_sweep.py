@@ -18,7 +18,10 @@ NGPUS_PER_RUN = 1
 
 BASE_GRID = {
     'cond_instructions': ['initdec', 'decinputs'],
-    'lr': [0.0005, 0.0001],
+    'lr': [
+        0.0005,
+        0.0001,
+    ],
     'enc_dim': [
         '256 --dec_dim 256',
         '512 --dec_dim 512',
@@ -28,16 +31,31 @@ BASE_GRID = {
 }
 
 GRID_1 = copy.deepcopy(BASE_GRID)
-GRID_1['instruction_set'] = ['toplevel']
+GRID_1.update({
+    'instruction_set': ['toplevel'],
+})
 
 GRID_2 = copy.deepcopy(BASE_GRID)
-GRID_2['instruction_set'] = ['toplevel_leaves']
+GRID_2.update({
+    'instruction_set': ['toplevel_leaves'],
+})
 
 GRID_3 = copy.deepcopy(BASE_GRID)
-GRID_3['instruction_set'] = ['stack']
-GRID_3['grad_accum_steps'] = [
-    '64 --batch_size 1',
-]
+GRID_3.update({
+    'instruction_set': ['stack'],
+    'cond_instructions': ['decinputs'],
+    'lr': [
+        0.001,
+        0.0005,
+        0.0001,
+    ],
+    'enc_dim': [
+        '32 --batch_size 32 --dec_dim 256',
+        '64 --batch_size 16 --dec_dim 256',
+        '64 --batch_size 16 --dec_dim 512',
+        '128 --batch_size 16 --dec_dim 256',
+    ],
+})
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
