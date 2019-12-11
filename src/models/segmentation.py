@@ -20,9 +20,9 @@ from torch.utils.data import DataLoader
 
 from src import utils
 from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, \
-    create_progression_image_from_ndjson_seq
+    create_progression_image_from_ndjson_seq, SEGMENTATIONS_PATH
 from src.models.base.stroke_models import NdjsonStrokeDataset
-from src.models.base.instruction_models import ProgressionPairDataset, SEGMENTATIONS_PATH
+from src.models.base.instruction_models import ProgressionPairDataset
 from src.models.core import nn_utils
 from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
 

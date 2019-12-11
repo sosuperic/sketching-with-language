@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 
 from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories, \
-    ndjson_drawings, ndjson_to_stroke3
+    ndjson_drawings, ndjson_to_stroke3, SEGMENTATIONS_PATH
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
 
@@ -68,15 +68,16 @@ class StrokeDataset(Dataset):
         stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
         return stroke5, stroke_len, category, cat_idx
 
-        # TODO: do I need to write my own collate_fn like in InstructionGen?
-
 class NdjsonStrokeDataset(StrokeDataset):
     """
     Load from the simplified_ndjson files
     """
-    def __init__(self, categories, dataset_split, max_len=200, max_per_category=70000):
+    def __init__(self, categories, dataset_split, max_len=200, max_per_category=70000, must_have_instruction_tree=False):
+        self.categories = categories
         self.dataset_split = dataset_split
         self.max_len = max_len
+        self.max_per_category = max_per_category
+        self.must_have_instruction_tree = must_have_instruction_tree
 
         if categories == 'all':
             self.categories = final_categories()
@@ -90,19 +91,27 @@ class NdjsonStrokeDataset(StrokeDataset):
         self.max_len_in_data = 0
         n_cats = len(self.categories)
         for i, category in enumerate(self.categories):
-            print(f'Loading {category} {i+1}/{n_cats}')
+            # print(f'Loading {category} {i+1}/{n_cats}')
             drawings = ndjson_drawings(category)
             drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
-            for i, d in enumerate(drawings):
-                if i == max_per_category:
-                    break
 
+            cat_n_drawings = 0
+            for d in drawings:
+                if cat_n_drawings == max_per_category:
+                    break
                 id, ndjson_strokes = d['key_id'], d['drawing']
+
+                if must_have_instruction_tree:  # example must have an instruction tree generated
+                    instruction_tree_fp = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson' / category / f'{id}.json'
+                    if not os.path.exists(instruction_tree_fp):
+                        continue
+
                 stroke3 = ndjson_to_stroke3(ndjson_strokes)  # convert to stroke3 format
                 sample_len = stroke3.shape[0]
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category,
                                   'id': id, 'ndjson_strokes': ndjson_strokes})
+                cat_n_drawings += 1
 
         self.data = self.filter_and_clean_data(full_data)
         self.data = normalize_strokes(self.data)

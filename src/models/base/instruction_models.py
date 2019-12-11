@@ -15,7 +15,8 @@ import torch.nn.functional as F
 from src import utils
 from src.data_manager.quickdraw import  QUICKDRAW_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
-    build_category_index, normalize_strokes, stroke3_to_stroke5
+    build_category_index, normalize_strokes, stroke3_to_stroke5, SEGMENTATIONS_PATH
+from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.core import nn_utils, transformer_utils
 
 
@@ -28,7 +29,6 @@ LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'tok
 LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2cat.pkl'
 LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2idx.pkl'
 
-SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
 
 ##############################################################################
 #
@@ -115,7 +115,7 @@ class ProgressionPairDataset(Dataset):
                  dataset_split,
                  use_prestrokes=False,
                  use_full_drawings=False,
-                 max_length=None,
+                 max_length=200,
                  ):
         """
         TODO: should add a maximum length
@@ -279,29 +279,58 @@ class ProgressionPairDataset(Dataset):
 class SketchWithPlansDataset(Dataset):
     def __init__(self,
                  dataset='progressionpair',
+                 max_len=200,
+                 max_per_category=250,  # used with dataset='ndjson'
                  dataset_split='train',
                  instruction_set='toplevel'
                  ):
         """
         Args:
             dataset (str): 'progressionpair'
+            max_len (int): maximum length of drawing
+            max_per_category (int): used when dataset=='ndjson', as there are tens of thousands of examples
+                                    per category
             dataset_split (str): 'train', 'valid', 'test'
             instruction_set (str):
                 'toplevel': only use instruction generated for entire drawing
                 'toplevel_leaves': use toplevel and all leaf instructions
         """
         self.dataset = dataset
+        self.max_len = max_len
+        self.max_per_category = max_per_category
         self.dataset_split = dataset_split
         self.instruction_set = instruction_set
 
+        self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
+
         if dataset == 'progressionpair':
-            self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=200)
-            plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
+            self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=max_len)
+            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
+            self.id_to_plan = self.load_progression_pair_plans(self.plans_dir)
+        elif dataset == 'ndjson':
+            self.ds = NdjsonStrokeDataset('all', dataset_split,
+                                          max_per_category=max_per_category, max_len=max_len, must_have_instruction_tree=True)
+            # we don't pre-load the plans because that would be too much memory
+            # also, the directory is in a different format (no dataset_split)
+            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson'
 
-        # Load plans (i.e. segmentations)
-        self.id_to_plan = self.load_greedy_segmentation_plans(plans_dir)
+    def get_underlying_ds_item(self, idx):
+        """
+        Returns the same data regardless of the dataset.
+        """
+        if self.dataset == 'progressionpair':
+            stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
+            id = self.ds.data[idx]['id']
+            plan = self.id_to_plan[id]
+            return stroke5, cat, cat_idx, url, plan
+        elif self.dataset == 'ndjson':
+            stroke5, _, cat, cat_idx = self.ds.__getitem__(idx)  # _ is stroke_len
+            id = self.ds.data[idx]['id']
+            plan_fp = self.plans_dir / cat / f'{id}.json'
+            plan = utils.load_file(plan_fp)
+            return stroke5, cat, cat_idx, '', plan
 
-    def load_greedy_segmentation_plans(self, plans_dir):
+    def load_progression_pair_plans(self, plans_dir):
         """
         Return dict from example id (id originally found in ndjson files) to json of instruction tree plans
         produced by a trained InstructionGen model in segmentation.py.
@@ -330,28 +359,29 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
     """
     def __init__(self,
                  dataset='progressionpair',
+                 max_len=200,
+                 max_per_category=250,
                  dataset_split='train',
                  instruction_set='toplevel'
                  ):
-        super().__init__(dataset=dataset, dataset_split=dataset_split, instruction_set=instruction_set)
+        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
+                         dataset_split=dataset_split, instruction_set=instruction_set)
 
     def __getitem__(self, idx):
-        stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
-        id = self.ds.data[idx]['id']
-        plans = self.id_to_plan[id]
+        stroke5, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
 
         if self.instruction_set == 'toplevel':
-            text = plans[0]['text']  # 0 = toplevel instruction
-            text_indices = map_sentence_to_index(text, self.ds.token2idx)
+            text = plan[0]['text']  # 0 = toplevel instruction
+            text_indices = map_sentence_to_index(text, self.token2idx)
 
         elif self.instruction_set == 'toplevel_leaves':
-            text = plans[0]['text']
-            text_indices = map_sentence_to_index(text, self.ds.token2idx)
-            for subplan in plans[1:]:
+            text = plan[0]['text']
+            text_indices = map_sentence_to_index(text, self.token2idx)
+            for subplan in plan[1:]:
                 if (subplan['right'] - subplan['left']) == 1:  # leaf
                     # TODO: ideally we should have a different separator token...
                     text += ' SOS ' + subplan['text']
-                    text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.ds.token2idx)
+                    text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
 
         return (stroke5, text, text_indices, cat, cat_idx, url)
 
@@ -364,16 +394,19 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
     """
     def __init__(self,
                  dataset='progressionpair',
+                 max_len=200,
+                 max_per_category=250,
                  dataset_split='train',
                  instruction_set='stack'
                  ):
-        super().__init__(dataset=dataset, dataset_split=dataset_split, instruction_set=instruction_set)
+        super().__init__(dataset=dataset,  max_len=max_len, max_per_category=max_per_category,
+                         dataset_split=dataset_split, instruction_set=instruction_set)
 
     def __getitem__(self, idx):
-        stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
-
-        id = self.ds.data[idx]['id']
-        plan = self.id_to_plan[id]
+        """
+        Note: transformation into text_indices, lengths, etc. is done in collate_fn
+        """
+        stroke5, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
         stacks = self.get_stacks(plan)
 
         return (stroke5, stacks, cat, cat_idx, url)

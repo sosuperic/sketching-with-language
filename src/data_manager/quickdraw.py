@@ -74,6 +74,9 @@ ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'mtur
 LABELED_PROGRESSION_PAIRS_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs'
 LABELED_PROGRESSION_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs' / 'data'
 
+# Segmentations (Instruction trees)
+SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
+
 
 ###################################################################
 #

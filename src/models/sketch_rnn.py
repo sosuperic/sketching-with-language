@@ -37,7 +37,9 @@ USE_CUDA = torch.cuda.is_available()
 class HParams():
     def __init__(self):
         # Data
-        self.dataset = 'progressionpair'  # 'annotated' or 'ndjson'
+        self.dataset = 'progressionpair'  # 'progressionpair' or 'ndjson'
+        self.max_len = 200
+        self.max_per_category = 250
         self.categories = 'cat'  # used with dataset='ndjson', comma separated categories or 'all'
 
         # Training
@@ -82,14 +84,14 @@ class SketchRNNModel(TrainNN):
         super().__init__(hp, save_dir)
 
         self.eta_step = hp.eta_min
-        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, shuffle=True)
-        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, shuffle=False)
-        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, shuffle=True)
+        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, True)
+        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, False)
+        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
 
     #
     # Data
     #
-    def get_data_loader(self, dataset_split, batch_size, categories, shuffle=True):
+    def get_data_loader(self, dataset_split, batch_size, categories, max_len, max_per_category, shuffle):
         """
         Args:
             dataset_split (str): 'train', 'valid', 'test'
@@ -98,12 +100,13 @@ class SketchRNNModel(TrainNN):
             shuffle (bool)
         """
         if self.hp.dataset == 'ndjson':
-            ds = NdjsonStrokeDataset(categories, dataset_split, self.hp.max_len)
+            ds = NdjsonStrokeDataset(categories, dataset_split, max_len=max_len, max_per_category=max_per_category,
+                                     must_have_instruction_tree=True)  # must_have...=True for fair comparison with planning models
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         elif self.hp.dataset == 'progressionpair':
             # We are using the ProgressionPair dataset, which has segments annotated.
             # In this case, we aren't using the segments or the instructions. We are using the full strokes.
-            ds = ProgressionPairDataset(dataset_split, use_full_drawings=True)
+            ds = ProgressionPairDataset(dataset_split, use_full_drawings=True, max_length=max_len)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn_strokes_categories_only)
         return loader
@@ -533,7 +536,7 @@ class SketchRNNVAEModel(SketchRNNModel):
 if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
-    parser.add_argument('--groupname', help='name of subdir to save runs')
+    parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 

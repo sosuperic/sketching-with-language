@@ -17,7 +17,13 @@ CMD = 'PYTHONPATH=. python src/models/sketch_with_plans.py'
 NGPUS_PER_RUN = 1
 
 BASE_GRID = {
-    'cond_instructions': ['initdec', 'decinputs'],
+    'dataset': [
+        'ndjson --max_per_category 2500'
+    ],
+    'cond_instructions': [
+        'initdec',
+        'decinputs'
+    ],
     'lr': [
         0.0005,
         0.0001,
@@ -60,9 +66,10 @@ GRID_3.update({
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--instruction_set')
+    parser.add_argument('--groupname')
     args = parser.parse_args()
 
-    base_cmd = CMD + f' --groupname {args.instruction_set}'
+    base_cmd = CMD + f' --groupname {args.groupname}'
 
     if args.instruction_set == 'toplevel':
         grid = GRID_1

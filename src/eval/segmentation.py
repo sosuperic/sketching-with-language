@@ -8,7 +8,7 @@ Treant: https://fperucic.github.io/treant-js/
 """
 import os
 
-from src.models.segmentation import SEGMENTATIONS_PATH
+from src.data_manager.quickdraw import SEGMENTATIONS_PATH
 import src.utils as utils
 
 def convert_all_segmentations_to_treants(seg_dir):

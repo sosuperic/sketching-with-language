@@ -13,16 +13,23 @@ CMD = 'PYTHONPATH=. python src/models/sketch_rnn.py'
 NGPUS_PER_RUN = 1
 
 GRID = {
+    # Data
+    'dataset': [
+        'ndjson --max_per_category 2500',
+    ],
+    # Model
     'model_type': ['decodergmm'],
-    'dataset': ['progressionpair'],
-    'lr': [0.0005, 0.0001],
-    # 'enc_dim': ['256 --dec_dim 512', '512 --dec_dim 2048'],
     'enc_dim': [
         '256 --dec_dim 256',
         '512 --dec_dim 512',
-        '1024 --dec_dim 1024',
-        '2048 --dec_dim 2048'
-        ],
+        # '1024 --dec_dim 1024',
+        # '2048 --dec_dim 2048'
+    ],
+    # Training
+    'lr': [
+        0.0005,
+        0.0001
+    ],
 }
 
 if __name__ == "__main__":
