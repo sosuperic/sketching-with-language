@@ -18,13 +18,18 @@ NGPUS_PER_RUN = 1
 
 BASE_GRID = {
     'dataset': [
-        'ndjson --max_per_category 2500'
+        'ndjson'
+    ],
+    'max_per_category': [
+        # 250,
+        2500,
     ],
     'cond_instructions': [
         'initdec',
         'decinputs'
     ],
     'lr': [
+        # 0.001,
         0.0005,
         0.0001,
     ],
@@ -65,11 +70,9 @@ GRID_3.update({
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--instruction_set')
-    parser.add_argument('--groupname')
+    parser.add_argument('--instruction_set', default=None)
+    parser.add_argument('--groupname', default=None)
     args = parser.parse_args()
-
-    base_cmd = CMD + f' --groupname {args.groupname}'
 
     if args.instruction_set == 'toplevel':
         grid = GRID_1
@@ -77,6 +80,12 @@ if __name__ == "__main__":
         grid = GRID_2
     elif args.instruction_set == 'stack':
         grid = GRID_3
+
+    groupname = args.groupname
+    if groupname is None:
+        # Assumes one dataset and one max_per_category at a time right now
+        groupname = f"{grid['dataset'][0]}_{args.instruction_set}_{grid['max_per_category'][0]}per"
+    base_cmd = CMD + f' --groupname {groupname}'
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_secs=10, check_queue_every_nmin=10)

@@ -175,6 +175,7 @@ class ProgressionPairDataset(Dataset):
             stroke3 = sample['stroke3']
         else:
             stroke3 = sample['stroke3_segment']
+        stroke_len = len(stroke3)
         stroke5 = stroke3_to_stroke5(stroke3)
 
         if self.use_prestrokes:
@@ -200,7 +201,7 @@ class ProgressionPairDataset(Dataset):
         cat_idx = self.cat2idx[cat]
         url = sample['url']
 
-        return (stroke5, text, text_indices, cat, cat_idx, url)
+        return (stroke5, stroke_len, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn_strokes_categories_only(batch):
@@ -214,16 +215,15 @@ class ProgressionPairDataset(Dataset):
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        strokes, stroke_lens, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
         # Create array of strokes, zeros for padding
-        stroke_lens = [stroke.shape[0] for stroke in strokes]
         max_stroke_len = max(stroke_lens)
         batch_strokes = np.zeros((bsz, max_stroke_len, sample_dim))
         for i, stroke in enumerate(strokes):
-            l = stroke.shape[0]
+            l = stroke_lens[i]
             batch_strokes[i,:l,:] = stroke
 
         # Convert to Tensors
@@ -239,22 +239,22 @@ class ProgressionPairDataset(Dataset):
         Method to passed into a DataLoader that defines how to combine samples in a batch
 
         Note: I wrote my own collate_fn in order to handle variable lengths. The StrokeDataset
-        uses the collate_fn because each drawing is padded to some maximum length (this is
+        uses the default collate_fn because each drawing is padded to some maximum length (this is
         how Magenta did it as well).
+
 
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        strokes, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        strokes, stroke_lens, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
         # Create array of strokes, zeros for padding
-        stroke_lens = [stroke.shape[0] for stroke in strokes]
         max_stroke_len = max(stroke_lens)
         batch_strokes = np.zeros((bsz, max_stroke_len, sample_dim))
         for i, stroke in enumerate(strokes):
-            l = stroke.shape[0]
+            l = stroke_lens[i]
             batch_strokes[i,:l,:] = stroke
 
         # Create array of text indices, zeros for padding
@@ -319,16 +319,16 @@ class SketchWithPlansDataset(Dataset):
         Returns the same data regardless of the dataset.
         """
         if self.dataset == 'progressionpair':
-            stroke5, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
+            stroke5, stroke_len, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
             id = self.ds.data[idx]['id']
             plan = self.id_to_plan[id]
-            return stroke5, cat, cat_idx, url, plan
+            return stroke5, stroke_len, cat, cat_idx, url, plan
         elif self.dataset == 'ndjson':
-            stroke5, _, cat, cat_idx = self.ds.__getitem__(idx)  # _ is stroke_len
+            stroke5, stroke_len, cat, cat_idx = self.ds.__getitem__(idx, pad_to_max_len_in_data=False)  # _ is stroke_len
             id = self.ds.data[idx]['id']
             plan_fp = self.plans_dir / cat / f'{id}.json'
             plan = utils.load_file(plan_fp)
-            return stroke5, cat, cat_idx, '', plan
+            return stroke5, stroke_len, cat, cat_idx, '', plan
 
     def load_progression_pair_plans(self, plans_dir):
         """
@@ -368,7 +368,7 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                          dataset_split=dataset_split, instruction_set=instruction_set)
 
     def __getitem__(self, idx):
-        stroke5, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
+        stroke5, stroke_len, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
 
         if self.instruction_set == 'toplevel':
             text = plan[0]['text']  # 0 = toplevel instruction
@@ -383,7 +383,7 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                     text += ' SOS ' + subplan['text']
                     text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
 
-        return (stroke5, text, text_indices, cat, cat_idx, url)
+        return (stroke5, stroke_len, text, text_indices, cat, cat_idx, url)
 
 
 class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
@@ -399,17 +399,17 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
                  dataset_split='train',
                  instruction_set='stack'
                  ):
-        super().__init__(dataset=dataset,  max_len=max_len, max_per_category=max_per_category,
+        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
                          dataset_split=dataset_split, instruction_set=instruction_set)
 
     def __getitem__(self, idx):
         """
         Note: transformation into text_indices, lengths, etc. is done in collate_fn
         """
-        stroke5, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
+        stroke5, stroke_len, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
         stacks = self.get_stacks(plan)
 
-        return (stroke5, stacks, cat, cat_idx, url)
+        return (stroke5, stroke_len, stacks, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn(batch, token2idx=None):
@@ -429,18 +429,17 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
             batch_texts (list of lists): just used for debugging
             ...
         """
-        strokes, stacks, cats, cats_idx, urls = zip(*batch)  # each is a list
+        strokes, stroke_lens, stacks, cats, cats_idx, urls = zip(*batch)  # each is a list
         bsz = len(batch)
         sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
         #
         # Create array of strokes, zeros for padding
         #
-        stroke_lens = [stroke.shape[0] for stroke in strokes]
         max_stroke_len = max(stroke_lens)
         batch_strokes = np.zeros((bsz, max_stroke_len, sample_dim))
         for i, stroke in enumerate(strokes):
-            l = stroke.shape[0]
+            l = stroke_lens[i]
             batch_strokes[i,:l,:] = stroke
 
         #

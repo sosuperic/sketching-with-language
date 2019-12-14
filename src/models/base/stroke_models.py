@@ -59,13 +59,18 @@ class StrokeDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, pad_to_max_len_in_data=True):
         sample = self.data[idx]
         category = sample['category']
         cat_idx = self.cat2idx[category]
         stroke3 = sample['stroke3']
         stroke_len = len(stroke3)
-        stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
+        if pad_to_max_len_in_data:
+            stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
+            # TODO: padding to the max in data is a bit non-transparent / unnecessary imo
+            # Maybe I should write a collate_fn to pad to max in batch.
+        else:
+            stroke5 = stroke3_to_stroke5(stroke3)
         return stroke5, stroke_len, category, cat_idx
 
 class NdjsonStrokeDataset(StrokeDataset):
@@ -591,6 +596,7 @@ class SketchRNNDecoderGMM(nn.Module):
 
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
+        # TODO: shouldn't this be divided by mask.sum(), not max_len * batch_size??
         LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
 
 
@@ -602,6 +608,10 @@ class SketchRNNDecoderGMM(nn.Module):
         # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
         LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
         #  TODO: check arguments for above BCE
+
+        if (LS + LP) < -2:
+            print('Loss very negative')
+            import pdb; pdb.set_trace()
 
         return LS + LP
 

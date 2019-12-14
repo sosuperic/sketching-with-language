@@ -15,7 +15,11 @@ NGPUS_PER_RUN = 1
 GRID = {
     # Data
     'dataset': [
-        'ndjson --max_per_category 2500',
+        'ndjson'
+    ],
+    'max_per_category': [
+        # 250,
+        2500,
     ],
     # Model
     'model_type': ['decodergmm'],
@@ -37,7 +41,12 @@ if __name__ == "__main__":
     parser.add_argument('--groupname', help='name of subdir to save runs')
     args = parser.parse_args()
 
-    base_cmd = CMD + f' --groupname {args.groupname}'
+    groupname = args.groupname
+    if groupname is None:
+        # Assumes one dataset and one max_per_category at a time right now
+        groupname = f"{GRID['dataset'][0]}_{GRID['max_per_category'][0]}per"
+    base_cmd = CMD + f' --groupname {groupname}'
+    # print(base_cmd)
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_secs=10, check_queue_every_nmin=10)
