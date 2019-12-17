@@ -18,8 +18,11 @@ GRID = {
         'ndjson'
     ],
     'max_per_category': [
-        # 250,
-        2500,
+        250,
+        # 2500,
+    ],
+    'categories': [
+        'all',
     ],
     # Model
     'model_type': ['decodergmm'],
