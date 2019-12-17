@@ -596,22 +596,15 @@ class SketchRNNDecoderGMM(nn.Module):
 
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
-        # TODO: shouldn't this be divided by mask.sum(), not max_len * batch_size??
-        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(max_len * batch_size)
-
+        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(mask.sum())
 
         if ((LS != LS).any() or (LS == float('inf')).any() or (LS == float('-inf')).any()):
             raise Exception('Nan in SketchRNNDecoderGMM reconstruction loss')
 
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
-        # LP = -torch.sum(p * torch.log(q)) / float(max_len * batch_size)
-        LP = F.binary_cross_entropy(q, p, reduction='mean')  # Maybe this gets read of NaN?
-        #  TODO: check arguments for above BCE
-
-        if (LS + LP) < -2:
-            print('Loss very negative')
-            import pdb; pdb.set_trace()
+        LP = -torch.sum(p * torch.log(q)) / float(mask.sum())
+        # TODO: what are the dimensions of p and q exactly
 
         return LS + LP
 
