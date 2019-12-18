@@ -572,7 +572,8 @@ class SketchRNNDecoderGMM(nn.Module):
                             mask,
                             dx, dy, p,  # ground truth
                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                            q):
+                            q,
+                            average_loss=True):
         """
         Based on likelihood (Eq. 9)
 
@@ -587,7 +588,9 @@ class SketchRNNDecoderGMM(nn.Module):
             sigma_x: [max_len + 1, bsz, M]
             sigma_y: [max_len + 1, bsz, M]
             rho_xy: [max_len + 1, bsz, M]
-            q: [max_len + 1, bsz]
+            q: [max_len + 1, bsz, 3]
+            average_loss (bool): whether to average loss per batch item
+                When True, returns [bsz] FloatTensor
 
         These are outputs from make_targets(batch, stroke_lens). "+ 1" because of the
         end of sequence stroke appended in make_targets()
@@ -596,15 +599,21 @@ class SketchRNNDecoderGMM(nn.Module):
 
         # Loss w.r.t pen offset
         prob = self.bivariate_normal_pdf(dx, dy, mu_x, mu_y, sigma_x, sigma_y, rho_xy)
-        LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / float(mask.sum())
+        if average_loss:
+            LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2))) / mask.sum()
+        else:
+            LS = -torch.sum(mask * torch.log(1e-6 + torch.sum(pi * prob, 2)), dim=0) / mask.sum(dim=0)  # [bsz]
 
         if ((LS != LS).any() or (LS == float('inf')).any() or (LS == float('-inf')).any()):
             raise Exception('Nan in SketchRNNDecoderGMM reconstruction loss')
 
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
-        LP = -torch.sum(p * torch.log(q)) / float(mask.sum())
-        # TODO: what are the dimensions of p and q exactly
+        if average_loss:
+            LP = -torch.sum(mask.unsqueeze(-1) * p * torch.log(q)) / mask.sum()
+        else:
+            LP = mask.unsqueeze(-1) * p * torch.log(q)  # [max_len + 1, bsz, 3]
+            LP = LP.sum(dim=[0,2]) / mask.sum(dim=0)    # [bsz]
 
         return LS + LP
 

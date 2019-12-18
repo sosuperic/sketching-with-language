@@ -104,12 +104,15 @@ class InstructionToStrokesModel(SketchRNNModel):
             preprocessed.append(item)
         return preprocessed
 
-    def one_forward_pass(self, batch):
+    def one_forward_pass(self, batch, average_loss=True):
         """
         Return loss and other items of interest for one forward pass
 
         Args:
             batch: tuple from DataLoaders
+            average_loss (bool): whether to average loss per batch item
+                - Current use case: Segmentation model computes loss per segment. Batches
+                are a batch of segments for one example.
 
         Returns:
             dict where 'loss': float Tensor must exist
@@ -148,7 +151,8 @@ class InstructionToStrokesModel(SketchRNNModel):
         loss = self.dec.reconstruction_loss(mask,
                                             dx, dy, p,
                                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                                            q)
+                                            q,
+                                            average_loss=average_loss)
         result = {'loss': loss, 'loss_R': loss}
 
         if ((loss != loss).any() or (loss == float('inf')).any() or (loss == float('-inf')).any()):
@@ -161,6 +165,9 @@ class InstructionToStrokesModel(SketchRNNModel):
         # a dataset that returns 4 values. The SketchWithPlansDataset returns 8 values. The
         # encoding of the instructions is different too. Need to refactor that bit to work
         # with both.
+        pass
+
+    def inference_pass(self, batch_of_segs, seg_lens, cats_idx):
         pass
 
 if __name__ == "__main__":

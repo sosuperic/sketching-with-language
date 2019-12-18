@@ -4,11 +4,12 @@
 Currently uses trained StrokesToInstruction model to segment unseen sequences.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair
+    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair --split_scorer instruction_to_strokes --save_subdir dec18
     CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/segmentation.py -ds ndjson
 """
 
 import argparse
+import copy
 import numpy as np
 import os
 from pprint import pprint
@@ -22,8 +23,9 @@ from src import utils
 from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, \
     create_progression_image_from_ndjson_seq, SEGMENTATIONS_PATH
 from src.models.base.stroke_models import NdjsonStrokeDataset
-from src.models.base.instruction_models import ProgressionPairDataset
+from src.models.base.instruction_models import ProgressionPairDataset, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, map_sentence_to_index
 from src.models.core import nn_utils
+from src.models.instruction_to_strokes import InstructionToStrokesModel
 from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 
 
@@ -34,6 +36,11 @@ from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 ##############################################################################
 class HParams():
     def __init__(self):
+        self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
+
+        self.strokes_to_instruction_dir = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
+        self.instruction_to_strokes_dir = 'runs/instruction_to_strokes/dec17/cond_instructions_initdec-dec_dim_512-enc_dim_512-lr_0.001-model_type_decodergmm/'
+
         self.notes = ''
 
 ##############################################################################
@@ -43,23 +50,31 @@ class HParams():
 ##############################################################################
 
 class SegmentationModel(object):
-    def __init__(self, hp, save_dir, load_model):
+    def __init__(self, hp, save_dir):
         """
-
         Args:
             hp: HParams object
             save_dir: str
-            load_model: str (directory with model and hparams)
         """
         self.hp = hp
         self.save_dir = save_dir
-        self.load_model = load_model
 
         # Load hp used to train model
-        hp = utils.load_hp(hp, load_model)
-        model = StrokeToInstructionModel(hp, save_dir=None)  # save_dir=None means inference mode
-        model.load_model(load_model)
-        self.strokes_to_instruction = model
+
+        self.s2i_hp = utils.load_hp(copy.deepcopy(hp), hp.strokes_to_instruction_dir)
+        self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
+        self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
+        self.strokes_to_instruction.cuda()
+
+        if hp.split_scorer == 'instruction_to_strokes':
+            self.i2s_hp = utils.load_hp(copy.deepcopy(hp), hp.instruction_to_strokes_dir)
+            self.instruction_to_strokes = InstructionToStrokesModel(self.i2s_hp, save_dir=None)
+            self.instruction_to_strokes.load_model(hp.instruction_to_strokes_dir)  # TODO: change param for load_model
+            self.instruction_to_strokes.cuda()
+
+
+        # TODO: this should be probably be contained in some model...
+        self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
 
     def segment_all_progressionpair_data(self):
         """
@@ -67,7 +82,7 @@ class SegmentationModel(object):
         """
         for split in ['train', 'valid', 'test']:
             print(split)
-            ds = ProgressionPairDataset(split, return_full_stroke=True)
+            ds = ProgressionPairDataset(split, use_full_drawings=True)
             loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=ProgressionPairDataset.collate_fn)
             for i, sample in enumerate(loader):
                 try:
@@ -181,38 +196,62 @@ class SegmentationModel(object):
 
         return batch, n_penups, seg_lens, seg_idx_map
 
-    def calculate_seg_probs(self, batch_of_segs, seg_lens, cats_idx):
+    def calculate_seg_scores(self, batch_of_segs, seg_lens, cats_idx):
         """
+        Calculate
         Calculate the (log) probability of each segment
         (To be used as a error/goodness of fit for each segment)
 
         Args:
-            batch_of_segs: [n_pts (seq_len), n_segs, 5]
+            batch_of_segs: [n_pts (seq_len), n_segs, 5] CudaFloatTensor
             seg_lens: list of ints, length n_segs
             cats_idx: list of the same int, length n_segs
 
-        Returns: [n_segs] array
+        Returns:
+            scores ([n_segs] np array)
+            texts (list): n_segs list of strings
         """
-        probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
-        # probs: [n_segs, max_len, vocab]; texts: list of strs of length [n_segs]
+        if self.hp.split_scorer == 'strokes_to_instruction':
+            probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+            probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
 
-        probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
-        final_probs = []
+            # normalize by generated length
+            final_probs = []
+            n_segs = probs.size(0)
+            for i in range(n_segs):
+                eos_idx = (ids[i] == EOS_ID).nonzero()
+                eos_idx = eos_idx.item() if (len(eos_idx) > 0) else probs.size(1)
+                p = probs[i,:eos_idx + 1].log().sum() / float(eos_idx + 1)
+                final_probs.append(p.item())
+            scores = np.array(final_probs)  # [n_segs]
+            return scores, texts
 
-        # normalize by generated length
-        n_segs = probs.size(0)
-        for i in range(n_segs):
-            eos_idx = (ids[i] == EOS_ID).nonzero()
-            eos_idx = eos_idx.item() if (len(eos_idx) > 0) else probs.size(1)
-            p = probs[i,:eos_idx + 1].log().sum() / float(eos_idx + 1)
-            final_probs.append(p.item())
-        final_probs = np.array(final_probs)  # [n_segs]
+        elif self.hp.split_scorer == 'instruction_to_strokes':
+            probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+            text_indices_list = [map_sentence_to_index(text, self.token2idx) for text in texts]
 
-        return final_probs, texts
+            # Construct inputs to instruction_to_strokes model
+            bsz = batch_of_segs.size(1)
+            text_lens = [len(t) for t in text_indices_list]
+            max_len = max(text_lens)
+            text_indices = np.zeros((max_len, bsz))
+            for i, indices in enumerate(text_indices_list):
+                text_indices[:len(indices), i] = indices
+            text_indices = nn_utils.move_to_cuda(torch.LongTensor(text_indices))
+
+            cats = ['' for _ in range(bsz)]  # dummy
+            urls = ['' for _ in range(bsz)]  # dummy
+            batch = (batch_of_segs, seg_lens, texts, text_lens, text_indices, cats, cats_idx, urls)
+
+            with torch.no_grad():
+                result = self.instruction_to_strokes.one_forward_pass(batch, average_loss=False)  #
+                scores = result['loss'].cpu().numpy().astype(np.float64)  # float32 doesn't serialize to json for some reason
+
+            return scores, texts
 
 class SegmentationGreedyParsingModel(SegmentationModel):
-    def __init__(self, hp, save_dir, load_model):
-        super().__init__(hp, save_dir, load_model)
+    def __init__(self, hp, save_dir):
+        super().__init__(hp, save_dir)
 
     def segment_sample(self, sample, dataset):
         """
@@ -236,27 +275,27 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample(strokes)
         cats_idx = cats_idx.repeat(len(seg_lens))
         cats_idx = nn_utils.move_to_cuda(cats_idx)
-        seg_probs, seg_texts = self.calculate_seg_probs(segs, seg_lens, cats_idx)
+        seg_scores, seg_texts = self.calculate_seg_scores(segs, seg_lens, cats_idx)
 
         # top level segmentation
         # initial instruction for entire sequence
         seg_idx = seg_idx_map[(0, n_penups)]
-        segmented = [{'left': 0, 'right': n_penups, 'prob': seg_probs[seg_idx], 'text': seg_texts[seg_idx],
+        segmented = [{'left': 0, 'right': n_penups, 'score': seg_scores[seg_idx], 'text': seg_texts[seg_idx],
                       'id': uuid4().hex, 'parent': ''}]
         # recursively segment
-        segmented = self.split(0, n_penups, seg_idx_map, seg_probs, seg_texts, segmented)  # + 1see how seg_idx_map is calculated
+        segmented = self.split(0, n_penups, seg_idx_map, seg_scores, seg_texts, segmented)
         # pprint(segmented)
 
         return strokes, segmented
 
-    def split(self, left_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented):
+    def split(self, left_idx, right_idx, seg_idx_map, seg_scores, seg_texts, segmented):
         """
 
         Args:
             left_idx: int
             right_idx: int
             seg_idx_map: dict (construct_batch_of_segments_from_one_sample())
-            seg_probs: [n_segs] array
+            seg_scores: [n_segs] array
             seg_texts: [n_segs] strs
             segmented: list of dicts
 
@@ -266,21 +305,21 @@ class SegmentationGreedyParsingModel(SegmentationModel):
             return segmented
 
         # find best split
-        max_prob = float('-inf')
+        max_score = float('-inf')
         best_split_idx = None
         best_left_seg_text, best_right_seg_text = None, None
-        best_left_seg_prob, best_right_seg_prob = None, None
+        best_left_seg_score, best_right_seg_score = None, None
         for split_idx in range(left_idx + 1, right_idx):
             left_seg_idx = seg_idx_map[(left_idx, split_idx)]
             right_seg_idx = seg_idx_map[(split_idx, right_idx)]
-            left_seg_prob = seg_probs[left_seg_idx]
-            right_seg_prob = seg_probs[right_seg_idx]
-            prob = left_seg_prob + right_seg_prob
+            left_seg_score = seg_scores[left_seg_idx]
+            right_seg_score = seg_scores[right_seg_idx]
+            score = left_seg_score + right_seg_score
 
-            if prob > max_prob:
+            if score > max_score:
                 best_left_seg_text, best_right_seg_text = seg_texts[left_seg_idx], seg_texts[right_seg_idx]
-                best_left_seg_prob, best_right_seg_prob = left_seg_prob, right_seg_prob
-                max_prob = prob
+                best_left_seg_score, best_right_seg_score = left_seg_score, right_seg_score
+                max_score = score
                 best_split_idx = split_idx
 
         # add left and right segment information
@@ -288,13 +327,13 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         parent_id = segmented[-1]['id']
 
         segmented.append({'left': left_idx, 'right': best_split_idx,
-                          'prob': best_left_seg_prob, 'text': best_left_seg_text,
+                          'score': best_left_seg_score, 'text': best_left_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
-        segmented = self.split(left_idx, best_split_idx, seg_idx_map, seg_probs, seg_texts, segmented)
+        segmented = self.split(left_idx, best_split_idx, seg_idx_map, seg_scores, seg_texts, segmented)
         segmented.append({'left': best_split_idx, 'right': right_idx,
-                          'prob': best_right_seg_prob, 'text': best_right_seg_text,
+                          'score': best_right_seg_score, 'text': best_right_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
-        segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_probs, seg_texts, segmented)
+        segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_scores, seg_texts, segmented)
         return segmented
 
 
@@ -302,25 +341,27 @@ class SegmentationGreedyParsingModel(SegmentationModel):
 if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
-    parser = argparse.ArgumentParser()
+    parser.add_argument('--save_subdir')
+    # Model
     parser.add_argument('--method', default='greedy_parsing')
     parser.add_argument('-ds', '--segment_dataset', default='progressionpair',
-        help='Which dataset to segment -- "progressionpair" or "ndjson"')
+                        help='Which dataset to segment -- "progressionpair" or "ndjson"')
     opt = parser.parse_args()
+
+    # Setup
     nn_utils.setup_seeds()
-
-    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset
-
-    load_model = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
-    hp.use_categories_enc = False
-    hp.use_categories_dec = True  # backwards compatability (model was trained without that hparams)
-    hp.unlikelihood_loss = False
+    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / hp.split_scorer / opt.save_subdir
     # TODO: find a better way to handle this...
-    # TODO: we should probably save the hp and model path used to segment into save_dir
+    hp.use_categories_enc = False
+    hp.use_categories_dec = True  # backwards compatability (InstructionToStrokes model was trained without that hparams)
+    hp.unlikelihood_loss = False
+    # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
+    # utils.save_file(vars(hp), save_dir / 'hp.json')
+    utils.save_run_data(save_dir, hp)
 
+    # Init model and segment
     if opt.method == 'greedy_parsing':
-        model = SegmentationGreedyParsingModel(hp, save_dir, load_model)
-
+        model = SegmentationGreedyParsingModel(hp, save_dir)
     if opt.segment_dataset == 'progressionpair':
         model.segment_all_progressionpair_data()
     elif opt.segment_dataset == 'ndjson':
