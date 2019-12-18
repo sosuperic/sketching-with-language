@@ -212,7 +212,8 @@ class SegmentationModel(object):
             texts (list): n_segs list of strings
         """
         if self.hp.split_scorer == 'strokes_to_instruction':
-            probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+            with torch.no_grad():
+                probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
             probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
 
             # normalize by generated length
@@ -227,7 +228,8 @@ class SegmentationModel(object):
             return scores, texts
 
         elif self.hp.split_scorer == 'instruction_to_strokes':
-            probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+            with torch.no_grad():
+                probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
             text_indices_list = [map_sentence_to_index(text, self.token2idx) for text in texts]
 
             # Construct inputs to instruction_to_strokes model
