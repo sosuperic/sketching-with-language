@@ -1,4 +1,4 @@
-# sketch_rnn_sweep.py
+# instruction_to_strokes_sweep.py
 
 """
 Usage:

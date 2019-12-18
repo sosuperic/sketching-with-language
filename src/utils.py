@@ -83,24 +83,6 @@ def get_available_GPUs():
     """
     return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=0.33, includeNan=False)
 
-def check_gpus_and_run(cmd):
-    """
-    Check if there is an available GPU. If there is run, run the command (asynchronously).
-
-    Args:
-        cmd (str)
-
-    Returns: bool (true if command was run)
-    """
-    available_gpu_ids = get_available_GPUs()
-    if len(available_gpu_ids) > 0:
-        gpu_id = available_gpu_ids[0]
-        print(f'Running: {cmd}')
-        subprocess.Popen(cmd, shell=True)
-        return True
-    else:
-        return False
-
 def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
                     prequeue_sleep_secs=120, check_queue_every_nmin=10):
     """
@@ -149,15 +131,20 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
 
     # "Queue" the rest
     # let programs start running and utilize the GPU. Some take a long time to initialize the dataset...
-    # print('Queueing the rest:')
-    # time.sleep(prequeue_sleep_secs)
-    for i, combo in enumerate(queued_combos):
-        gpu_id = system_gpu_ids[i % len(system_gpu_ids)]
-        cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
-        subprocess.Popen(cmd, shell=True)
-        # check_gpus_and_run(cmd)
-        # schedule.every(check_queue_every_nmin).minutes.do(check_gpus_and_run, cmd=cmd)
-        # TODO: schedule
+    cur_combo_idx = 0
+    while True:
+        time.sleep(check_queue_every_nmin * 60)
+        available_gpu_ids = get_available_GPUs()
+
+        for i in range(len(available_gpu_ids)):  # run on available gpus
+            if cur_combo_idx >= len(queued_combos):  # exit if all combos ran
+                return
+
+            combo = queued_combos[cur_combo_idx]
+            gpu_id = available_gpu_ids[i]
+            cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
+            subprocess.Popen(cmd, shell=True)
+            cur_combo_idx += 1
 
 
 def load_hp(hp_obj, dir):

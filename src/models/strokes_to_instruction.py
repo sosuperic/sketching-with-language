@@ -510,7 +510,7 @@ class StrokesToInstructionModel(TrainNN):
 if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
-    # Add additional arguments to parser
+    parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     parser.add_argument('--load_autoencoder_dir', default=None, help='directory that contains pretrained autoencoder'
                         'from which we can load the encoder weights')
     parser.add_argument('--inference', action='store_true')
@@ -527,7 +527,7 @@ if __name__ == '__main__':
                                       dir=BEST_STROKE_TO_INSTRUCTION_DIR, ext='json')
 
     else:
-        save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', run_name)
+        save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', opt.groupname, run_name)
         model = StrokesToInstructionModel(hp, save_dir)
         utils.save_run_data(save_dir, hp)
 
