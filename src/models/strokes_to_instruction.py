@@ -1,9 +1,10 @@
-# instruction_gen.py
+# strokes_to_instruction.py
 
 """
-Usage:
+Use the annotated MTurk data (ProgressionPairDataset) to train a P(instruction | drawing_segment) model.
 
-CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/instruction_gen.py --model_type cnn_lstm
+Usage:
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type cnn_lstm
 """
 
 import matplotlib
@@ -62,7 +63,7 @@ class HParams():
         self.notes = ''
 
 
-class StrokeToInstructionModel(TrainNN):
+class StrokesToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
 
@@ -518,16 +519,16 @@ if __name__ == '__main__':
     nn_utils.setup_seeds()
 
     if opt.inference:
-        BEST_STROKE_TO_INSTRUCTION_DIR = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
+        BEST_STROKE_TO_INSTRUCTION_DIR = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
         # TODO: should load hp before... write function in utils
-        model = StrokeToInstructionModel(hp, save_dir=None)
+        model = StrokesToInstructionModel(hp, save_dir=None)
         model.load_model(BEST_STROKE_TO_INSTRUCTION_DIR)
         model.save_inference_on_split(dataset_split=opt.inference_split,
                                       dir=BEST_STROKE_TO_INSTRUCTION_DIR, ext='json')
 
     else:
-        save_dir = os.path.join(RUNS_PATH, 'stroke2instruction', run_name)
-        model = StrokeToInstructionModel(hp, save_dir)
+        save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', run_name)
+        model = StrokesToInstructionModel(hp, save_dir)
         utils.save_run_data(save_dir, hp)
 
         if opt.load_autoencoder_dir:

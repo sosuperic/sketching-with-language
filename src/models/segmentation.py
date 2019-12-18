@@ -1,7 +1,7 @@
 # segmentation.py
 
 """
-Currently uses trained Stroke2Instruction model to segment unseen sequences.
+Currently uses trained StrokesToInstruction model to segment unseen sequences.
 
 Usage:
     CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair
@@ -24,7 +24,7 @@ from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, \
 from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.base.instruction_models import ProgressionPairDataset
 from src.models.core import nn_utils
-from src.models.instruction_gen import StrokeToInstructionModel, EOS_ID
+from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 
 
 ##############################################################################
@@ -59,7 +59,7 @@ class SegmentationModel(object):
         hp = utils.load_hp(hp, load_model)
         model = StrokeToInstructionModel(hp, save_dir=None)  # save_dir=None means inference mode
         model.load_model(load_model)
-        self.stroke2instruction = model
+        self.strokes_to_instruction = model
 
     def segment_all_progressionpair_data(self):
         """
@@ -193,7 +193,7 @@ class SegmentationModel(object):
 
         Returns: [n_segs] array
         """
-        probs, ids, texts = self.stroke2instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+        probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
         # probs: [n_segs, max_len, vocab]; texts: list of strs of length [n_segs]
 
         probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
@@ -311,7 +311,7 @@ if __name__ == '__main__':
 
     save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset
 
-    load_model = 'best_models/stroke2instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
+    load_model = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
     hp.use_categories_enc = False
     hp.use_categories_dec = True  # backwards compatability (model was trained without that hparams)
     hp.unlikelihood_loss = False
