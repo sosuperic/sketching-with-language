@@ -305,14 +305,16 @@ class SketchWithPlansDataset(Dataset):
 
         if dataset == 'progressionpair':
             self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=max_len)
-            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / dataset_split
+            # TODO: this is hardcoded in here, should be moved to some config
+            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / 'nov26_2019' / 'strokes_to_instruction' / dataset_split
             self.id_to_plan = self.load_progression_pair_plans(self.plans_dir)
         elif dataset == 'ndjson':
             self.ds = NdjsonStrokeDataset('all', dataset_split,
                                           max_per_category=max_per_category, max_len=max_len, must_have_instruction_tree=True)
-            # we don't pre-load the plans because that would be too much memory
+            # compared to progressionpair, we don't pre-load the plans because that would be too much memory
             # also, the directory is in a different format (no dataset_split)
-            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson'
+            # TODO: this is hardcoded in here, should be moved to some config
+            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson' / 'nov30_2019' / 'strokes_to_instruction'
 
     def get_underlying_ds_item(self, idx):
         """

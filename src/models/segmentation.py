@@ -353,7 +353,7 @@ if __name__ == '__main__':
 
     # Setup
     nn_utils.setup_seeds()
-    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / hp.split_scorer / opt.save_subdir
+    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / datetime.today().strftime('%b%d_%Y') / hp.split_scorer / opt.save_subdir
     # TODO: find a better way to handle this...
     hp.use_categories_enc = False
     hp.use_categories_dec = True  # backwards compatability (InstructionToStrokes model was trained without that hparams)
