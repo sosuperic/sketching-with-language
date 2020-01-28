@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from src import utils
-from src.models.core import nn_utils
+from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import RUNS_PATH, TrainNN
 from src.models.base.instruction_models import (
     ProgressionPairDataset,
@@ -247,13 +247,13 @@ class SketchRNNWithPlans(SketchRNNModel):
 
 if __name__ == "__main__":
     hp = HParams()
-    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
     save_dir = os.path.join(RUNS_PATH, 'sketchwplans', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
-    utils.save_run_data(save_dir, hp)
+    experiments.save_run_data(save_dir, hp)
 
     model = None
     model = SketchRNNWithPlans(hp, save_dir)

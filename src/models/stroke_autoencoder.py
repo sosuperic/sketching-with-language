@@ -174,11 +174,11 @@ class StrokeAutoencoderModel(TrainNN):
 
 if __name__ == '__main__':
     hp = HParams()
-    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
     save_dir = RUNS_PATH / 'stroke_autoencoder' / run_name
     model = StrokeAutoencoderModel(hp, save_dir)
-    utils.save_run_data(save_dir, hp)
+    experiments.save_run_data(save_dir, hp)
     model.train_loop()

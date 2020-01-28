@@ -6,7 +6,7 @@ Usage:
 """
 
 import argparse
-from src.utils import run_param_sweep
+from src.models.core.experiments import run_param_sweep
 
 CMD = 'PYTHONPATH=. python src/models/sketch_rnn.py'
 

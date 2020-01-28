@@ -24,7 +24,7 @@ from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, \
     create_progression_image_from_ndjson_seq, SEGMENTATIONS_PATH
 from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.base.instruction_models import ProgressionPairDataset, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, map_sentence_to_index
-from src.models.core import nn_utils
+from src.models.core import experiments, nn_utils
 from src.models.instruction_to_strokes import InstructionToStrokesModel
 from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 
@@ -62,13 +62,13 @@ class SegmentationModel(object):
 
         # Load hp used to train model
 
-        self.s2i_hp = utils.load_hp(copy.deepcopy(hp), hp.strokes_to_instruction_dir)
+        self.s2i_hp = experiments.load_hp(copy.deepcopy(hp), hp.strokes_to_instruction_dir)
         self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
         self.strokes_to_instruction.cuda()
 
         if hp.split_scorer == 'instruction_to_strokes':
-            self.i2s_hp = utils.load_hp(copy.deepcopy(hp), hp.instruction_to_strokes_dir)
+            self.i2s_hp = experiments.load_hp(copy.deepcopy(hp), hp.instruction_to_strokes_dir)
             self.instruction_to_strokes = InstructionToStrokesModel(self.i2s_hp, save_dir=None)
             self.instruction_to_strokes.load_model(hp.instruction_to_strokes_dir)  # TODO: change param for load_model
             self.instruction_to_strokes.cuda()
@@ -343,7 +343,7 @@ class SegmentationGreedyParsingModel(SegmentationModel):
 
 if __name__ == '__main__':
     hp = HParams()
-    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--save_subdir')
     # Model
     parser.add_argument('--method', default='greedy_parsing')
@@ -360,7 +360,7 @@ if __name__ == '__main__':
     hp.unlikelihood_loss = False
     # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
     # utils.save_file(vars(hp), save_dir / 'hp.json')
-    utils.save_run_data(save_dir, hp)
+    experiments.save_run_data(save_dir, hp)
 
     # Init model and segment
     if opt.method == 'greedy_parsing':
