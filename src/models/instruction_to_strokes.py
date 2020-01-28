@@ -15,6 +15,7 @@ Usage:
     PYTHONPATH=. python src/models/instruction_to_strokes.py --cond_instructions initdec
 """
 
+from datetime import datetime
 from functools import partial
 import os
 from os.path import abspath
@@ -177,7 +178,7 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'instruction_to_strokes', opt.groupname, run_name)
+    save_dir = os.path.join(RUNS_PATH, 'instruction_to_strokes', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
     experiments.save_run_data(save_dir, hp)
 
     model = None

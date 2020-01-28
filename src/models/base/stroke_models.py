@@ -7,6 +7,7 @@ StrokeDataset(s) and stroke related models
 import numpy as np
 import os
 from pathlib import Path
+import time
 
 import torch
 from torch import nn
@@ -95,6 +96,8 @@ class NdjsonStrokeDataset(StrokeDataset):
         full_data = []  # list of dicts
         self.max_len_in_data = 0
         n_cats = len(self.categories)
+
+        start1 = time.time()
         for i, category in enumerate(self.categories):
             # print(f'Loading {category} {i+1}/{n_cats}')
             drawings = ndjson_drawings(category)
@@ -107,7 +110,8 @@ class NdjsonStrokeDataset(StrokeDataset):
                 id, ndjson_strokes = d['key_id'], d['drawing']
 
                 if must_have_instruction_tree:  # example must have an instruction tree generated
-                    instruction_tree_fp = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson' / category / f'{id}.json'
+                    # TODO: hardcoded... should be moved
+                    instruction_tree_fp = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson' / 'nov30_2019' / 'strokes_to_instruction' /  category / f'{id}.json'
                     if not os.path.exists(instruction_tree_fp):
                         continue
 
@@ -118,8 +122,15 @@ class NdjsonStrokeDataset(StrokeDataset):
                                   'id': id, 'ndjson_strokes': ndjson_strokes})
                 cat_n_drawings += 1
 
+        print('Loading: ', time.time() - start1)
+
+        start2 = time.time()
         self.data = self.filter_and_clean_data(full_data)
+        print('Filter and clean: ', time.time() - start2)
+
+        start3 = time.time()
         self.data = normalize_strokes(self.data)
+        print('Normalize: ', time.time() - start2)
         self.idx2cat, self.cat2idx = build_category_index(self.data)
 
         print(f'Number of examples in {dataset_split}: {len(self.data)}')

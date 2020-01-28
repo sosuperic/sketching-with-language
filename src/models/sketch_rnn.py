@@ -8,6 +8,7 @@ Usage:
     PYTHONPATH=. python src/models/sketch_rnn.py --model_type decodergmm
 """
 
+from datetime import datetime
 import os
 
 import numpy as np
@@ -23,7 +24,7 @@ from src.models.base.stroke_models import (NdjsonStrokeDataset,
                                            SketchRNNDecoderGMM,
                                            SketchRNNDecoderLSTM,
                                            SketchRNNVAEEncoder)
-from src.models.core import nn_utils
+from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import RUNS_PATH, TrainNN
 
 USE_CUDA = torch.cuda.is_available()
@@ -37,10 +38,10 @@ USE_CUDA = torch.cuda.is_available()
 class HParams():
     def __init__(self):
         # Data
-        self.dataset = 'progressionpair'  # 'progressionpair' or 'ndjson'
+        self.dataset = 'ndjson'  # 'progressionpair' or 'ndjson'
         self.max_len = 200
-        self.max_per_category = 250
-        self.categories = 'cat'  # used with dataset='ndjson', comma separated categories or 'all'
+        self.max_per_category = 2500
+        self.categories = 'all'  # used with dataset='ndjson', comma separated categories or 'all'
 
         # Training
         self.batch_size = 64  # 100
@@ -536,14 +537,13 @@ class SketchRNNVAEModel(SketchRNNModel):
 
 if __name__ == "__main__":
     hp = HParams()
-    hp, run_name, parser = utils.create_argparse_and_update_hp(hp)
+    hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-
     save_dir = os.path.join(RUNS_PATH, 'sketchrnn', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
-    utils.save_run_data(save_dir, hp)
+    experiments.save_run_data(save_dir, hp)
 
     model = None
     if hp.model_type == 'vae':

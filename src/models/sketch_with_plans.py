@@ -7,6 +7,7 @@ Usage:
     PYTHONPATH=. python src/models/sketch_with_plans.py --dataset ndjson --instruction_set toplevel --cond_instructions match
 """
 
+from datetime import datetime
 from functools import partial
 import os
 from os.path import abspath

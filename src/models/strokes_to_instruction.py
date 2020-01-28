@@ -7,10 +7,11 @@ Usage:
     CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type cnn_lstm
 """
 
-import matplotlib
-matplotlib.use('Agg')
+from datetime import datetime
 import os
 
+import matplotlib
+matplotlib.use('Agg')
 from torch import nn
 from torch import optim
 from torch.utils.data import DataLoader
@@ -527,7 +528,7 @@ if __name__ == '__main__':
                                       dir=BEST_STROKE_TO_INSTRUCTION_DIR, ext='json')
 
     else:
-        save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', opt.groupname, run_name)
+        save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
         model = StrokesToInstructionModel(hp, save_dir)
         experiments.save_run_data(save_dir, hp)
 
