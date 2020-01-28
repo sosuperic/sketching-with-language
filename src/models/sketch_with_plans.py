@@ -161,7 +161,7 @@ class SketchRNNWithPlans(SketchRNNModel):
                 # Concat stack of instructions (which occur at every time step) to dec_inputs
                 hidden = torch.cat([hidden[0].unsqueeze(0), hidden], dim=0)  # sos adds a timestep
                 dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
-                pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+                _, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
             elif hp.cond_instructions == 'match':
                 # decoder's hidden states are "matched" with language representations
@@ -252,7 +252,7 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'sketchwplans', opt.groupname, run_name)
+    save_dir = os.path.join(RUNS_PATH, 'sketchwplans', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
     utils.save_run_data(save_dir, hp)
 
     model = None

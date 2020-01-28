@@ -541,7 +541,8 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
-    save_dir = os.path.join(RUNS_PATH, 'sketchrnn', opt.groupname, run_name)
+
+    save_dir = os.path.join(RUNS_PATH, 'sketchrnn', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
     utils.save_run_data(save_dir, hp)
 
     model = None
