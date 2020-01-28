@@ -69,5 +69,6 @@ def save_segmentation_in_treant_format(seg_tree, out_fp):
 
 
 if __name__ == "__main__":
-    seg_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair'
+    # seg_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair'
+    seg_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair/instruction_to_strokes/dec19/test'
     convert_all_segmentations_to_treants(seg_dir)

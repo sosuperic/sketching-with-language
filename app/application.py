@@ -24,7 +24,8 @@ application = Flask(__name__,
                     static_folder='static',
                     template_folder='templates')
 
-SEG_DIR = 'static/segmentations/greedy_parsing/progressionpair/test/'
+# SEG_DIR = 'static/segmentations/greedy_parsing/progressionpair/test/'
+SEG_DIR = 'static/segmentations/greedy_parsing/progressionpair/instruction_to_strokes/dec19/test/'
 
 def load_seg_trees():
     fns = sorted(os.listdir(SEG_DIR))
