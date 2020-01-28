@@ -474,6 +474,7 @@ class SketchRNNDecoderGMM(nn.Module):
             hidden_cell = (hidden, cell)
 
         outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
+        # self.outputs = outputs
 
         # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
         # Dimensions
@@ -522,7 +523,9 @@ class SketchRNNDecoderGMM(nn.Module):
         # Eq. 7
         q = F.softmax(params_pen, dim=-1).view(len_out, bsz, 3)
 
-        return pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
+        # TODO: refactor all instances to unpack outputs
+        # TODO: rename outputs as all_hidden?
+        return outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell
 
     #
     # Loss
@@ -610,8 +613,10 @@ class SketchRNNDecoderGMM(nn.Module):
         # Loss of pen parameters (cross entropy between ground truth pen params p
         # and predicted categorical distribution q)
         if average_loss:
+            # LP = -torch.sum(p * torch.log(q)) / mask.sum()
             LP = -torch.sum(mask.unsqueeze(-1) * p * torch.log(q)) / mask.sum()
         else:
+            # LP = p * torch.log(q)  # [max_len + 1, bsz, 3]
             LP = mask.unsqueeze(-1) * p * torch.log(q)  # [max_len + 1, bsz, 3]
             LP = LP.sum(dim=[0,2]) / mask.sum(dim=0)    # [bsz]
 

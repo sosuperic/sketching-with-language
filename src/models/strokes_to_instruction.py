@@ -22,7 +22,7 @@ from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
 from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN
-from src.eval.stroke_to_instruction import InstructionScorer
+from src.eval.strokes_to_instruction import InstructionScorer
 
 USE_CUDA = torch.cuda.is_available()
 

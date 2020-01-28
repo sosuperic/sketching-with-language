@@ -136,13 +136,13 @@ class InstructionToStrokesModel(SketchRNNModel):
             hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
             hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
             dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
-            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+            outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
         # Method 2: initialize decoder's hidden state with instruction embedding
         elif self.hp.cond_instructions == 'initdec':
             hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
             hidden_cell = (hidden, hidden.clone())
-            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
+            outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
 
         #
         # Calculate losses

@@ -18,11 +18,17 @@ GRID = {
         'ndjson'
     ],
     'max_per_category': [
-        250,
+        # 250,
         # 2500,
+        25000,
     ],
     'categories': [
         'all',
+    ],
+    # Training
+    'lr': [
+        0.0005,
+        0.0001
     ],
     # Model
     'model_type': ['decodergmm'],
@@ -30,12 +36,7 @@ GRID = {
         '256 --dec_dim 256',
         '512 --dec_dim 512',
         # '1024 --dec_dim 1024',
-        # '2048 --dec_dim 2048'
-    ],
-    # Training
-    'lr': [
-        0.0005,
-        0.0001
+        '2048 --dec_dim 2048'
     ],
 }
 

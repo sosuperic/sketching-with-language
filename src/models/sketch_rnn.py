@@ -143,7 +143,8 @@ class SketchRNNModel(TrainNN):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
-        self.generate_and_save(data_loader, epoch, n_gens=5, outputs_path=outputs_path)
+        pass
+        # self.generate_and_save(data_loader, epoch, n_gens=5, outputs_path=outputs_path)
 
     ##############################################################################
     # Generate
@@ -183,7 +184,7 @@ class SketchRNNModel(TrainNN):
                     input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
                 elif self.hp.model_type == 'decodergmm':  # input is last state and hidden_cell
                     input = s
-                    pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
+                    outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
                         self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
                     hidden_cell = (hidden, cell)
                     # sample next state
@@ -418,7 +419,7 @@ class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
         dec_inputs = torch.cat([sos, strokes], 0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
 
         # Decode
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+        outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
         # Calculate losses
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
@@ -490,7 +491,7 @@ class SketchRNNVAEModel(SketchRNNModel):
         # TODO: if we want multiple layers, we need to replicate hidden and cell n_layers times
 
         # Decode
-        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True,
+        _, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True,
                                                                      hidden_cell=hidden_cell)
 
         # Calculate losses
