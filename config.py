@@ -1,9 +1,9 @@
+# config.py
 
+from pathlib import Path
 
 ##############################################################
-#
 #  QUICKDRAW
-#
 ##############################################################
 
 # Original data
@@ -54,9 +54,7 @@ LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2i
 
 
 ##############################################################
-#
 # (Current) best models, experiments, etc.
-#
 ##############################################################
 RUNS_PATH = Path('runs/')
 

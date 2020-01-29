@@ -83,6 +83,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--instruction_set', default=None)
     parser.add_argument('--groupname', default=None)
+    parser.add_argument('--email_groupname', default='sketchwplans',
+                        help='Sent in email when sweep is completed.')
     args = parser.parse_args()
 
     if args.instruction_set == 'toplevel':
@@ -99,4 +101,5 @@ if __name__ == "__main__":
     base_cmd = CMD + f' --groupname {groupname}'
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
-                    prequeue_sleep_secs=10, check_queue_every_nmin=10)
+                    prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    email_groupname=args.email_groupname)

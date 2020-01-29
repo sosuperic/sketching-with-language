@@ -11,6 +11,8 @@ data/
 papers/
 venv/
 runs/
+
 EXPERIMENTS.md
 ROADMAP.md
-commit.txt
+
+.email_config.json

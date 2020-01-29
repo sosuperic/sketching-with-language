@@ -15,6 +15,8 @@ import pickle
 from pprint import pprint
 import schedule
 import shutil
+import smtplib
+import socket
 import subprocess
 import sys
 import time
@@ -39,8 +41,32 @@ def get_available_GPUs():
     """
     return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=0.33, includeNan=False)
 
+def send_email(subject, text):
+    email_data = load_file('.email_config.json')
+    SENDING_ADDRESS = email_data['email']
+    SENDING_PASSWORD = email_data['password']
+    to_addr_list = email_data['email_to']
+
+    body = '\r\n'.join(['From: {}'.format(SENDING_ADDRESS),
+                        'To: {}'.format(to_addr_list),
+                        'Subject: {}'.format(subject),
+                        '',
+                        text])
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)  # NOTE: This is the GMAIL SSL port.
+        server.ehlo()
+        server.starttls()
+        server.login(SENDING_ADDRESS, SENDING_PASSWORD)
+        server.sendmail(SENDING_ADDRESS, to_addr_list, body)
+        server.quit()
+        print('Email sent successfully!')
+    except Exception as e:
+        print('Email failed to send!')
+        print(str(e))
+
 def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
-                    prequeue_sleep_secs=120, check_queue_every_nmin=10):
+                    prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    email_groupname='-'):
     """
     Launch and queue multiple runs.
 
@@ -48,6 +74,9 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
         base_cmd (str): bash command used to run
         grid (dict): keys are hyperparameters, values are list of grid values
         ngpus_per_run (int): number of gpus to use for each command (> 1 if using multiGPU)
+        prequeue_sleep_nmin (int)
+        check_queue_every_nmin (int)
+        email_groupname (str)
     """
     if ngpus_per_run > 1:
         raise NotImplementedError('MultiGPU per run not handled yet')
@@ -73,20 +102,25 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
     n_available = len(available_gpu_ids)
 
     # Run commands on available GPUs
+    processes = []
     queued_combos = []
+    n_ran = 0
     for i, combo in enumerate(combos):
         if i < n_available:  # run immediately
             gpu_id = available_gpu_ids[i]
             cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
             if i == 0:
                 print(f'Sample command: {cmd}')
-            # print(f'{datetime.now()}: {cmd}')
-            subprocess.Popen(cmd, shell=True)
+            proc = subprocess.Popen(cmd, shell=True)
+            processes.append(proc)
+            n_ran += 1
         else:
             queued_combos.append(combo)
 
     # "Queue" the rest
+    print('N run immediate: {}, N queued: {}'.format(n_ran, len(queued_combos)))
     # let programs start running and utilize the GPU. Some take a long time to initialize the dataset...
+    time.sleep(prequeue_sleep_nmin)
     cur_combo_idx = 0
     while True:
         time.sleep(check_queue_every_nmin * 60)
@@ -94,14 +128,25 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
 
         for i in range(len(available_gpu_ids)):  # run on available gpus
             if cur_combo_idx >= len(queued_combos):  # exit if all combos ran
-                return
+                break
 
             combo = queued_combos[cur_combo_idx]
             gpu_id = available_gpu_ids[i]
             cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
-            subprocess.Popen(cmd, shell=True)
+            proc = subprocess.Popen(cmd, shell=True)
+            processes.append(proc)
             cur_combo_idx += 1
 
+        # hacky way to have above break (all combos ran) exit outer loop
+        else:
+            continue  # only executed if the inner loop did NOT break
+        break  # only executed if the inner loop DID break
+
+    # Wait for jobs to finish
+    exit_codes = [p.wait() for p in processes]
+    hostname = socket.gethostname()
+    send_email('{} sweep on {} finished'.format(email_groupname, hostname),
+               'Yay!')
 
 def load_hp(hp_obj, dir):
     """
