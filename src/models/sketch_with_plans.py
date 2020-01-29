@@ -68,14 +68,21 @@ class SketchRNNWithPlans(SketchRNNModel):
         # Model
         vocab_size = len(utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH))
         self.text_embedding = nn.Embedding(vocab_size, hp.enc_dim)
+
         self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
-        dec_input_dim = (5 + hp.enc_dim) if (hp.cond_instructions == 'decinputs') else 5  # dec_inputs
+
+        self.category_embedding = None
+        if hp.use_categories_dec:
+        	self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
+        dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
+        dec_input_dim = (5 + dec_input_dim) if (hp.cond_instructions == 'decinputs') else dec_input_dim  # dec_inputs
         self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
 
-        self.models.extend([self.text_embedding, self.enc, self.dec])
+        self.models.extend([self.text_embedding, self.category_embedding, self.enc, self.dec])
         if USE_CUDA:
             for model in self.models:
-                model.cuda()
+                if model:
+                    model.cuda()
 
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
@@ -136,6 +143,11 @@ class SketchRNNWithPlans(SketchRNNModel):
         sos = nn_utils.move_to_cuda(sos)
         dec_inputs = torch.cat([sos, strokes], dim=0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
 
+        if self.hp.use_categories_dec:
+            cat_embs = self.category_embedding(cats_idx)  # [bsz, cat_dim]
+            cat_embs = cat_embs.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, cat_dim]
+            dec_inputs = torch.cat([dec_inputs, cat_embs], dim=2)  # [max_len+1, bsz, 5 + cat_dim]
+
         #
         # Encode instructions, decode
         #
@@ -161,7 +173,7 @@ class SketchRNNWithPlans(SketchRNNModel):
 
                 # Concat stack of instructions (which occur at every time step) to dec_inputs
                 hidden = torch.cat([hidden[0].unsqueeze(0), hidden], dim=0)  # sos adds a timestep
-                dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
+                dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, _]
                 _, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
             elif hp.cond_instructions == 'match':

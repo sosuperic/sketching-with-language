@@ -295,6 +295,8 @@ class SketchWithPlansDataset(Dataset):
                 'toplevel': only use instruction generated for entire drawing
                 'toplevel_leaves': use toplevel and all leaf instructions
         """
+        # TODO: pass in categories
+
         self.dataset = dataset
         self.max_len = max_len
         self.max_per_category = max_per_category
@@ -360,7 +362,7 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
     on different stacks of instructions.
     """
     def __init__(self,
-                 dataset='progressionpair',
+                 dataset='ndjson',
                  max_len=200,
                  max_per_category=250,
                  dataset_split='train',
@@ -395,7 +397,7 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
     instruction tree.
     """
     def __init__(self,
-                 dataset='progressionpair',
+                 dataset='ndjson',
                  max_len=200,
                  max_per_category=250,
                  dataset_split='train',

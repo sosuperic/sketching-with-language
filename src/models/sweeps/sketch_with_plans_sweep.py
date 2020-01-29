@@ -22,8 +22,8 @@ BASE_GRID = {
     ],
     'max_per_category': [
         # 250,
-        # 2500,
-        25000,
+        2500,
+        # 25000,
     ],
     'cond_instructions': [
         # 'initdec',
@@ -37,11 +37,19 @@ BASE_GRID = {
     ],
     'enc_dim': [
         '256 --dec_dim 256',
-        '2048 --dec_dim 2048',
         '512 --dec_dim 512',
         # '1024 --dec_dim 1024',
         # '2048 --dec_dim 2048'
     ],
+    'use_categories_dec': [
+        'true',
+        # 'false',
+    ],
+    'categories_dim': [
+        128,
+        256,
+    ],
+
 }
 
 GRID_1 = copy.deepcopy(BASE_GRID)

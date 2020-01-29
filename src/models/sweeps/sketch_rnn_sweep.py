@@ -23,9 +23,9 @@ GRID = {
         2500,
         # 25000,
     ],
-    'categories': [
-        'all',
-    ],
+    # 'categories': [
+    #     'all',
+    # ],
     # Training
     'lr': [
         0.0005,
@@ -39,7 +39,7 @@ GRID = {
         # '1024 --dec_dim 1024',
         # '2048 --dec_dim 2048'
     ],
-    'category_embedding': [
+    'use_categories_dec': [
         'true',
         # 'false',
     ],
