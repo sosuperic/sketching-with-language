@@ -7,7 +7,7 @@ Usage:
 """
 
 import argparse
-from src.utils import run_param_sweep
+from src.models.core.experiments import run_param_sweep
 
 CMD = 'PYTHONPATH=. python src/models/strokes_to_instruction.py'
 
@@ -49,7 +49,7 @@ GRID = {
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--groupname', help='name of subdir to save runs')
-    parser.add_argument('--email_groupname', default='sketchrnn',
+    parser.add_argument('--email_groupname', default='strokes_to_instruction',
                         help='Sent in email when sweep is completed.')
     args = parser.parse_args()
 
@@ -57,4 +57,4 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname=args.email_groupname)å
+                    email_groupname=args.email_groupname)

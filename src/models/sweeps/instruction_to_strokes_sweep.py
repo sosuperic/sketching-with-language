@@ -39,7 +39,7 @@ GRID = {
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--groupname', help='name of subdir to save runs')
-    parser.add_argument('--email_groupname', default='sketchrnn',
+    parser.add_argument('--email_groupname', default='instruction_to_strokes',
                         help='Sent in email when sweep is completed.')
     args = parser.parse_args()
 
