@@ -35,48 +35,21 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
+from config import QUICKDRAW_DATA_PATH, NDJSON_PATH, \
+    CATEGORIES_ANIMAL_PATH, CATEGORIES_FINAL_PATH, \
+    FONT_PATH, \
+    QUICKDRAW_DRAWINGS_PATH, QUICKDRAW_PAIRS_PATH, QUICKDRAW_PROGRESSIONS_PATH, \
+    QUICKDRAW_PROGRESSIONS_PAIRS_PATH, QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH, \
+    S3_PROGRESSIONS_URL, S3_PROGRESSIONS_PATH, \
+    S3_PROGRESSION_PAIRS_URL, S3_PROGRESSION_PAIRS_PATH, \
+    ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
+    SEGMENTATIONS_PATH
 import src.utils as utils
 
-###################################################################
-#
-# Config and paths
-#
-###################################################################
-
-# Original
-QUICKDRAW_DATA_PATH = Path('data/quickdraw')
-NDJSON_PATH = str(QUICKDRAW_DATA_PATH / 'simplified_ndjson' / '{}.ndjson')
-
-# Selected categories
-CATEGORIES_ANIMAL_PATH = 'data/quickdraw/categories_animals.txt'
-CATEGORIES_FINAL_PATH = 'data/quickdraw/categories_final.txt'
-
-# Params and paths for saving various images of drawings
+# Params
 SIDE = 112
 LINE = 6
 PAIRS_MIN_STROKES = 3
-FONT_PATH = str(QUICKDRAW_DATA_PATH / 'ARIALBD.TTF')
-
-QUICKDRAW_DRAWINGS_PATH = QUICKDRAW_DATA_PATH / 'drawings'
-QUICKDRAW_PAIRS_PATH = QUICKDRAW_DATA_PATH / 'drawings_pairs'
-QUICKDRAW_PROGRESSIONS_PATH = QUICKDRAW_DATA_PATH / 'progressions'
-QUICKDRAW_PROGRESSIONS_PAIRS_PATH = QUICKDRAW_DATA_PATH / 'progression_pairs_fullinput'
-QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'data'
-
-# For MTurk
-S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
-S3_PROGRESSIONS_PATH = 's3://hierarchical-learning/quickdraw/progressions_fullinput/{}/progress/{}'
-S3_PROGRESSION_PAIRS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progression_pairs_fullinput/{}/progress/{}'
-S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pairs_fullinput/{}/progress/{}'
-
-# MTurk annotated data
-ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'mturk_progressions_pairs_fullresults0.csv'
-LABELED_PROGRESSION_PAIRS_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs'
-LABELED_PROGRESSION_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs' / 'data'
-
-# Segmentations (Instruction trees)
-SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
-
 
 ###################################################################
 #

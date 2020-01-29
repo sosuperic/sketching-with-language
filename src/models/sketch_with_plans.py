@@ -18,19 +18,15 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from config import RUNS_PATH, LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH
 from src import utils
 from src.models.core import experiments, nn_utils
-from src.models.core.train_nn import RUNS_PATH, TrainNN
-from src.models.base.instruction_models import (
-    ProgressionPairDataset,
-    SketchWithPlansConditionEntireDrawingDataset,
-    SketchWithPlansConditionSegmentsDataset,
-    InstructionEncoderTransformer,
-    LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH
-)
-from src.models.base.stroke_models import (
-    SketchRNNDecoderGMM
-)
+from src.models.core.train_nn import TrainNN
+from src.models.base.instruction_models import ProgressionPairDataset, \
+    SketchWithPlansConditionEntireDrawingDataset, \
+    SketchWithPlansConditionSegmentsDataset, \
+    InstructionEncoderTransformer
+from src.models.base.stroke_models import SketchRNNDecoderGMM
 from src.models.sketch_rnn import SketchRNNModel
 from src.models.sketch_rnn import HParams as SketchRNNHParams
 

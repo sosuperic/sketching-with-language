@@ -16,6 +16,7 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
+from config import RUNS_PATH
 from src import utils
 from src.data_manager.quickdraw import save_strokes_as_img
 from src.models.base.instruction_models import (ProgressionPairDataset)
@@ -25,7 +26,7 @@ from src.models.base.stroke_models import (NdjsonStrokeDataset,
                                            SketchRNNDecoderLSTM,
                                            SketchRNNVAEEncoder)
 from src.models.core import experiments, nn_utils
-from src.models.core.train_nn import RUNS_PATH, TrainNN
+from src.models.core.train_nn import TrainNN
 
 USE_CUDA = torch.cuda.is_available()
 

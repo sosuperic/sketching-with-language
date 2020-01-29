@@ -14,12 +14,11 @@ from torch import nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 
+from config import SEGMENTATIONS_PATH, NPZ_DATA_PATH
 from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories, \
-    ndjson_drawings, ndjson_to_stroke3, SEGMENTATIONS_PATH
+    ndjson_drawings, ndjson_to_stroke3
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
-
-NPZ_DATA_PATH = Path('data/quickdraw/npz/')
 
 ##############################################################################
 #

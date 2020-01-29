@@ -10,9 +10,8 @@ import torch
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 
+from config import RUNS_PATH
 import src.utils as utils
-
-RUNS_PATH = Path('runs/')
 
 
 class TrainNN(nn.Module):

@@ -12,22 +12,25 @@ from torch import nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 
+from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
+    LABELED_PROGRESSION_PAIRS_TRAIN_PATH, \
+    LABELED_PROGRESSION_PAIRS_VALID_PATH, \
+    LABELED_PROGRESSION_PAIRS_TEST_PATH, \
+    LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH, \
+    LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, \
+    LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH, \
+    LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH, \
+    BEST_SEG_NDJSON_PATH, BEST_SEG_PROGRESSION_PAIRS_PATH
 from src import utils
-from src.data_manager.quickdraw import  QUICKDRAW_DATA_PATH, \
-    LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
-    build_category_index, normalize_strokes, stroke3_to_stroke5, SEGMENTATIONS_PATH
+from src.data_manager.quickdraw import build_category_index, \
+    normalize_strokes, stroke3_to_stroke5
 from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.core import nn_utils, transformer_utils
 
 
-LABELED_PROGRESSION_PAIRS_TRAIN_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'train.pkl'
-LABELED_PROGRESSION_PAIRS_VALID_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'valid.pkl'
-LABELED_PROGRESSION_PAIRS_TEST_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'test.pkl'
 
-LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2token.pkl'
-LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'token2idx.pkl'
-LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2cat.pkl'
-LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2idx.pkl'
+
+
 
 
 ##############################################################################
@@ -308,7 +311,7 @@ class SketchWithPlansDataset(Dataset):
         if dataset == 'progressionpair':
             self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=max_len)
             # TODO: this is hardcoded in here, should be moved to some config
-            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'progressionpair' / 'nov26_2019' / 'strokes_to_instruction' / dataset_split
+            self.plans_dir = BEST_SEG_PROGRESSION_PAIRS_PATH / dataset_split
             self.id_to_plan = self.load_progression_pair_plans(self.plans_dir)
         elif dataset == 'ndjson':
             self.ds = NdjsonStrokeDataset('all', dataset_split,
@@ -316,7 +319,7 @@ class SketchWithPlansDataset(Dataset):
             # compared to progressionpair, we don't pre-load the plans because that would be too much memory
             # also, the directory is in a different format (no dataset_split)
             # TODO: this is hardcoded in here, should be moved to some config
-            self.plans_dir = SEGMENTATIONS_PATH / 'greedy_parsing' / 'ndjson' / 'nov30_2019' / 'strokes_to_instruction'
+            self.plans_dir = BEST_SEG_NDJSON_PATH
 
     def get_underlying_ds_item(self, idx):
         """

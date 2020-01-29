@@ -20,11 +20,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from config import SEGMENTATIONS_PATH, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, \
+    BEST_STROKES_TO_INSTRUCTION_PATH, BEST_INSTRUCTION_TO_STROKES_PATH
 from src import utils
-from src.data_manager.quickdraw import QUICKDRAW_DATA_PATH, final_categories, \
-    create_progression_image_from_ndjson_seq, SEGMENTATIONS_PATH
+from src.data_manager.quickdraw import final_categories, create_progression_image_from_ndjson_seq
 from src.models.base.stroke_models import NdjsonStrokeDataset
-from src.models.base.instruction_models import ProgressionPairDataset, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, map_sentence_to_index
+from src.models.base.instruction_models import ProgressionPairDataset, map_sentence_to_index
 from src.models.core import experiments, nn_utils
 from src.models.instruction_to_strokes import InstructionToStrokesModel
 from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
@@ -38,11 +39,8 @@ from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
-
-        # self.strokes_to_instruction_dir = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
-        self.strokes_to_instruction_dir = 'runs/strokes_to_instruction/bigsweep/condition_on_hc_True-dim_256-dropout_0.2-lr_0.0005-model_type_lstm-n_dec_layers_4-n_enc_layers_4-use_categories_dec_True-use_categories_enc_False-use_prestrokes_False'
-        self.instruction_to_strokes_dir = 'runs/instruction_to_strokes/dec17/cond_instructions_initdec-dec_dim_512-enc_dim_512-lr_0.001-model_type_decodergmm/'
-
+        self.strokes_to_instruction_dir = BEST_STROKES_TO_INSTRUCTION_PATH
+        self.instruction_to_strokes_dir = BEST_INSTRUCTION_TO_STROKES_PATH
         self.notes = ''
 
 ##############################################################################

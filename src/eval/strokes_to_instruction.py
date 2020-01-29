@@ -1,7 +1,8 @@
 # strokes_to_instruction.py
 
 """
-Evaluating StrokesToInstruction model
+Evaluating StrokesToInstruction model by calcaulting ROUGE and other
+word-based stats.
 
 Usage:
     PYTHONPATH=. python src/eval/strokes_to_instruction.py --fp <dir>/outputs/samples_e11.json

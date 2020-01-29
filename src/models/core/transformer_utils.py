@@ -58,7 +58,7 @@ def create_transformer_padding_masks(src_lens=None, tgt_lens=None):
     Args:
         src_lens: list of length bsz
         tgt_lens: list of length bsz
-    
+
     Returns:
         src_key_padding_mask: [bsz, max_src_len] ByteTensor
         tgt_key_padding_mask: [bsz, max_tgt_len] ByteTensor
@@ -115,7 +115,7 @@ def transformer_generate(
         ):
     """
     Decode up to max_len symbols by feeding previous output as next input.
-    
+
     Args:
         transformer: nn.Transformer
         token_embedding: nn.Embedding(vocab, dim)
@@ -124,7 +124,7 @@ def transformer_generate(
         input_lens: list of ints
         init_ids: [init_len, bsz]  (e.g. SOS ids)
         init_embs: [init_len, bsz, emb] (e.g. embedded SOS ids)
-        pad_id: int 
+        pad_id: int
         eos_id: int (id for EOS_ID token)
         decode_method: str (how to sample words given probabilities; 'greedy', 'sample')
         tau: float (temperature for softmax)

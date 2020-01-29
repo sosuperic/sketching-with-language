@@ -6,11 +6,8 @@ import os
 from pprint import pprint
 import pandas as pd
 
+from config import  ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
 import src.utils as utils
-from src.data_manager.quickdraw import ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH
-
-INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'vocab_distribution.json'
-
 
 
 ###################################################################

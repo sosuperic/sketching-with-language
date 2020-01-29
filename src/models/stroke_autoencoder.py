@@ -7,7 +7,8 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from src.models.core.train_nn import TrainNN, RUNS_PATH
+from config import RUNS_PATH
+from src.models.core.train_nn import TrainNN
 from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
@@ -177,6 +178,8 @@ if __name__ == '__main__':
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     opt = parser.parse_args()
     nn_utils.setup_seeds()
+
+    # TODO: update this to match the other models (e.g. SketchRNN), (i.e. date in subdir etc.)
 
     save_dir = RUNS_PATH / 'stroke_autoencoder' / run_name
     model = StrokeAutoencoderModel(hp, save_dir)

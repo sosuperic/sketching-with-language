@@ -26,21 +26,17 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from config import LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH, RUNS_PATH
 from src import utils
 from src.models.core import nn_utils
-from src.models.core.train_nn import RUNS_PATH, TrainNN
-from src.models.base.instruction_models import (
-    ProgressionPairDataset,
-    InstructionEncoderTransformer,
-    LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH
-)
-from src.models.base.stroke_models import (
-    SketchRNNDecoderGMM
-)
+from src.models.core.train_nn import TrainNN
+from src.models.base.instruction_models import ProgressionPairDataset, InstructionEncoderTransformer
+from src.models.base.stroke_models import SketchRNNDecoderGMM
 from src.models.sketch_rnn import SketchRNNModel
 from src.models.sketch_rnn import HParams as SketchRNNHParams
 
 USE_CUDA = torch.cuda.is_available()
+
 
 class HParams(SketchRNNHParams):
     def __init__(self):

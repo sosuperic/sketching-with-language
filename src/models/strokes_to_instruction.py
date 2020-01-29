@@ -17,8 +17,10 @@ from torch import optim
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from src.data_manager.instructions import INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
-from src.models.core.train_nn import TrainNN, RUNS_PATH
+from config import RUNS_PATH, \
+    BEST_STROKES_TO_INSTRUCTION_DIR, \
+    INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
+from src.models.core.train_nn import TrainNN
 from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
@@ -520,12 +522,11 @@ if __name__ == '__main__':
     nn_utils.setup_seeds()
 
     if opt.inference:
-        BEST_STROKE_TO_INSTRUCTION_DIR = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'
         # TODO: should load hp before... write function in utils
         model = StrokesToInstructionModel(hp, save_dir=None)
-        model.load_model(BEST_STROKE_TO_INSTRUCTION_DIR)
+        model.load_model(BEST_STROKES_TO_INSTRUCTION_DIR)
         model.save_inference_on_split(dataset_split=opt.inference_split,
-                                      dir=BEST_STROKE_TO_INSTRUCTION_DIR, ext='json')
+                                      dir=BEST_STROKES_TO_INSTRUCTION_DIR, ext='json')
 
     else:
         save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
