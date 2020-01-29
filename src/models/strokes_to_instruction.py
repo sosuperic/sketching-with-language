@@ -4,7 +4,7 @@
 Use the annotated MTurk data (ProgressionPairDataset) to train a P(instruction | drawing_segment) model.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type cnn_lstm
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type lstm
 """
 
 from datetime import datetime
@@ -18,13 +18,14 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from config import RUNS_PATH, \
-    BEST_STROKES_TO_INSTRUCTION_DIR, \
+    BEST_STROKES_TO_INSTRUCTION_PATH, \
     INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
-from src.models.core.train_nn import TrainNN
-from src.models.core.transformer_utils import *
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
     PAD_ID, OOV_ID, SOS_ID, EOS_ID
 from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN
+from src.models.core.train_nn import TrainNN
+from src.models.core.transformer_utils import *
+from src.models.core import experiments, nn_utils
 from src.eval.strokes_to_instruction import InstructionScorer
 
 USE_CUDA = torch.cuda.is_available()
@@ -51,6 +52,7 @@ class HParams():
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
+        self.use_layer_norm = False   # currently only for lstm
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_prestrokes = False
         self.use_categories_enc = False
@@ -98,7 +100,7 @@ class StrokesToInstructionModel(TrainNN):
             elif hp.model_type == 'lstm':
                 self.enc = StrokeEncoderLSTM(
                     5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
-                    use_categories=hp.use_categories_enc,
+                    use_categories=hp.use_categories_enc, use_layer_norm=hp.use_layer_norm
                 )
 
             # decoder is lstm
@@ -524,9 +526,9 @@ if __name__ == '__main__':
     if opt.inference:
         # TODO: should load hp before... write function in utils
         model = StrokesToInstructionModel(hp, save_dir=None)
-        model.load_model(BEST_STROKES_TO_INSTRUCTION_DIR)
+        model.load_model(BEST_STROKES_TO_INSTRUCTION_PATH)
         model.save_inference_on_split(dataset_split=opt.inference_split,
-                                      dir=BEST_STROKES_TO_INSTRUCTION_DIR, ext='json')
+                                      dir=BEST_STROKES_TO_INSTRUCTION_PATH, ext='json')
 
     else:
         save_dir = os.path.join(RUNS_PATH, 'strokes_to_instruction', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)

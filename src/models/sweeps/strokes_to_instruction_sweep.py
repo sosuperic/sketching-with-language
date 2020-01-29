@@ -3,6 +3,7 @@
 """
 Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname bigsweep
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname lstm_layernorm
 """
 
 import argparse
@@ -15,9 +16,10 @@ NGPUS_PER_RUN = 1
 GRID = {
     # Model
     'model_type': [
-        'cnn_lstm',
-        'lstm',
-        'transformer_lstm',
+        # 'cnn_lstm',
+        # 'lstm',
+        'lstm --use_layer_norm true',
+        # 'transformer_lstm',
     ],
     'dim': [
         256,
@@ -33,17 +35,12 @@ GRID = {
         'false',
     ],
     'use_prestrokes': ['false'],
-    'use_categories_enc': [
-        'true',
-        'false',
-    ],
-    'use_categories_dec': [
-        'true',
-        'false',
-    ],
+    'use_categories_enc': ['false'],
+    'use_categories_dec': ['true'],
     'dropout': [0.2],
      # Training
     'lr': [
+        0.001,
         0.0005,
         0.0001,
     ],

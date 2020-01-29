@@ -19,6 +19,7 @@ from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, bu
     ndjson_drawings, ndjson_to_stroke3
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
+from src.models.core.custom_lstms import script_lnlstm, LSTMState
 
 ##############################################################################
 #
@@ -258,8 +259,7 @@ class StrokeEncoderCNN(nn.Module):
 class StrokeEncoderLSTM(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=False,
-                 use_categories=False
-                 ):
+                 use_categories=False, use_layer_norm=False):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -267,15 +267,24 @@ class StrokeEncoderLSTM(nn.Module):
         self.dropout = dropout
         self.batch_first = batch_first
         self.use_categories = use_categories
+        self.use_layer_norm = use_layer_norm
 
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
-            self.lstm = nn.LSTM(hidden_dim, hidden_dim, bidirectional=True,
-                                num_layers=num_layers, dropout=dropout, batch_first=batch_first)
+            if use_layer_norm:
+                self.lstm = script_lnlstm(hidden_dim, hidden_dim, num_layers, bidirectional=True,
+                                    dropout=False, batch_first=batch_first)  # dropout must be false
+            else:
+                self.lstm = nn.LSTM(hidden_dim, hidden_dim, bidirectional=True,
+                                    num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         else:
-            self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional=True,
-                                num_layers=num_layers, dropout=dropout, batch_first=batch_first)
+            if use_layer_norm:
+                self.lstm = script_lnlstm(input_dim, hidden_dim, num_layers, bidirectional=True,
+                                    dropout=False, batch_first=batch_first)  # dropout must be false
+            else:
+                self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional=True,
+                                    num_layers=num_layers, dropout=dropout, batch_first=batch_first)
 
     def forward(self, strokes, stroke_lens,
                 category_embedding=None, categories=None):
@@ -287,7 +296,7 @@ class StrokeEncoderLSTM(nn.Module):
             categories: [bsz] LongTensor
 
         Returns:
-            stroke_outputs: [max_stroke_len, bsz, dim]
+            strokes_outputs: [max_stroke_len, bsz, dim]
             hidden: [layers * direc, bsz, dim]
             cell:  [layers * direc, bsz, dim]
         """
@@ -301,9 +310,24 @@ class StrokeEncoderLSTM(nn.Module):
             strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
             strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
 
-        packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
-        strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
-        strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
+        if self.use_layer_norm:  # torchscript doesn't support packed sequence
+            init_states = [LSTMState(nn_utils.move_to_cuda(torch.zeros(bsz, self.hidden_dim)),
+                                     nn_utils.move_to_cuda(torch.zeros(bsz, self.hidden_dim))) for _ in range(self.num_layers)]
+            strokes_outputs, (hidden_, cell_) = self.lstm(strokes, init_states)  # layernorm lstm must pass in states
+            # TODO: is this the proper way to mask / account for lengths?
+            # At least in the strokes_to_instruction case, we just care about the last hidden states
+            # Note: the following is a little different from the non-layernorm version. In that case,
+            # 1) hiddens and cells are distinct
+            # 2) hidden and cells at each layer are returned (here it's repeated, outputs is only the last layer)
+            hidden = [strokes_outputs[stroke_lens[i], i, :] for i in range(bsz)]  # bsz length list, items are [dim]
+            hidden = torch.stack([hidden], dim=0)  # [bsz, dim]
+            hidden = hidden.repeat(self.num_layers, 1, 1)  # [num_layers, bsz, dim]
+            cell = hidden.clone()
+
+        else:
+            packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
+            strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
+            strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
 
         # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
         hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
