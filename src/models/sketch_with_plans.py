@@ -11,6 +11,7 @@ from datetime import datetime
 from functools import partial
 import os
 from os.path import abspath
+import random
 
 import numpy as np
 import torch
@@ -69,16 +70,16 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         self.category_embedding = None
         if hp.use_categories_dec:
-        	self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
+            self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
+            self.models.append(self.category_embedding)
         dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
         dec_input_dim = (5 + dec_input_dim) if (hp.cond_instructions == 'decinputs') else dec_input_dim  # dec_inputs
         self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
 
-        self.models.extend([self.text_embedding, self.category_embedding, self.enc, self.dec])
+        self.models.extend([self.text_embedding, self.enc, self.dec])
         if USE_CUDA:
             for model in self.models:
-                if model:
-                    model.cuda()
+                model.cuda()
 
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
@@ -132,6 +133,7 @@ class SketchRNNWithPlans(SketchRNNModel):
             dict where 'loss': float Tensor must exist
         """
         strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls = batch
+        # batch is 1st dimension (not 0th) due to preprocess_batch()
 
         # Create base inputs to decoder
         _, bsz, _ = strokes.size()
@@ -177,53 +179,88 @@ class SketchRNNWithPlans(SketchRNNModel):
 
                 outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
-                import pdb; pdb.set_trace()  # outputs: [max_seq_len, bsz, dim]
-                for i in range(bsz):
-                    penups = np.where(strokes[:,i,:].cpu().numpy()[0][:,3] == 1)[0].tolist()
-                    penups = [0] + penups
+                # # PLAN get hidden states and instruction stack for each batch input, for each segment
+                # import pdb; pdb.set_trace()  # outputs: [max_seq_len, bsz, dim]
+                # loss_match = 0.0
 
-                    for j in range(len(penups) - 1):
+                # For each sequence in batch, divide drawing into segments (based on penup strokes)
+                # For each segment, compute a matching loss between its hidden state and the 
+                # the encoded instruction stack for that segment
+                all_instruction_embs = []
+                all_seg_hiddens = []
+                for i in range(bsz):
+                    penups = np.where(strokes[:,i,:].cpu().numpy()[:,3] == 1)[0].tolist()
+                    penups = ([0] + penups) if (penups[0] != 0) else penups  # first element could already be 0
+                    # TODO: find other place that I do [0] + penups, see if I need to account for the case
+                    # where the first element is 0
+
+                    # Encode instruction stacks
+                    # text_indices: [max_seq_len, bsz, max_instruction_len]
+                    instructions = [text_indices[start_idx, i, :] for start_idx in penups[:-1]]
+                    # Note on above:
+                    #   [:-1] because that's the end of the last segment
+                    #   instructions for each timestep within segment are the same, take the start_idx
+                    instructions = torch.stack(instructions, dim=1)  # [max_instruction_len, n_segs] (max across all segs in batch)
+                    # (n_segs is the "batch" for the encoder)
+                    instructions_lens = [text_lens[start_idx, i].item() for start_idx in penups[:-1]]
+                    instructions = instructions[:max(instructions_lens), :]  # encoder requires this
+                    cur_cats_idx = [cats_idx[i] for _ in range(len(instructions_lens))]  # all segs are from same drawing (i.e. same category)
+                    instruction_embs = self.enc(instructions, instructions_lens, self.text_embedding,
+                                                category_embedding=None, categories=cur_cats_idx)  # [n_segs, dim]
+                    all_instruction_embs.append(instruction_embs)
+
+                    # Compute hidden states mean for each seg
+                    seg_hiddens = []
+                    for j in range(len(penups) - 1):  # n_segs
                         start_idx = penups[j]
                         end_idx = penups[j+1]
                         seg_outputs = outputs[start_idx:end_idx+1, i, :]  # [seg_len, dim]
+                        seg_hidden = seg_outputs.mean(dim=0)  # [dim]
+                        seg_hiddens.append(seg_hidden)
+                    seg_hiddens = torch.stack(seg_hiddens, dim=0)  # [n_segs, dim]
+                    all_seg_hiddens.append(seg_hiddens)
 
+                # Concate all segs across all batch items
+                all_instruction_embs = torch.cat(all_instruction_embs, dim=0)  # [n_total_segs, dim]
+                all_seg_hiddens = torch.cat(all_seg_hiddens, dim=0)  # [n_total_segs, dim]
 
-                # for i in range(bsz):
-                #     penups = np.where(strokes.cpu().numpy()[0][:,3] == 1)[0].tolist()
-                #     # TODO: why are text_indices different within the same segment... that seems like a bug?
-                #     for
+                # Compute triplet loss
+                pos = (all_seg_hiddens - all_instruction_embs) ** 2  # [n_total_segs, dim]
+                all_instruction_embs_shuffled = all_instruction_embs[torch.randperm(pos.size(0)), :]  # [n_total_segs, dim]
+                neg = (all_seg_hiddens - all_instruction_embs_shuffled) ** 2  # [n_total_segs, dim]
+                loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
+                loss_match = max(torch.tensor(0.0), loss_match)
 
-                import pdb; pdb.set_trace()
+                # TODO: check if text_indices is correct
 
         elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
             # Encode instructions
             # text_indices: [len, bsz], text_lens: [bsz]
-            hidden = self.enc(text_indices, text_lens, self.text_embedding,
+            instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
                               category_embedding=None, categories=cats_idx)  # [bsz, dim]
 
             # Method 1: concatenate instruction embedding to every time step
             if self.hp.cond_instructions == 'decinputs':
-                hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-                hidden = hidden.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
-                dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, 5 + dim]
+                instructions_emb = instructions_emb.unsqueeze(0)  #  [1, bsz, dim]
+                instructions_emb = instructions_emb.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
+                dec_inputs = torch.cat([dec_inputs, instructions_emb], dim=2)  # [max_len + 1, bsz, 5 + dim]
                 outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
             # Method 2: initialize decoder's hidden state with instruction embedding
             elif self.hp.cond_instructions == 'initdec':
-                hidden = hidden.unsqueeze(0)  #  [1, bsz, dim]
-                hidden_cell = (hidden, hidden.clone())
+                instructions_emb = instructions_emb.unsqueeze(0)  #  [1, bsz, dim]
+                hidden_cell = (instructions_emb, instructions_emb.clone())
                 outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
-
 
             elif self.hp.cond_instructions == 'match':
                 outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
                 outputs = outputs.mean(dim=0)  # [bsz, dim]
 
                 # triplet loss
-                pos = (outputs - hidden) ** 2  # [bsz]
-                hidden_shuffled = hidden[torch.randperm(bsz), :]  # [bsz, dim]
-                neg = (outputs - hidden_shuffled) ** 2  # [bsz]
-                loss_match = (pos - neg).mean()+ torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
+                pos = (outputs - instructions_emb) ** 2  # [bsz, dim]
+                instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, dim]
+                neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, dim]
+                loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
 
 

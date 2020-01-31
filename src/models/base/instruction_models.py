@@ -574,7 +574,7 @@ class InstructionEncoderTransformer(nn.Module):
         """
         Args:
             text_indices:  [max_len, bsz]
-            text_lens: [bsz]
+            text_lens: [bsz] (maximum value should be max_len)
             text_embedding: nn.Embedding(vocab_size, dim)
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor

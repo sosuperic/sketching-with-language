@@ -90,7 +90,8 @@ class SketchRNNModel(TrainNN):
         self.eta_step = hp.eta_min
         self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, True)
         self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, False)
-        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
+        # TODO: uncomment once generate_and_save() is reimplemented
+        # self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
 
     #
     # Data
@@ -398,15 +399,14 @@ class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
         # Model
         self.category_embedding = None
         if hp.use_categories_dec:
-        	self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
+            self.category_embedding = nn.Embedding(35, self.hp.categories_dim)
+            self.models.append(self.category_embedding)
         inp_dim = (5 + hp.categories_dim) if self.category_embedding else 5
         self.dec = SketchRNNDecoderGMM(inp_dim, hp.dec_dim, hp.M)
-
-        self.models.extend([self.category_embedding, self.dec])
+        self.models.append(self.dec)
         if USE_CUDA:
             for model in self.models:
-                if model:
-                    model.cuda()
+                model.cuda()
 
         # optimization -- ADAM plus annealing (supp eq. 4)
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
