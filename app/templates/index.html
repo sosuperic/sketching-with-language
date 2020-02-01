@@ -48,11 +48,14 @@
 </head>
 <body>
     <div>
-        <p>{{ img_fp }}</p>
+        <h4>{{ category }}</h4>
     </div>
+    <!-- <div>
+        <p>{{ img_fp }}</p>
+    </div> -->
     <div>
         <div id="progression">
-            <img src=" {{ img_fp }} "></img>
+            <img src=" {{ url_for('static', filename=img_fp ) }} "></img>
         </div>
         <div id="tree-simple"></div>
     </div>
@@ -78,7 +81,7 @@
         };
     </script>
 
-    <script type="text/javascript" src="{{ js_fp }}">  // loads simple_chart_config
+    <script type="text/javascript" src="{{ url_for('static', filename=js_fp ) }} ">  // loads simple_chart_config
     </script>
     <script>
         var chart = new Treant(simple_chart_config, function() {}, $ );
