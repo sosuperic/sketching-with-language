@@ -30,6 +30,7 @@ TEMPLATE_FOLDER = 'templates'
 application = Flask(__name__,
                     static_folder=STATIC_FOLDER,
                     template_folder=TEMPLATE_FOLDER)
+application.url_map.strict_slashes = False
 
 def load_seg_trees(seg_dir):
     fns = sorted(os.listdir(STATIC_FOLDER / seg_dir))  # had to add STATIC_FOLDER for gunicorn...
