@@ -4,7 +4,7 @@
 Currently uses trained StrokesToInstruction model to segment unseen sequences.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair --split_scorer instruction_to_strokes --save_subdir dec18
+    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair --score_parent_child_text_sim true
     CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/segmentation.py -ds ndjson
 """
 
@@ -15,6 +15,8 @@ import numpy as np
 import os
 from pprint import pprint
 from uuid import uuid4
+
+import spacy
 
 import torch
 import torch.nn.functional as F
@@ -39,9 +41,31 @@ from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
+        self.score_parent_child_text_sim = False
         self.strokes_to_instruction_dir = BEST_STROKES_TO_INSTRUCTION_PATH
         self.instruction_to_strokes_dir = BEST_INSTRUCTION_TO_STROKES_PATH
         self.notes = ''
+
+
+##############################################################################
+#
+# Utils
+#
+##############################################################################
+
+def remove_stopwords(nlp, text):
+    """
+    Args:
+        nlp (spacy  model): [description]
+        text (str):
+
+    Returns:
+        str
+    """
+    doc = nlp(text.lower())
+    result = [token.text for token in doc if token.text not in nlp.Defaults.stop_words]
+    result = ' '.join(result)
+    return result
 
 ##############################################################################
 #
@@ -71,6 +95,10 @@ class SegmentationModel(object):
             self.instruction_to_strokes = InstructionToStrokesModel(self.i2s_hp, save_dir=None)
             self.instruction_to_strokes.load_model(hp.instruction_to_strokes_dir)  # TODO: change param for load_model
             self.instruction_to_strokes.cuda()
+
+        if hp.score_parent_child_text_sim:
+            spacy.prefer_gpu()
+            self.nlp = spacy.load('en_core_web_md')
 
 
         # TODO: this should be probably be contained in some model...
@@ -318,6 +346,19 @@ class SegmentationGreedyParsingModel(SegmentationModel):
             right_seg_score = seg_scores[right_seg_idx]
             score = left_seg_score + right_seg_score
 
+            # compute similarity between concatenated children instructions and parent instruction
+            # (i.e. instruction for entire parent segment)
+            if self.hp.score_parent_child_text_sim:
+                # Get parent segment and texts
+                parent_seg_idx = seg_idx_map[(left_idx, right_idx)]
+                parent_seg_text = remove_stopwords(self.nlp, seg_texts[parent_seg_idx])
+                left_seg_text = remove_stopwords(self.nlp, seg_texts[left_seg_idx])
+                right_seg_text = remove_stopwords(self.nlp, seg_texts[right_seg_idx])
+
+                left_right_text = left_seg_text + ' ' + right_seg_text
+                parent_children_sim_score = self.nlp(parent_seg_text).similarity(self.nlp(left_right_text))
+                score += parent_children_sim_score
+
             if score > max_score:
                 best_left_seg_text, best_right_seg_text = seg_texts[left_seg_idx], seg_texts[right_seg_idx]
                 best_left_seg_score, best_right_seg_score = left_seg_score, right_seg_score
@@ -343,8 +384,6 @@ class SegmentationGreedyParsingModel(SegmentationModel):
 if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
-    parser.add_argument('--save_subdir')
-    # Model
     parser.add_argument('--method', default='greedy_parsing')
     parser.add_argument('-ds', '--segment_dataset', default='progressionpair',
                         help='Which dataset to segment -- "progressionpair" or "ndjson"')
@@ -352,11 +391,12 @@ if __name__ == '__main__':
 
     # Setup
     nn_utils.setup_seeds()
-    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / datetime.today().strftime('%b%d_%Y') / hp.split_scorer / opt.save_subdir
+    save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / datetime.today().strftime('%b%d_%Y') / hp.split_scorer
     # TODO: find a better way to handle this...
     hp.use_categories_enc = False
     hp.use_categories_dec = True  # backwards compatability (InstructionToStrokes model was trained without that hparams)
     hp.unlikelihood_loss = False
+    hp.use_layer_norm = False
     # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
     # utils.save_file(vars(hp), save_dir / 'hp.json')
     experiments.save_run_data(save_dir, hp)

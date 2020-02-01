@@ -7,3 +7,4 @@ cd "$parent_path"
 pip install -r requirements.txt
 
 python -m nltk.downloader punkt
+python -m spacy download en_core_web_md
