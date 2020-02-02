@@ -103,13 +103,27 @@ def vector_to_raster(vector_images, side=28, line_diameter=16, padding=16, bg_co
 
     return raster_images
 
-def ndjson_drawings(category):
-    """Return list of ndjson data"""
+def ndjson_drawings(category, lazy=False):
+    """
+    Return quickdraw ndjson formatted data
+
+    Args:
+        category (str): e.g. alligator
+        lazy (True):
+            When true, return list of filepaths
+            When false, return list of loaded (and recognized) data
+
+    Returns:
+        list
+    """
     path = NDJSON_PATH.format(category)
     drawings = open(path, 'r').readlines()
-    drawings = [json.loads(d) for d in drawings]
-    drawings = [d for d in drawings if d['recognized']]
-    return drawings
+    if lazy:
+        return drawings
+    else:
+        drawings = [json.loads(d) for d in drawings]
+        drawings = [d for d in drawings if d['recognized']]
+        return drawings
 
 def animal_categories():
     """Return list of strings"""
