@@ -4,6 +4,7 @@
 StrokeDataset(s) and stroke related models
 """
 
+import json
 import numpy as np
 import os
 from pathlib import Path
@@ -101,11 +102,16 @@ class NdjsonStrokeDataset(StrokeDataset):
         start1 = time.time()
         for i, category in enumerate(self.categories):
             # print(f'Loading {category} {i+1}/{n_cats}')
-            drawings = ndjson_drawings(category)
-            drawings = self.get_split(drawings, dataset_split)  # filter to subset for this split
+            drawing_lines = ndjson_drawings(category, lazy=True)  # each line is a json of one drawing
+            drawing_lines = self.get_split(drawing_lines, dataset_split)  # filter to subset for this split
 
             cat_n_drawings = 0
-            for d in drawings:
+            for line in drawing_lines:
+                # load drawing
+                d = json.loads(line)
+                if not d['recognized']:
+                    continue
+
                 if cat_n_drawings == max_per_category:
                     break
                 id, ndjson_strokes = d['key_id'], d['drawing']
@@ -136,22 +142,22 @@ class NdjsonStrokeDataset(StrokeDataset):
 
         print(f'Number of examples in {dataset_split}: {len(self.data)}')
 
-    def get_split(self, drawings, dataset_split):
+    def get_split(self, drawing_lines, dataset_split):
         """
         Given list of ndjson data, returns subset corresponding to that split
         """
         tr_amt, val_amt, te_amt = 0.9, 0.05, 0.05
 
-        l = len(drawings)
+        l = len(drawing_lines)
         tr_idx = int(tr_amt * l)
         val_idx = int((tr_amt + val_amt) * l)
 
         if dataset_split == 'train':
-            return drawings[:tr_idx]
+            return drawing_lines[:tr_idx]
         elif dataset_split == 'valid':
-            return drawings[tr_idx:val_idx]
+            return drawing_lines[tr_idx:val_idx]
         elif dataset_split == 'test':
-            return drawings[val_idx:]
+            return drawing_lines[val_idx:]
 
 
 class NpzStrokeDataset(StrokeDataset):
