@@ -51,32 +51,6 @@ BASE_GRID = {
 
 }
 
-# GRID_1 = copy.deepcopy(BASE_GRID)
-# GRID_1.update({
-#     'instruction_set': ['toplevel'],
-# })
-
-# GRID_2 = copy.deepcopy(BASE_GRID)
-# GRID_2.update({
-#     'instruction_set': ['toplevel_leaves'],
-# })
-
-# GRID_3 = copy.deepcopy(BASE_GRID)
-# GRID_3.update({
-#     'instruction_set': ['stack'],
-#     'cond_instructions': ['decinputs'],
-#     'lr': [
-#         0.001,
-#         0.0005,
-#         0.0001,
-#     ],
-#     'enc_dim': [
-#         '32 --batch_size 32 --dec_dim 256',
-#         '64 --batch_size 16 --dec_dim 256',
-#         '64 --batch_size 16 --dec_dim 512',
-#         '128 --batch_size 16 --dec_dim 256',
-#     ],
-# })
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -88,13 +62,6 @@ if __name__ == "__main__":
 
     grid = BASE_GRID
     grid['instruction_set'] = [args.instruction_set]
-
-    # if args.instruction_set == 'toplevel':
-    #     grid = GRID_1
-    # elif args.instruction_set == 'toplevel_leaves':
-    #     grid = GRID_2
-    # elif args.instruction_set == 'stack':
-    #     grid = GRID_3
 
     groupname = args.groupname
     if groupname is None:
