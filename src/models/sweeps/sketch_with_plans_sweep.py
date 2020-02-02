@@ -29,6 +29,7 @@ BASE_GRID = {
         # 'decinputs',
         'match',
     ],
+    'batch_size': [16],
     'lr': [
         # 0.001,
         0.0005,
@@ -71,4 +72,5 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname=args.email_groupname)
+                    email_groupname=args.email_groupname,
+                    free_gpu_max_mem=0.3)

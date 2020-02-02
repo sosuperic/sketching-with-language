@@ -35,11 +35,11 @@ from src.utils import load_file, save_file
 #
 ###################################################################
 
-def get_available_GPUs():
+def get_available_GPUs(max_mem=0.33):
     """
     Return list of ints (gpu ids)
     """
-    return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=0.33, includeNan=False)
+    return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=max_mem, includeNan=False)
 
 def send_email(subject, text):
     email_data = load_file('.email_config.json')
@@ -66,7 +66,7 @@ def send_email(subject, text):
 
 def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname='-'):
+                    email_groupname='-', free_gpu_max_mem=0.33):
     """
     Launch and queue multiple runs.
 
@@ -98,7 +98,7 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
     # get gpus
     system_gpus = GPUtil.getGPUs()
     system_gpu_ids = [gpu.id for gpu in system_gpus]
-    available_gpu_ids = get_available_GPUs()
+    available_gpu_ids = get_available_GPUs(free_gpu_max_mem)
     n_available = len(available_gpu_ids)
 
     # Run commands on available GPUs
@@ -124,7 +124,7 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
     cur_combo_idx = 0
     while True:
         time.sleep(check_queue_every_nmin * 60)
-        available_gpu_ids = get_available_GPUs()
+        available_gpu_ids = get_available_GPUs(free_gpu_max_mem)
 
         for i in range(len(available_gpu_ids)):  # run on available gpus
             if cur_combo_idx >= len(queued_combos):  # exit if all combos ran
