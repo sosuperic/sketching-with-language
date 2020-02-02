@@ -41,7 +41,7 @@ def load_seg_trees(seg_dir):
         segs.append(seg)
     return segs
 
-seg_dir = BEST_SEG_PROGRESSION_PAIRS_PATH / 'test'
+seg_dir = BEST_SEG_PROGRESSION_PAIRS_PATH / 'train'
 segs = load_seg_trees(seg_dir)   # by doing gunicorn --preload, loads before forking
 
 #
