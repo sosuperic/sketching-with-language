@@ -393,6 +393,7 @@ if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--method', default='greedy_parsing')
+    parser.add_argument('--groupname', default=None)
     parser.add_argument('-ds', '--segment_dataset', default='progressionpair',
                         help='Which dataset to segment -- "progressionpair" or "ndjson"')
     opt = parser.parse_args()
@@ -400,6 +401,9 @@ if __name__ == '__main__':
     # Setup
     nn_utils.setup_seeds()
     save_dir = SEGMENTATIONS_PATH / opt.method / opt.segment_dataset / datetime.today().strftime('%b%d_%Y') / hp.split_scorer
+    if opt.groupname is not None:
+        save_dir = save_dir / opt.groupname
+
     # TODO: find a better way to handle this...
     hp.use_categories_enc = False
     hp.use_categories_dec = True  # backwards compatability (InstructionToStrokes model was trained without that hparams)
@@ -407,7 +411,8 @@ if __name__ == '__main__':
     hp.use_layer_norm = False
     # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
     # utils.save_file(vars(hp), save_dir / 'hp.json')
-    experiments.save_run_data(save_dir, hp)
+    experiments.save_run_data(save_dir, hp,  ask_if_exists=False)
+    # ask_if_exists=False because sweep calls it with different categories, but all saved to same directory
 
     # Init model and segment
     if opt.method == 'greedy_parsing':

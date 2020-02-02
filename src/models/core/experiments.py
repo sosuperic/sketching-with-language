@@ -163,7 +163,7 @@ def load_hp(hp_obj, dir):
     return hp_obj
 
 
-def save_run_data(path_to_dir, hp):
+def save_run_data(path_to_dir, hp, ask_if_exists=True):
     """
     1) Save stdout to file
     2) Save files to path_to_dir:
@@ -176,17 +176,18 @@ def save_run_data(path_to_dir, hp):
     os.makedirs(parent_dir, exist_ok=True)
     if os.path.isdir(path_to_dir):
         print("Data already exists in this directory (presumably from a previous run)")
-        inp = input(
-            'Enter "y" if you are sure you want to remove all the old contents: '
-        )
-        if inp in ["y", "yes"]:
-            print("Removing old contents")
-            shutil.rmtree(path_to_dir)
-        else:
-            print("Exiting")
-            raise SystemExit
+        if ask_if_exists:
+            inp = input(
+                'Enter "y" if you are sure you want to remove all the old contents: '
+            )
+            if inp in ["y", "yes"]:
+                print("Removing old contents")
+                shutil.rmtree(path_to_dir)
+            else:
+                print("Exiting")
+                raise SystemExit
     print("Creating directory and saving data")
-    os.mkdir(path_to_dir)
+    os.makedirs(path_to_dir, exist_ok=True)
 
     # Save snapshot of code
     snapshot_dir = os.path.join(path_to_dir, "code_snapshot")
