@@ -47,6 +47,10 @@ class HParams():
         self.notes = ''
 
 
+        # Dataset (for larger ndjson dataset)
+        self.categories = 'all'
+        self.max_per_category = 2750
+
 ##############################################################################
 #
 # Utils
@@ -84,7 +88,6 @@ class SegmentationModel(object):
         self.save_dir = save_dir
 
         # Load hp used to train model
-
         self.s2i_hp = experiments.load_hp(copy.deepcopy(hp), hp.strokes_to_instruction_dir)
         self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
@@ -99,7 +102,6 @@ class SegmentationModel(object):
         if hp.score_parent_child_text_sim:
             spacy.prefer_gpu()
             self.nlp = spacy.load('en_core_web_md')
-
 
         # TODO: this should be probably be contained in some model...
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
@@ -139,8 +141,11 @@ class SegmentationModel(object):
         """
         for split in ['train', 'valid', 'test']:
             for category in final_categories():
+                # Skip if not in hparam's categories list
+                if (self.hp.categories != 'all') and (category not in self.hp.categories):
+                    continue
                 print(f'{split}: {category}')
-                ds = NdjsonStrokeDataset(category, split)
+                ds = NdjsonStrokeDataset(category, split, max_per_category=self.hp.max_per_category)
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
                 for i, sample in enumerate(loader):
                     try:
@@ -378,6 +383,9 @@ class SegmentationGreedyParsingModel(SegmentationModel):
                           'id': uuid4().hex, 'parent': parent_id})
         segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_scores, seg_texts, segmented)
         return segmented
+
+
+
 
 
 
