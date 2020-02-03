@@ -107,20 +107,5 @@
         var chart2 = new Treant(simple_chart_config, function() {}, $ );
     </script>
 
-
-<!--     Tried doing this cleaner way (i.e. separate chart_config variables, but didn't work for some reason
-    <script>
-        var chart_config_1 = jQuery.extend(true, {}, simple_chart_config);
-        chart_config_1[0] = config1;
-        var chart1 = new Treant(chart_config_1, function() {}, $ );
-    </script> -->
-
-    <!-- <script type="text/javascript" src="{{ url_for('static', filename=js_fp2 ) }} "></script>
-    <script>
-        var chart_config_2 = Object.assign({}, simple_chart_config);
-        chart_config_2[0] = config2;
-        var chart2 = new Treant(chart_config_2, function() {}, $ );
-    </script> -->
-
 </body>
 </html>
