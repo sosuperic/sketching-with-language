@@ -6,10 +6,12 @@ to a format suitable for visualization with the treant-js library. These
 files are currently used by the app/application.py.
 
 Usage:
-    PYTHONPATH=. python src/eval/segmentation.py
+    PYTHONPATH=. python src/eval/segmentation.py -d <dir>
 
 Treant: https://fperucic.github.io/treant-js/
 """
+
+import argparse
 import os
 
 from config import SEGMENTATIONS_PATH
@@ -18,7 +20,7 @@ import src.utils as utils
 def convert_all_segmentations_to_treants(seg_dir):
     for root, dirs, fns in os.walk(seg_dir):
         for fn in fns:
-            if fn.endswith('json') and ('treant' not in fn):
+            if (fn != 'hp.json') and fn.endswith('json') and ('treant' not in fn):
                 fp = os.path.join(root, fn)
                 seg_tree = utils.load_file(fp)
                 out_fp = fp.replace('.json', '_treant.js')
@@ -73,7 +75,9 @@ def save_segmentation_in_treant_format(seg_tree, out_fp):
 
 
 if __name__ == "__main__":
-    from config import BEST_SEG_NDJSON_PATH
-    # seg_dir = BEST_SEG_PROGRESSION_PAIRS_PATH
-    seg_dir = SEGMENTATIONS_PATH / 'greedy_parsing/progressionpair/dec20_2019/instruction_to_strokes/test'
-    convert_all_segmentations_to_treants(seg_dir)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--seg_dir', default=None,
+                        help='find all segmentation files within this directory')
+    args = parser.parse_args()
+
+    convert_all_segmentations_to_treants(args.seg_dir)
