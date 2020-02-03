@@ -19,9 +19,12 @@
             margin: auto;
             width: 80%;
         }
-        
+        #header {
+            margin-top: 30px;
+        }
         #progression img {
             max-width: 67%;
+            margin-bottom: 30px;
         }
 
         #tree-simple {
@@ -30,7 +33,7 @@
 
         .node {
             color: #333333;
-            font-size: 12px;
+            font-size: 10px;
             display: inline-block;
             margin-top: 12px;
             width: 150px;
@@ -47,7 +50,7 @@
     </style>
 </head>
 <body>
-    <div>
+    <div id='header'>
         <h4>{{ category }}</h4>
     </div>
     <!-- <div>
@@ -57,12 +60,15 @@
         <div id="progression">
             <img src=" {{ url_for('static', filename=img_fp ) }} "></img>
         </div>
-        <div id="tree-simple"></div>
+        <p>Split scoring function: max P(I1|S1)*P(I2|S2)</p>
+        <div id="tree1"></div>
+        <p>Split scoring function: max P(I1|S1)*P(I2|S2) + Sim([I1, I2], I)</p>
+        <div id="tree2"></div>
     </div>
     <script>
-        var config = {
-            container: "#tree-simple",
-            rootOrientation: "WEST",  // WEST
+        var config = {};  // Needed just so the js_fps can load initially
+        var base_config = {
+            rootOrientation: "WEST",  // NORTH, WEST
             connectors: {
                 type: "step",
                 style: {
@@ -79,13 +85,42 @@
             // nodeSpeed: 100,
             // connectorsSpeed: 100,
         };
+        var config1 = Object.assign({}, base_config);
+        config1.container = "#tree1";
+        var config2 = Object.assign({}, base_config);
+        config2.container = "#tree2";
     </script>
 
-    <script type="text/javascript" src="{{ url_for('static', filename=js_fp ) }} ">  // loads simple_chart_config
-    </script>
+
+    <!-- js_fps load "var simple_chart_config = [config, node_234, ...]" !-->
+    <script type="text/javascript" src="{{ url_for('static', filename=js_fp1 ) }} "></script>
     <script>
-        var chart = new Treant(simple_chart_config, function() {}, $ );
+        console.log(simple_chart_config);
+        simple_chart_config[0] = config1;
+        var chart1 = new Treant(simple_chart_config, function() {}, $ );
     </script>
+
+    <script type="text/javascript" src="{{ url_for('static', filename=js_fp2 ) }} "></script>
+    <script>
+        console.log(simple_chart_config);
+        simple_chart_config[0] = config2;
+        var chart2 = new Treant(simple_chart_config, function() {}, $ );
+    </script>
+
+
+<!--     Tried doing this cleaner way (i.e. separate chart_config variables, but didn't work for some reason
+    <script>
+        var chart_config_1 = jQuery.extend(true, {}, simple_chart_config);
+        chart_config_1[0] = config1;
+        var chart1 = new Treant(chart_config_1, function() {}, $ );
+    </script> -->
+
+    <!-- <script type="text/javascript" src="{{ url_for('static', filename=js_fp2 ) }} "></script>
+    <script>
+        var chart_config_2 = Object.assign({}, simple_chart_config);
+        chart_config_2[0] = config2;
+        var chart2 = new Treant(chart_config_2, function() {}, $ );
+    </script> -->
 
 </body>
 </html>
