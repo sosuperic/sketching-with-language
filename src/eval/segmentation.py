@@ -12,10 +12,16 @@ Treant: https://fperucic.github.io/treant-js/
 """
 
 import argparse
+from collections import defaultdict
 import os
+from pprint import pprint
+
+import numpy as np
 
 from config import SEGMENTATIONS_PATH
+from src.eval.strokes_to_instruction import InstructionScorer
 import src.utils as utils
+
 
 def convert_all_segmentations_to_treants(seg_dir):
     for root, dirs, fns in os.walk(seg_dir):
@@ -25,6 +31,62 @@ def convert_all_segmentations_to_treants(seg_dir):
                 seg_tree = utils.load_file(fp)
                 out_fp = fp.replace('.json', '_treant.js')
                 save_segmentation_in_treant_format(seg_tree, out_fp)
+
+def calculate_segmentation_score(seg_dir):
+
+    def map_parents_to_children(seg_tree):
+        """seg_tree is list of dicts"""
+        id_to_node = {}
+        parid_to_childids = defaultdict(list)
+        for node in seg_tree:
+            id, parid = node['id'],  node['parent']
+            id_to_node[id] = node
+            if parid != '':  # root node
+                parid_to_childids[parid].append(id)
+        return id_to_node, parid_to_childids
+
+    def calc_seg_score(id_to_node, parid_to_childids, scorers):
+
+        metric2scores = defaultdict(list)
+        for parid, childids in parid_to_childids.items():
+            par_text = id_to_node[parid]['text']
+            child_text_concat = ' '.join([id_to_node[childid]['text'] for childid in childids])
+
+            for scorer in scorers:
+                for metric, value in scorer.score(par_text, child_text_concat).items():
+                    metric2scores[metric].append(value)
+
+        metric2scores = {metric: np.mean(scores) for metric, scores in metric2scores.items()}
+        return metric2scores
+
+
+    scorers = [InstructionScorer('bleu'), InstructionScorer('rouge')]
+
+    metric2allscores = defaultdict(list)
+    for root, dirs, fns in os.walk(seg_dir):
+        for fn in fns:
+            if (fn != 'hp.json') and fn.endswith('json') and ('treant' not in fn):
+                fp = os.path.join(root, fn)
+                seg_tree = utils.load_file(fp)
+
+                # calculate score for this tree
+                id_to_node, parid_to_childids = map_parents_to_children(seg_tree)
+                metric2scores = calc_seg_score(id_to_node, parid_to_childids, scorers)
+                for metric, score in metric2scores.items():
+                    metric2allscores[metric].append(score)
+
+    metric2allscores_mean = {metric: np.mean(scores) for metric, scores in metric2allscores.items()}
+    metric2allscores_std = {metric: np.std(scores) for metric, scores in metric2allscores.items()}
+
+    print('-' * 100)
+    print(f'Scores for: {seg_dir}')
+    print('Mean:')
+    pprint(metric2allscores_mean)
+    print()
+    print('Std:')
+    pprint(metric2allscores_std)
+
+
 
 def save_segmentation_in_treant_format(seg_tree, out_fp):
     """[summary]
@@ -80,4 +142,6 @@ if __name__ == "__main__":
                         help='find all segmentation files within this directory')
     args = parser.parse_args()
 
-    convert_all_segmentations_to_treants(args.seg_dir)
+    # convert_all_segmentations_to_treants(args.seg_dir)
+    calculate_segmentation_score(args.seg_dir)
+
