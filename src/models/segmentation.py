@@ -41,7 +41,10 @@ from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
+
         self.score_parent_child_text_sim = False
+        self.score_exponentiate = 1.0
+
         self.strokes_to_instruction_dir = BEST_STROKES_TO_INSTRUCTION_PATH
         self.instruction_to_strokes_dir = BEST_INSTRUCTION_TO_STROKES_PATH
         self.notes = ''
@@ -255,7 +258,7 @@ class SegmentationModel(object):
             for i in range(n_segs):
                 eos_idx = (ids[i] == EOS_ID).nonzero()
                 eos_idx = eos_idx.item() if (len(eos_idx) > 0) else probs.size(1)
-                p = probs[i,:eos_idx + 1].log().sum() / float(eos_idx + 1)
+                p = probs[i,:eos_idx + 1].sum() / float(eos_idx + 1)
                 final_probs.append(p.item())
             scores = np.array(final_probs)  # [n_segs]
             return scores, texts
@@ -349,7 +352,7 @@ class SegmentationGreedyParsingModel(SegmentationModel):
             right_seg_idx = seg_idx_map[(split_idx, right_idx)]
             left_seg_score = seg_scores[left_seg_idx]
             right_seg_score = seg_scores[right_seg_idx]
-            score = left_seg_score + right_seg_score
+            score = left_seg_score ** self.hp.score_exponentiate + right_seg_score ** self.hp.score_exponentiate
 
             # compute similarity between concatenated children instructions and parent instruction
             # (i.e. instruction for entire parent segment)
