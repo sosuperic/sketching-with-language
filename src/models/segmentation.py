@@ -352,7 +352,7 @@ class SegmentationGreedyParsingModel(SegmentationModel):
             right_seg_idx = seg_idx_map[(split_idx, right_idx)]
             left_seg_score = seg_scores[left_seg_idx]
             right_seg_score = seg_scores[right_seg_idx]
-            score = left_seg_score ** self.hp.score_exponentiate + right_seg_score ** self.hp.score_exponentiate
+            score = left_seg_score ** self.hp.score_exponentiate * right_seg_score ** self.hp.score_exponentiate
 
             # compute similarity between concatenated children instructions and parent instruction
             # (i.e. instruction for entire parent segment)
