@@ -6,7 +6,8 @@ word-based stats.
 
 Usage:
     PYTHONPATH=. python src/eval/strokes_to_instruction.py --fp <dir>/outputs/samples_e11.json
-    PYTHONPATH=. python src/eval/strokes_to_instruction.py --dir runs/strokes_to_instruction/bigsweep
+    PYTHONPATH=. python src/eval/strokes_to_instruction.py -d runs/strokes_to_instruction/dec18_2019/bigsweep/
+    PYTHONPATH=. python src/eval/strokes_to_instruction.py -d best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/
 """
 
 import argparse
@@ -37,9 +38,9 @@ class InstructionScorer(object):
             dict from metric_name (str) to score (float)
         """
         if self.metric == 'bleu':
-            score = sentence_bleu(utils.normalize_sentence(reference),
-                                  utils.normalize_sentence(candidate))
-            result = {'bleu': score}
+            score1 = sentence_bleu([utils.normalize_sentence(reference)], utils.normalize_sentence(candidate), weights=[1.0])
+            score2 = sentence_bleu([utils.normalize_sentence(reference)], utils.normalize_sentence(candidate), weights=[0.5, 0.5])
+            result = {'bleu1': score1, 'bleu2': score2}
         elif self.metric == 'rouge':
             result = {}
             for rouge_name, scores in self.scorer.score(reference, candidate).items():
@@ -135,28 +136,30 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
                     {
                         'n_gen_toks': len(gen_toks),
                         'loss': loss,
-                        'rougeL': np.mean(m2scores['rougeL'])
+                        'rougeL': np.mean(m2scores['rougeL']),
+                        'bleu1': np.mean(m2scores['bleu1']),
+                        'bleu2': np.mean(m2scores['bleu2']),
                     }
                 ])
                 n += 1
-                print(n)
-        # if n == 5:
-        #     break
+                # print(n)
 
     # Print best runs
-    stat = 'n_gen_toks'
-    print(f'RUNS WITH BEST: {stat}')
-    for run, stats in sorted(runs_stats, key=lambda x: x[1][stat])[-best_n:]:  # assumes higher is better for each stat
-        print('{}={}, {}={:.4f}, {}={:.4f}: {}'.format(
-            stat, stats[stat], 'loss', stats['loss'], 'rougeL', stats['rougeL'], run))
-    print()
+    print('-' * 100)
+    for main_stat in runs_stats[0][1].keys():  # n_gen_toks, loss, rougeL, bleu1, bleu2
+        print(f'RUNS WITH BEST: {main_stat}')
+        if main_stat == 'loss':  # lower is beter
+            sorted_by_main_stat = sorted(runs_stats, key=lambda x: -x[1][main_stat])[-best_n:]
+        else:  # higher is better
+            sorted_by_main_stat = sorted(runs_stats, key=lambda x: x[1][main_stat])[-best_n:]
 
-    stat = 'rougeL'
-    print(f'RUNS WITH BEST: {stat}')
-    for run, stats in sorted(runs_stats, key=lambda x: x[1][stat])[-best_n:]:  # assumes higher is better for each stat
-        print('{}={:.4f}, {}={:.4f}, {}={}: {}'.format(
-            stat, stats[stat], 'loss', stats['loss'], 'n_gen_toks', stats['n_gen_toks'], run))
-    print()
+        for run, stats in sorted_by_main_stat:
+            main_stat_val = stats[main_stat]
+            other_stats_str = ', '.join(['{}: {:.4f}'.format(stat, val) for stat, val in stats.items() if (main_stat != stat)])
+            out_str = '{}: {:.4f}'.format(main_stat, main_stat_val)
+            print(out_str + ', ' + other_stats_str + ', run: ' + run)
+        print()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
