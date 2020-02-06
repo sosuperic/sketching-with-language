@@ -42,13 +42,13 @@ class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
 
-        self.score_parent_child_text_sim = False
-        self.score_exponentiate = 1.0
+        self.score_parent_child_text_sim = False  # similarity b/n parent text and children text (concatenated)
+        self.score_exponentiate = 1.0  # seg1_score ** alpha * seg2_score ** alpha
+        self.score_childinst_parstroke = False   # P(parent_strokes | [child_inst1, child_inst2])
 
         self.strokes_to_instruction_dir = BEST_STROKES_TO_INSTRUCTION_PATH
         self.instruction_to_strokes_dir = BEST_INSTRUCTION_TO_STROKES_PATH
         self.notes = ''
-
 
         # Dataset (for larger ndjson dataset)
         self.categories = 'all'
@@ -96,7 +96,7 @@ class SegmentationModel(object):
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
         self.strokes_to_instruction.cuda()
 
-        if hp.split_scorer == 'instruction_to_strokes':
+        if (hp.split_scorer == 'instruction_to_strokes') or (hp.score_childinst_parstroke):
             self.i2s_hp = experiments.load_hp(copy.deepcopy(hp), hp.instruction_to_strokes_dir)
             self.instruction_to_strokes = InstructionToStrokesModel(self.i2s_hp, save_dir=None)
             self.instruction_to_strokes.load_model(hp.instruction_to_strokes_dir)  # TODO: change param for load_model
@@ -186,6 +186,8 @@ class SegmentationModel(object):
             n_penups: int
             seg_lens: list of ints, length n_segs
             seg_idx_map: dict
+                Maps penup_idx tuples to seg_idx
+                Example with 5 penups
                 {(0, 1): 0,
                  (0, 2): 1,
                  (0, 3): 2,
@@ -232,27 +234,70 @@ class SegmentationModel(object):
 
         return batch, n_penups, seg_lens, seg_idx_map
 
-    def calculate_seg_scores(self, batch_of_segs, seg_lens, cats_idx):
+    def _calc_instruction_to_strokes_score(self, batch_of_segs, seg_lens, texts, cats_idx):
+        """
+        P(S|I). Note that it's the prob, not the loss (NLL) returned by the model.
+
+        Args:
+            batch_of_segs: [n_pts (seq_len), n_segs, 5] CudaFloatTensor
+            seg_lens: list of ints, length n_segs
+            texts (list): n_segs list of strings
+            cats_idx: list of the same int, length n_segs
+
+        Returns:
+            scores: (n_segs) np array
+        """
+        text_indices_list = [map_sentence_to_index(text, self.token2idx) for text in texts]
+
+        # Construct inputs to instruction_to_strokes model
+        bsz = batch_of_segs.size(1)
+        text_lens = [len(t) for t in text_indices_list]
+        max_len = max(text_lens)
+        text_indices = np.zeros((max_len, bsz))
+        for i, indices in enumerate(text_indices_list):
+            text_indices[:len(indices), i] = indices
+        text_indices = nn_utils.move_to_cuda(torch.LongTensor(text_indices))
+
+        cats = ['' for _ in range(bsz)]  # dummy
+        urls = ['' for _ in range(bsz)]  # dummy
+        batch = (batch_of_segs, seg_lens, texts, text_lens, text_indices, cats, cats_idx, urls)
+
+        with torch.no_grad():
+            result = self.instruction_to_strokes.one_forward_pass(batch, average_loss=False)  # [n_segs]?
+            scores = result['loss'].cpu().numpy().astype(np.float64)  # float32 doesn't serialize to json for some reason
+            scores = np.exp(-scores)  # map losses (NLL) to probs
+
+        return scores
+
+    def calculate_seg_scores(self, batch_of_segs, seg_lens, cats_idx, seg_idx_map):
         """
         Calculate
         Calculate the (log) probability of each segment
         (To be used as a error/goodness of fit for each segment)
 
         Args:
-            batch_of_segs: [n_pts (seq_len), n_segs, 5] CudaFloatTensor
+            batch_of_segs: [n_pts (seq_len), n_segs, 5] CudaFloatTensor  (n_segs is the "batch")
             seg_lens: list of ints, length n_segs
             cats_idx: list of the same int, length n_segs
+            seg_idx_map: dict
+                Maps penup_idx tuples to seg_idx
 
         Returns:
             scores ([n_segs] np array)
             texts (list): n_segs list of strings
+            parchild_scores: [n_par_segs] np arrray, indexed by paridx; n_par_segs != n_segs
+            leftrightsegidx_to_paridx: tuple (left_seg_id, right_seg_idx) to int
+                paridx indexes into parchild_scores
+                left_seg_idx, right_seg_idx index into batch_of_segs and seg_lens
+                (note: seg_idx_map maps pen_up index into seg_idx)
         """
-        if self.hp.split_scorer == 'strokes_to_instruction':
-            with torch.no_grad():
-                probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
-            probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
+        with torch.no_grad():
+            probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
+            # probs: [n_segs, max_len, vocab]
 
+        if self.hp.split_scorer == 'strokes_to_instruction':
             # normalize by generated length
+            probs = probs.max(dim=-1)[0]  # [n_segs, max_len]; Using the max assumes greedy decoding basically
             final_probs = []
             n_segs = probs.size(0)
             for i in range(n_segs):
@@ -261,31 +306,67 @@ class SegmentationModel(object):
                 p = probs[i,:eos_idx + 1].sum() / float(eos_idx + 1)
                 final_probs.append(p.item())
             scores = np.array(final_probs)  # [n_segs]
-            return scores, texts
 
         elif self.hp.split_scorer == 'instruction_to_strokes':
-            with torch.no_grad():
-                probs, ids, texts = self.strokes_to_instruction.inference_pass(batch_of_segs, seg_lens, cats_idx)
-            text_indices_list = [map_sentence_to_index(text, self.token2idx) for text in texts]
+            scores = self._calc_instruction_to_strokes_score(batch_of_segs, seg_lens, texts, cats_idx)  # probs
 
-            # Construct inputs to instruction_to_strokes model
-            bsz = batch_of_segs.size(1)
-            text_lens = [len(t) for t in text_indices_list]
-            max_len = max(text_lens)
-            text_indices = np.zeros((max_len, bsz))
-            for i, indices in enumerate(text_indices_list):
-                text_indices[:len(indices), i] = indices
-            text_indices = nn_utils.move_to_cuda(torch.LongTensor(text_indices))
 
-            cats = ['' for _ in range(bsz)]  # dummy
-            urls = ['' for _ in range(bsz)]  # dummy
-            batch = (batch_of_segs, seg_lens, texts, text_lens, text_indices, cats, cats_idx, urls)
+        # Calculate score based on P(parent_strokes | [child_inst1, child_inst2]). This is done with a
+        # trained I2S model, with the parent segment as the target, and the concat'd instructions
+        # as input
+        #
+        # Plan: construct a batch of parent_segs.
+        # - Use penup indices to map into seg_indices (seg_idx indexes into batch_of_segs, texts, etc.)
+        # - Use those seg_indices to get the child texts
+        # - Also get the parent segment
+        # - Update leftrightsegidx_to_parchildidx, which we need to get the score later in split()
+        # - Compute scores for this batch, where batch_size is n_parent_segs
+        parchild_scores = None
+        leftrightsegidx_to_parchildidx = {}
+        if self.hp.score_childinst_parstroke:
 
-            with torch.no_grad():
-                result = self.instruction_to_strokes.one_forward_pass(batch, average_loss=False)  #
-                scores = result['loss'].cpu().numpy().astype(np.float64)  # float32 doesn't serialize to json for some reason
+            parent_segs = []
+            parent_seg_lens = []
+            child_texts = []
 
-            return scores, texts
+            n_segs = len(seg_lens)
+            left_penups, right_penups = zip(*seg_idx_map.keys())
+            n_penups = max(right_penups) + 1
+            parchild_idx = 0  # n_parent_segs is different from n_segs)
+
+            # Iterate over penups (and not seg_indices, i.e. len(texts)) because we want to
+            # choose segments that are next to each other (and hence share a parent).
+            # This is similar to the way that seg_idx_map was created (left_penup, right_penup) -> seg_idx
+            for left_penup in range(n_penups - 2):
+                for middle_penup in range(left_penup + 1, n_penups -1):
+                    for right_penup in range(middle_penup + 1, n_penups):
+
+                        # Get the corresponding seg_idxs, which allows us to get the text
+                        left_seg_idx = seg_idx_map[(left_penup, middle_penup)]
+                        right_seg_idx = seg_idx_map[(middle_penup, right_penup)]
+                        left_text = texts[left_seg_idx]
+                        right_text = texts[right_seg_idx]
+                        left_right_text = ' '.join([left_text, right_text])  # concat child texts
+                        child_texts.append(left_right_text)
+
+                        # get the parent_segment
+                        parent_seg_idx = seg_idx_map[(left_penup, right_penup)]
+                        parent_seg, parent_seg_len = batch_of_segs[:,parent_seg_idx,:], seg_lens[parent_seg_idx]
+                        parent_segs.append(parent_seg)
+                        parent_seg_lens.append(parent_seg_len)
+
+                        # update mapping. Later, when we are splitting, we can use this dict to get the
+                        # childinst_parstroke score
+                        # TODO: I guess I could've mapped penups to parchild_idx, so that both indices dictionaries
+                        # (this one and seg_idx_map) have penups as keys...
+                        leftrightsegidx_to_parchildidx[(left_seg_idx, right_seg_idx)] = parchild_idx
+                        parchild_idx += 1
+
+            # Compute scores
+            parent_segs = torch.stack(parent_segs, dim=1)  # [max_len, n_parent_segs, 5]
+            parchild_scores = self._calc_instruction_to_strokes_score(parent_segs, parent_seg_lens, child_texts, cats_idx)  # [n_parent_segs]
+
+        return scores, texts, parchild_scores, leftrightsegidx_to_parchildidx
 
 class SegmentationGreedyParsingModel(SegmentationModel):
     def __init__(self, hp, save_dir):
@@ -300,6 +381,16 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         Returns:
             strokes: TODO: why am I returning this?
             segmented: list of dicts
+
+        Note:
+            There are several different indices / mappings.
+            1) penups (i.e. number of penups). One penup = one segment.
+            2) seg_idx. Indexes into batch_of_segs.
+                seg_idx_map: (left_penup, right_penup) -> seg_idx
+                    e.g. (0,1) -> 0, (0,2) -> 1, (0,3) -> 2, (1,2) -> 3, (1,3) -> 4, (2,3) -> 5
+            3) parchild_idx. Indexes into parchild_scores, i.e. P(S | [I1, I2]).
+                leftrightsegidx_to_parchildidx: (left_seg_idx, right_seg_idx) -> par_child_idx
+
         """
         if dataset == 'ndjson':
             strokes, stroke_lens, cats, cats_idx = sample
@@ -313,7 +404,7 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample(strokes)
         cats_idx = cats_idx.repeat(len(seg_lens))
         cats_idx = nn_utils.move_to_cuda(cats_idx)
-        seg_scores, seg_texts = self.calculate_seg_scores(segs, seg_lens, cats_idx)
+        seg_scores, seg_texts, parchild_scores, leftrightsegidx_to_parchildidx = self.calculate_seg_scores(segs, seg_lens, cats_idx, seg_idx_map)
 
         # top level segmentation
         # initial instruction for entire sequence
@@ -321,44 +412,55 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         segmented = [{'left': 0, 'right': n_penups, 'score': seg_scores[seg_idx], 'text': seg_texts[seg_idx],
                       'id': uuid4().hex, 'parent': ''}]
         # recursively segment
-        segmented = self.split(0, n_penups, seg_idx_map, seg_scores, seg_texts, segmented)
-        # pprint(segmented)
+        segmented = self.split(0, n_penups, seg_idx_map, seg_scores, seg_texts, segmented,
+                               parchild_scores, leftrightsegidx_to_parchildidx)
 
         return strokes, segmented
 
-    def split(self, left_idx, right_idx, seg_idx_map, seg_scores, seg_texts, segmented):
+    def split(self, left_penup_idx, right_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
+              parchild_scores, leftrightsegidx_to_parchildidx):
         """
 
         Args:
-            left_idx: int
-            right_idx: int
+            left_penup_idx: int (idx of penups)
+            right_penup_idx: int  (idx of penups)
             seg_idx_map: dict (construct_batch_of_segments_from_one_sample())
+                maps from (left_penup_idx, right_penup_idx) to seg_idx
+                seg_idx is index within batch of segments
             seg_scores: [n_segs] array
             seg_texts: [n_segs] strs
             segmented: list of dicts
+            parchild_scores: indexed by paridx, which is obtained by leftrightsegidx_to_paridx
+            leftrightsegidx_to_parchildidx: maps from segidx to paridx
+                parchildidx is index within parchild_scores
 
         Returns: list of dicts
         """
-        if (left_idx + 1) >= right_idx:
+        if (left_penup_idx + 1) >= right_penup_idx:
             return segmented
 
         # find best split
         max_score = float('-inf')
-        best_split_idx = None
+        best_split_penup_idx = None
         best_left_seg_text, best_right_seg_text = None, None
         best_left_seg_score, best_right_seg_score = None, None
-        for split_idx in range(left_idx + 1, right_idx):
-            left_seg_idx = seg_idx_map[(left_idx, split_idx)]
-            right_seg_idx = seg_idx_map[(split_idx, right_idx)]
+        for split_penup_idx in range(left_penup_idx + 1, right_penup_idx):
+            left_seg_idx = seg_idx_map[(left_penup_idx, split_penup_idx)]
+            right_seg_idx = seg_idx_map[(split_penup_idx, right_penup_idx)]
             left_seg_score = seg_scores[left_seg_idx]
             right_seg_score = seg_scores[right_seg_idx]
             score = left_seg_score ** self.hp.score_exponentiate * right_seg_score ** self.hp.score_exponentiate
+
+            # P(S | [I1, I2])
+            if self.hp.score_childinst_parstroke:
+                childinst_parseg_idx = leftrightsegidx_to_parchildidx[(left_seg_idx, right_seg_idx)]
+                childinst_parseg_score = parchild_scores[childinst_parseg_idx]
 
             # compute similarity between concatenated children instructions and parent instruction
             # (i.e. instruction for entire parent segment)
             if self.hp.score_parent_child_text_sim:
                 # Get parent segment and texts
-                parent_seg_idx = seg_idx_map[(left_idx, right_idx)]
+                parent_seg_idx = seg_idx_map[(left_penup_idx, right_penup_idx)]
                 parent_seg_text = remove_stopwords(self.nlp, seg_texts[parent_seg_idx])
                 left_seg_text = remove_stopwords(self.nlp, seg_texts[left_seg_idx])
                 right_seg_text = remove_stopwords(self.nlp, seg_texts[right_seg_idx])
@@ -371,20 +473,22 @@ class SegmentationGreedyParsingModel(SegmentationModel):
                 best_left_seg_text, best_right_seg_text = seg_texts[left_seg_idx], seg_texts[right_seg_idx]
                 best_left_seg_score, best_right_seg_score = left_seg_score, right_seg_score
                 max_score = score
-                best_split_idx = split_idx
+                best_split_penup_idx = split_penup_idx
 
         # add left and right segment information
         # Note: append and splits must be called in the following order to get correct parent id
         parent_id = segmented[-1]['id']
 
-        segmented.append({'left': left_idx, 'right': best_split_idx,
+        segmented.append({'left': left_penup_idx, 'right': best_split_penup_idx,
                           'score': best_left_seg_score, 'text': best_left_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
-        segmented = self.split(left_idx, best_split_idx, seg_idx_map, seg_scores, seg_texts, segmented)
-        segmented.append({'left': best_split_idx, 'right': right_idx,
+        segmented = self.split(left_penup_idx, best_split_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
+                               parchild_scores, leftrightsegidx_to_parchildidx)
+        segmented.append({'left': best_split_penup_idx, 'right': right_penup_idx,
                           'score': best_right_seg_score, 'text': best_right_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
-        segmented = self.split(best_split_idx, right_idx, seg_idx_map, seg_scores, seg_texts, segmented)
+        segmented = self.split(best_split_penup_idx, right_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
+                               parchild_scores, leftrightsegidx_to_parchildidx)
         return segmented
 
 
