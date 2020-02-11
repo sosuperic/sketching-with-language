@@ -52,7 +52,8 @@ def load_seg_trees(seg_dir):
     return segs
 
 # by doing gunicorn --preload, loads before forking
-seg_dir1 = BEST_SEG_PROGRESSION_PAIRS_PATH / 'train'
+# seg_dir1 = BEST_SEG_PROGRESSION_PAIRS_PATH / 'train'
+seg_dir1 = 'data/quickdraw/segmentations/greedy_parsing/progressionpair/Feb05_2020/strokes_to_instruction/childinstparstroke_parchildsim/train'
 seg_dir2 = 'data/quickdraw/segmentations/greedy_parsing/progressionpair/Feb01_2020/strokes_to_instruction/train'
 segs1 = load_seg_trees(seg_dir1)
 segs2 = load_seg_trees(seg_dir2)
