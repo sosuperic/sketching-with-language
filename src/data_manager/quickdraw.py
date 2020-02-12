@@ -12,6 +12,8 @@ Stroke-3 format: (delta-x, delta-y, binary for if pen is lifted)
 Stroke-5 format: consists of x-offset, y-offset, and p_1, p_2, p_3, a binary
     one-hot vector of 3 possible pen states: pen down, pen up, end of sketch.
 
+Usage:
+    PYTHONPATH=. python src/data_manager/quickdraw.py --<option>
 """
 
 import argparse
@@ -42,7 +44,8 @@ from config import QUICKDRAW_DATA_PATH, NDJSON_PATH, \
     S3_PROGRESSIONS_URL, S3_PROGRESSIONS_PATH, \
     S3_PROGRESSION_PAIRS_URL, S3_PROGRESSION_PAIRS_PATH, \
     ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
-    SEGMENTATIONS_PATH
+    SEGMENTATIONS_PATH, \
+    PRECURRENTPOST_PATH
 import src.utils as utils
 
 # Params
@@ -56,7 +59,8 @@ PAIRS_MIN_STROKES = 3
 #
 ###################################################################
 
-def vector_to_raster(vector_images, side=28, line_diameter=16, padding=16, bg_color=(0, 0, 0), fg_color=(1, 1, 1)):
+def vector_to_raster(vector_images, side=28, line_diameter=16, padding=16, bg_color=(0, 0, 0), fg_color=(1, 1, 1),
+                     left_slice_idx=None, right_slice_idx=None):
     """
     padding and line_diameter are relative to the original 256x256 image.
     """
@@ -88,6 +92,8 @@ def vector_to_raster(vector_images, side=28, line_diameter=16, padding=16, bg_co
         offset = ((original_side, original_side) - bbox) / 2.
         offset = offset.reshape(-1, 1)
         centered = [stroke + offset for stroke in vector_image]
+        if (left_slice_idx is not None) and (right_slice_idx is not None):
+            centered = centered[left_slice_idx:right_slice_idx]
 
         # draw strokes, this is the most cpu-intensive part
         ctx.set_source_rgb(*fg_color)
@@ -605,6 +611,79 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
         out_fp = out_dir / f'{col}.png'
         plt.savefig(out_fp)
 
+###################################################################
+#
+# Pre-current-post. To be used by StrokeToInstruction model
+#
+###################################################################
+
+def save_drawings_split_into_precurrentpost(n=None):
+    """
+    Saw progressions of strokes of data
+    """
+    categories = final_categories()
+    for cat in categories:
+        drawings = ndjson_drawings(cat)
+        for i, d in enumerate(drawings):
+            if i % 100 == 0:
+                print(cat, i)
+
+            if (n is not None) and (i == n):
+                break
+
+            id, strokes = d['key_id'], d['drawing']
+
+            out_dir = PRECURRENTPOST_PATH / cat / str(id)
+            os.makedirs(out_dir, exist_ok=True)
+
+            # Strokes: list (A) of list (B) of lists (C)
+            # - A is of length n_penups
+            # - B is the ith segment
+            # - B contains two lists (C's) one for each x and y
+            for current_start_idx in range(0, len(strokes)):
+                for current_end_idx in range(current_start_idx + 1, len(strokes)+1):
+                    left_start_idx = 0
+
+                    # save pre strokes
+                    out_fp = out_dir / f'{left_start_idx}-{current_start_idx}.jpg'
+                    if current_start_idx == 0:  # i.e. (left_start_idx == current_start_idx)
+                        # save white image
+                        pre_img = np.zeros((SIDE, SIDE))
+                        pre_img = ImageOps.invert(Image.fromarray(pre_img, 'L'))
+                        pre_img.save(out_fp)
+                    else:
+                        img_vec = vector_to_raster([strokes], left_slice_idx=0, right_slice_idx=current_start_idx,
+                            side=SIDE, line_diameter=2)[0]
+                        img = ImageOps.invert(Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L'))
+                        img.save(out_fp)
+
+                    # save current
+                    out_fp = out_dir / f'{current_start_idx}-{current_end_idx}.jpg'
+                    img_vec = vector_to_raster([strokes],
+                        left_slice_idx=current_start_idx, right_slice_idx=current_end_idx,
+                        side=SIDE, line_diameter=2)[0]
+                    img = ImageOps.invert(Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L'))
+                    img.save(out_fp)
+
+                    # save post strokes
+                    out_fp = out_dir / f'{current_end_idx}-{len(strokes)}.jpg'
+                    if current_end_idx == len(strokes):
+                        # save white image
+                        pre_img = np.zeros((SIDE, SIDE))
+                        pre_img = ImageOps.invert(Image.fromarray(pre_img, 'L'))
+                        pre_img.save(out_fp)
+                    else:
+                        img_vec = vector_to_raster([strokes],
+                            left_slice_idx=current_end_idx, right_slice_idx=len(strokes)+1,
+                            side=SIDE, line_diameter=2)[0]
+                        img = ImageOps.invert(Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L'))
+                        img.save(out_fp)
+
+            # save entire drawing
+            out_fp = out_dir / 'full.jpg'
+            img_vec = vector_to_raster([strokes], side=SIDE, line_diameter=2)[0]
+            img = ImageOps.invert(Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L'))
+            img.save(out_fp)
 
 
 ###################################################################
@@ -809,6 +888,7 @@ if __name__ == '__main__':
     parser.add_argument('--drawings', action='store_true')
     parser.add_argument('--progressions', action='store_true')
     parser.add_argument('--progression_pairs', action='store_true')
+    parser.add_argument('--precurrentpost', action='store_true')
     parser.add_argument('--prep_progressions_data', action='store_true')
     parser.add_argument('--prep_data', type=str, default='progression_pairs',
                         help='"progressions" or "progression_pairs"')
@@ -826,6 +906,8 @@ if __name__ == '__main__':
         save_progressions(n=1000)
     if args.progression_pairs:
         save_progression_pairs(n=250)
+    if args.precurrentpost:
+        save_drawings_split_into_precurrentpost()
     if args.prep_progressions_data:
         prep_progressions_data_for_turk(args.prep_data, args.prep_data_n)
     if args.push_to_aws:

@@ -24,6 +24,7 @@ QUICKDRAW_PROGRESSIONS_PATH = QUICKDRAW_DATA_PATH / 'progressions'
 QUICKDRAW_PROGRESSIONS_PAIRS_PATH = QUICKDRAW_DATA_PATH / 'progression_pairs_fullinput'
 QUICKDRAW_PROGRESSIONS_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'data'
 
+
 # For MTurk
 S3_PROGRESSIONS_URL = 'https://hierarchical-learning.s3.us-east-2.amazonaws.com/quickdraw/progressions_fullinput/{}/progress/{}'
 S3_PROGRESSIONS_PATH = 's3://hierarchical-learning/quickdraw/progressions_fullinput/{}/progress/{}'
@@ -34,6 +35,9 @@ S3_PROGRESSION_PAIRS_PATH = 's3://hierarchical-learning/quickdraw/progression_pa
 ANNOTATED_PROGRESSION_PAIRS_CSV_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'mturk_progressions_pairs_fullresults0.csv'
 LABELED_PROGRESSION_PAIRS_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs'
 LABELED_PROGRESSION_PAIRS_DATA_PATH = QUICKDRAW_PROGRESSIONS_PAIRS_PATH / 'labeled_progression_pairs' / 'data'
+
+# Drawings split into pre, current, and post sections.
+PRECURRENTPOST_PATH = QUICKDRAW_DATA_PATH / 'precurrentpost'
 
 # Segmentations (Instruction trees)
 SEGMENTATIONS_PATH = QUICKDRAW_DATA_PATH / 'segmentations'
