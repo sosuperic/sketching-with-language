@@ -4,6 +4,7 @@
 Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname bigsweep
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname lstm_layernorm
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname mediumimagesweep
 """
 
 import argparse
@@ -14,30 +15,34 @@ CMD = 'PYTHONPATH=. python src/models/strokes_to_instruction.py'
 NGPUS_PER_RUN = 1
 
 GRID = {
+    # Data (and model)
+    'drawing_type': ['image'],
+    'use_preandpost': ['true', 'false'],
+    'use_full': ['true', 'false'],
+
+
     # Model
-    'model_type': [
-        # 'cnn_lstm',
-        # 'lstm',
-        'lstm --use_layer_norm true',
-        # 'transformer_lstm',
-    ],
     'dim': [
         256,
         512,
     ],
-    'n_enc_layers': [
-        '1 --n_dec_layers 1',
-        '2 --n_dec_layers 2',
-        '4 --n_dec_layers 4',
+    'model_type': [
+        # 'cnn_lstm',
+        'lstm',
+        # 'lstm --use_layer_norm true',
+        # 'transformer_lstm',
     ],
-    'condition_on_hc': [
-        'true',
-        'false',
+    # 'n_enc_layers': [
+    #     '1 --n_dec_layers 1',
+    #     '2 --n_dec_layers 2',
+    #     '4 --n_dec_layers 4',
+    # ],
+    'n_dec_layers': [
+        # 1,
+        # 2,
+        4,
     ],
-    'use_prestrokes': ['false'],
-    'use_categories_enc': ['false'],
-    'use_categories_dec': ['true'],
-    'dropout': [0.2],
+
      # Training
     'lr': [
         0.001,

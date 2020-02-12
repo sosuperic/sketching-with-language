@@ -5,6 +5,7 @@ Use the annotated MTurk data (ProgressionPairDataset) to train a P(instruction |
 
 Usage:
     CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type lstm
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --drawing_type image
 """
 
 from datetime import datetime
@@ -21,8 +22,9 @@ from config import RUNS_PATH, \
     BEST_STROKES_TO_INSTRUCTION_PATH, \
     INSTRUCTIONS_VOCAB_DISTRIBUTION_PATH
 from src.models.base.instruction_models import ProgressionPairDataset, InstructionDecoderLSTM, \
-    PAD_ID, OOV_ID, SOS_ID, EOS_ID
-from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN
+    PAD_ID, OOV_ID, SOS_ID, EOS_ID, DrawingsAsImagesAnnotatedDataset
+from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN, \
+    StrokeAsImageEncoderCNN
 from src.models.core.train_nn import TrainNN
 from src.models.core.transformer_utils import *
 from src.models.core import experiments, nn_utils
@@ -47,6 +49,12 @@ class HParams():
         self.max_epochs = 1000
         self.unlikelihood_loss = False
 
+        # Dataset (and model)
+        self.drawing_type = 'stroke'  # 'stroke' or 'image'
+        self.use_prestrokes = False  # for 'stroke'
+        self.use_preandpost = True  # for 'image'
+        self.use_full = True  # for 'image'
+
         # Model
         self.dim = 512
         self.n_enc_layers = 4
@@ -54,7 +62,6 @@ class HParams():
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
         self.use_layer_norm = False   # currently only for lstm
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
-        self.use_prestrokes = False
         self.use_categories_enc = False
         self.use_categories_dec = True
         self.dropout = 0.2
@@ -72,10 +79,14 @@ class StrokesToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
 
-        self.tr_loader =  self.get_data_loader('train', self.hp.batch_size, shuffle=True,
-                                               use_prestrokes=self.hp.use_prestrokes)
-        self.val_loader = self.get_data_loader('valid', self.hp.batch_size, shuffle=False,
-                                               use_prestrokes=self.hp.use_prestrokes)
+        self.tr_loader =  self.get_data_loader('train', hp.batch_size, shuffle=True,
+                                               drawing_type=hp.drawing_type,
+                                               use_prestrokes=hp.use_prestrokes,
+                                               use_preandpost=hp.use_preandpost, use_full=hp.use_full)
+        self.val_loader = self.get_data_loader('valid', hp.batch_size, shuffle=False,
+                                               drawing_type=hp.drawing_type,
+                                               use_prestrokes=hp.use_prestrokes,
+                                               use_preandpost=hp.use_preandpost, use_full=hp.use_full)
         self.end_epoch_loader = self.val_loader
 
         # Model
@@ -87,21 +98,30 @@ class StrokesToInstructionModel(TrainNN):
             self.models.append(self.category_embedding)
 
         if hp.model_type.endswith('lstm'):
-            # encoders may be different
-            if hp.model_type == 'cnn_lstm':
-                self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout,
-                                            use_categories=hp.use_categories_enc)
-                # raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
-            elif hp.model_type == 'transformer_lstm':
-                self.enc = StrokeEncoderTransformer(
-                    5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
-                    use_categories=hp.use_categories_enc,
-                )
-            elif hp.model_type == 'lstm':
-                self.enc = StrokeEncoderLSTM(
-                    5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
-                    use_categories=hp.use_categories_enc, use_layer_norm=hp.use_layer_norm
-                )
+            if hp.drawing_type == 'image':
+                n_channels = 1
+                if hp.use_preandpost:
+                    n_channels += 2
+                if hp.use_full:
+                    n_channels += 1
+                self.enc = StrokeAsImageEncoderCNN(n_channels, hp.dim)
+            else:  # drawing_type is stroke
+
+                # encoders may be different
+                if hp.model_type == 'cnn_lstm':
+                    self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout,
+                                                use_categories=hp.use_categories_enc)
+                    # raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
+                elif hp.model_type == 'transformer_lstm':
+                    self.enc = StrokeEncoderTransformer(
+                        5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
+                        use_categories=hp.use_categories_enc,
+                    )
+                elif hp.model_type == 'lstm':
+                    self.enc = StrokeEncoderLSTM(
+                        5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
+                        use_categories=hp.use_categories_enc, use_layer_norm=hp.use_layer_norm
+                    )
 
             # decoder is lstm
             dec_input_dim = hp.dim
@@ -180,15 +200,30 @@ class StrokesToInstructionModel(TrainNN):
     #
     # Data
     #
-    def get_data_loader(self, dataset_split, batch_size, shuffle=True, use_prestrokes=False):
+    def get_data_loader(self,
+            dataset_split, batch_size, shuffle=True,
+            drawing_type='strokes',
+            use_prestrokes=False,
+            use_preandpost=True, use_full=True
+            ):
         """
         Args:
-            dataset_split: str
-            batch_size: int
-            shuffle: bool
+            dataset_split (str): 'train', 'valid', 'test'
+            batch_size (int)
+            shuffle (bool)
+            drawing_type (str): 'strokes' or 'image'
+            use_prestrokes (bool): for stroke dataset
+            use_preandpost (bool) for images dataset
+            use_full (bool): for images dataset
         """
-        ds = ProgressionPairDataset(dataset_split, use_prestrokes=use_prestrokes)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=ProgressionPairDataset.collate_fn)
+        if drawing_type == 'stroke':
+            ds = ProgressionPairDataset(dataset_split, use_prestrokes=use_prestrokes)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                collate_fn=ProgressionPairDataset.collate_fn)
+        elif drawing_type == 'image':
+            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, use_preandpost=use_preandpost, use_full=use_full)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                collate_fn=DrawingsAsImagesAnnotatedDataset.collate_fn)
         return loader
 
     def preprocess_batch_from_data_loader(self, batch):
@@ -272,16 +307,42 @@ class StrokesToInstructionModel(TrainNN):
 
         :return: dict: 'loss': float Tensor must exist
         """
-        if self.hp.model_type == 'cnn_lstm':
-            return self.one_forward_pass_cnn_lstm(batch)
-        elif self.hp.model_type == 'transformer_lstm':
-            return self.one_forward_pass_transformer_lstm(batch)
-        elif self.hp.model_type == 'lstm':
-            return self.one_forward_pass_lstm(batch)
-        elif self.hp.model_type == 'transformer':
-            return self.one_forward_pass_transformer(batch)
+        if self.hp.drawing_type == 'image':
+            return self.one_forward_pass_imagecnn_lstm(batch)
+        elif self.hp.drawing_type == 'stroke':
+            if self.hp.model_type == 'cnn_lstm':
+                return self.one_forward_pass_cnn_lstm(batch)
+            elif self.hp.model_type == 'transformer_lstm':
+                return self.one_forward_pass_transformer_lstm(batch)
+            elif self.hp.model_type == 'lstm':
+                return self.one_forward_pass_lstm(batch)
+            elif self.hp.model_type == 'transformer':
+                return self.one_forward_pass_transformer(batch)
 
 
+    def one_forward_pass_imagecnn_lstm(self, batch):
+        images, _, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+
+        # Encode strokes
+        embedded = self.enc(images)  # [bsz, dim]
+
+        embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
+        hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+        cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+
+        # Decode
+        texts_emb = self.token_embedding(text_indices_w_sos_eos)  # [max_text_len + 2, bsz, dim]
+        logits, _ = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
+                             token_embedding=self.token_embedding,
+                             category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
+        result = {'loss': loss}
+
+        if self.hp.unlikelihood_loss:
+            loss_UL = self.compute_unlikelihood_loss(logits, text_lens)
+            result['loss_unlikelihood'] = loss_UL
+
+        return result
 
     def one_forward_pass_cnn_lstm(self, batch):
         strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
@@ -415,29 +476,35 @@ class StrokesToInstructionModel(TrainNN):
         """
         bsz = strokes.size(1)
 
-        # Model-specific decoding
         if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
-            if self.hp.model_type == 'cnn_lstm':
-                # Encode strokes
-                embedded = self.enc(strokes, stroke_lens,
-                                    category_embedding=self.category_embedding, categories=cats_idx)
+            if self.hp.drawing_type == 'image':
+                embedded = self.enc(strokes)  # strokes is actually images [C, B, H, W]
                 # [bsz, dim]
                 embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
                 hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
                 cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-            elif self.hp.model_type == 'transformer_lstm':
-                # Encode strokes
-                hidden = self.enc(strokes, stroke_lens,
-                                  category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
-                # [bsz, dim]
-                hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
-                hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
-                cell = hidden.clone()  # [n_layers, bsz, dim]
+            else:
+                if self.hp.model_type == 'cnn_lstm':
+                    # Encode strokes
+                    embedded = self.enc(strokes, stroke_lens,
+                                        category_embedding=self.category_embedding, categories=cats_idx)
+                    # [bsz, dim]
+                    embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
+                    hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                    cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                elif self.hp.model_type == 'transformer_lstm':
+                    # Encode strokes
+                    hidden = self.enc(strokes, stroke_lens,
+                                    category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, dim]
+                    # [bsz, dim]
+                    hidden = hidden.unsqueeze(0)  # [1, bsz, dim]
+                    hidden = hidden.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                    cell = hidden.clone()  # [n_layers, bsz, dim]
 
-            elif self.hp.model_type == 'lstm':
-                _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                             category_embedding=self.category_embedding, categories=cats_idx)
-                # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
+                elif self.hp.model_type == 'lstm':
+                    _, (hidden, cell) = self.enc(strokes, stroke_lens,
+                                                category_embedding=self.category_embedding, categories=cats_idx)
+                    # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
 
             # Create init input
             init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]

@@ -6,6 +6,7 @@ Instruction (annotations from MTurk) related models and dataset
 
 import numpy as np
 import os
+from PIL import Image
 
 import torch
 from torch import nn
@@ -20,7 +21,8 @@ from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH, \
     LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH, \
     LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH, \
-    BEST_SEG_NDJSON_PATH, BEST_SEG_PROGRESSION_PAIRS_PATH
+    BEST_SEG_NDJSON_PATH, BEST_SEG_PROGRESSION_PAIRS_PATH, \
+    PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH
 from src import utils
 from src.data_manager.quickdraw import build_category_index, \
     normalize_strokes, stroke3_to_stroke5
@@ -112,6 +114,142 @@ def save_progression_pair_dataset_splits_and_vocab():
 def map_sentence_to_index(sentence, token2idx):
     return [int(token2idx[tok]) for tok in utils.normalize_sentence(sentence)]
 
+
+def save_drawingsasimages_annotated_dataset_splits():
+    """
+    Each split is a list of dicts, each dict is one example
+    """
+    tr_amt, val_amt, te_amt = 0.9, 0.05, 0.05
+
+    # load data (saved by quickdraw.py)
+    category_to_data = {}
+    for fn in os.listdir(PRECURRENTPOST_DATAWITHANNOTATIONS_PATH):
+        category = os.path.splitext(fn)[0]  # cat.pkl
+        fp = os.path.join(PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, fn)
+        data = utils.load_file(fp)
+        category_to_data[category] = data
+
+    # split
+    train, valid, test = [], [], []
+    for category, data in category_to_data.items():
+        l = len(data)
+        tr_idx = int(tr_amt * l)
+        val_idx = int((tr_amt + val_amt) * l)
+        tr_data = data[:tr_idx]
+        val_data = data[tr_idx:val_idx]
+        te_data = data[val_idx:]
+        train += tr_data
+        valid += val_data
+        test += te_data
+
+    # save splits
+    os.makedirs(PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, exist_ok=True)
+    for fn, data in {'train.pkl': train, 'valid.pkl': valid, 'test.pkl': test}.items():
+        fp = os.path.join(PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, fn)
+        utils.save_file(data, fp)
+
+
+class DrawingsAsImagesAnnotatedDataset(Dataset):
+    """
+    Annotated with instructions, drawing is represented as images
+    (generated from src/data_manger/quickdraw.py's save_drawings_split_into_precurrentpost()).
+    """
+    def __init__(self, dataset_split, use_preandpost=True, use_full=True):
+        super().__init__()
+        self.dataset_split = dataset_split
+        self.use_preandpost = use_preandpost
+        self.use_full = use_full
+
+        # Get data
+        fp = None
+        if dataset_split == 'train':
+            fp = os.path.join(PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, 'train.pkl')
+        elif dataset_split == 'valid':
+            fp =  os.path.join(PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, 'valid.pkl')
+        elif dataset_split == 'test':
+            fp =  os.path.join(PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, 'test.pkl')
+        if not os.path.exists(fp):  # create splits and vocab first time
+            save_drawingsasimages_annotated_dataset_splits()
+        self.data = utils.load_file(fp)
+
+        # Load vocab and category mappings
+        self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
+        self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
+        self.vocab_size = len(self.idx2token)
+
+        self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
+        self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
+
+    def __len__(self):
+        return len(self.data)
+
+    def _load_img_as_np(self, img_fp):
+        return np.array(Image.open(img_fp))
+
+    def __getitem__(self, idx):
+        sample = self.data[idx]
+
+        imgs = []
+        annotated_seg = self._load_img_as_np(sample['annotated_seg_fp'])
+        imgs.append(annotated_seg)
+        if self.use_preandpost:
+            pre_seg = self._load_img_as_np(sample['pre_seg_fp'])
+            post_seg = self._load_img_as_np(sample['post_seg_fp'])
+            imgs.extend([pre_seg, post_seg])
+        if self.use_full:
+            full_img = self._load_img_as_np(sample['full_fp'])  # [112, 112]
+            imgs.append(full_img)
+
+        try:
+            drawing = np.stack(imgs)  # ["channels", H, W]
+        except Exception as e:
+            import pdb; pdb.set_trace()
+
+        # Map
+        text = sample['annotation']
+        text_indices = map_sentence_to_index(text, self.token2idx)
+        text_indices = [SOS_ID] + text_indices + [EOS_ID]
+
+        # Additional metadata
+        cat = sample['category']
+        cat_idx = self.cat2idx[cat]
+        url = sample['url']
+
+        # Return None so that it has the same API as ProgressionPairDataset
+        return (drawing, None, text, text_indices, cat, cat_idx, url)
+
+    @staticmethod
+    def collate_fn(batch):
+        """
+        Method to passed into a DataLoader that defines how to combine samples in a batch
+
+        Note: I wrote my own collate_fn in order to handle variable lengths. The StrokeDataset
+        uses the default collate_fn because each drawing is padded to some maximum length (this is
+        how Magenta did it as well).
+
+
+        Args:
+            batch: list of samples, one sample is returned from __getitem__(idx)
+        """
+        imgs, _, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        bsz = len(batch)
+        # sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
+
+        # Create array of text indices, zeros for padding
+        text_lens = [len(t) for t in texts_indices]
+        max_text_len = max(text_lens)
+        batch_text_indices = np.zeros((bsz, max_text_len))
+        for i, text_indices in enumerate(texts_indices):
+            l = len(text_indices)
+            batch_text_indices[i,:l] = text_indices
+
+        # Convert to Tensors
+        batch_imgs = torch.FloatTensor(np.stack(imgs))
+        batch_text_indices = torch.LongTensor(batch_text_indices)
+        cats_idx = torch.LongTensor(cats_idx)
+
+        return batch_imgs, None, \
+            texts, text_lens, batch_text_indices, cats, cats_idx, urls
 
 class ProgressionPairDataset(Dataset):
     def __init__(self,

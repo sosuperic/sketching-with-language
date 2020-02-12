@@ -14,6 +14,7 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+import torchvision
 
 from config import SEGMENTATIONS_PATH, NPZ_DATA_PATH
 from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories, \
@@ -210,6 +211,32 @@ class NpzStrokeDataset(StrokeDataset):
 # Standard Encoders
 #
 ##############################################################################
+
+class StrokeAsImageEncoderCNN(nn.Module):
+    def __init__(self, n_channels, output_dim):
+        """
+
+        Args:
+            n_channels (int): Number of input channels, which can vary depending on if
+                pre, post, full images are used
+            output_dim (int): output dim
+        """
+        super().__init__()
+
+        self.cnn = torchvision.models.wide_resnet50_2()
+        self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.cnn.fc = nn.Linear(2048, output_dim)
+
+    def forward(self, images):
+        """
+        Args:
+            images: [n_channels, bsz, W, H]
+
+        Returns:  [bsz, dim]
+        """
+        images = images.transpose(0,1)  # [B, C, W, H]
+        encoded = self.cnn(images)
+        return encoded
 
 class StrokeEncoderCNN(nn.Module):
     def __init__(self, filter_sizes=[3,4,5], n_feat_maps=128, input_dim=None, emb_dim=None, dropout=None,

@@ -918,9 +918,6 @@ def save_annotated_precurrentpost_data():
 
     df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
     for cat in df['Input.category'].unique():
-        if cat != 'bear':
-            continue
-
         df_cat = df[df['Input.category'] == cat]
         print(cat, len(df_cat))
 
@@ -941,10 +938,10 @@ def save_annotated_precurrentpost_data():
             id_to_data[id]['url'] = url
             id_to_data[id]['annotation'] = annotation
 
-            id_to_data[id]['pre_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'0-{ndjson_start}.jpg')
-            id_to_data[id]['annotated_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'{ndjson_start}-{ndjson_end}.jpg')
-            id_to_data[id]['post_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'{ndjson_end}-{n_segments}.jpg')
-            id_to_data[id]['full_fp'] = str(PRECURRENTPOST_DATA_PATH / id / 'full.jpg')
+            id_to_data[id]['pre_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat / id / f'0-{ndjson_start}.jpg')
+            id_to_data[id]['annotated_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat/ id / f'{ndjson_start}-{ndjson_end}.jpg')
+            id_to_data[id]['post_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat/ id / f'{ndjson_end}-{n_segments}.jpg')
+            id_to_data[id]['full_fp'] = str(PRECURRENTPOST_DATA_PATH / cat / id / 'full.jpg')
 
         # flatten
         result = []
