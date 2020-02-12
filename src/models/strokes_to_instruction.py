@@ -52,8 +52,7 @@ class HParams():
         # Dataset (and model)
         self.drawing_type = 'stroke'  # 'stroke' or 'image'
         self.use_prestrokes = False  # for 'stroke'
-        self.use_preandpost = True  # for 'image'
-        self.use_full = True  # for 'image'
+        self.images = 'annotated'  # for image; annotated,pre,post,start_to_annotated,full
 
         # Model
         self.dim = 512
@@ -82,11 +81,11 @@ class StrokesToInstructionModel(TrainNN):
         self.tr_loader =  self.get_data_loader('train', hp.batch_size, shuffle=True,
                                                drawing_type=hp.drawing_type,
                                                use_prestrokes=hp.use_prestrokes,
-                                               use_preandpost=hp.use_preandpost, use_full=hp.use_full)
+                                               images=hp.images)
         self.val_loader = self.get_data_loader('valid', hp.batch_size, shuffle=False,
                                                drawing_type=hp.drawing_type,
                                                use_prestrokes=hp.use_prestrokes,
-                                               use_preandpost=hp.use_preandpost, use_full=hp.use_full)
+                                               images=hp.images)
         self.end_epoch_loader = self.val_loader
 
         # Model
@@ -99,11 +98,7 @@ class StrokesToInstructionModel(TrainNN):
 
         if hp.model_type.endswith('lstm'):
             if hp.drawing_type == 'image':
-                n_channels = 1
-                if hp.use_preandpost:
-                    n_channels += 2
-                if hp.use_full:
-                    n_channels += 1
+                n_channels = len(hp.images.split(','))
                 self.enc = StrokeAsImageEncoderCNN(n_channels, hp.dim)
             else:  # drawing_type is stroke
 
@@ -204,7 +199,7 @@ class StrokesToInstructionModel(TrainNN):
             dataset_split, batch_size, shuffle=True,
             drawing_type='strokes',
             use_prestrokes=False,
-            use_preandpost=True, use_full=True
+            images=None
             ):
         """
         Args:
@@ -213,15 +208,14 @@ class StrokesToInstructionModel(TrainNN):
             shuffle (bool)
             drawing_type (str): 'strokes' or 'image'
             use_prestrokes (bool): for stroke dataset
-            use_preandpost (bool) for images dataset
-            use_full (bool): for images dataset
+            images (str)
         """
         if drawing_type == 'stroke':
             ds = ProgressionPairDataset(dataset_split, use_prestrokes=use_prestrokes)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
         elif drawing_type == 'image':
-            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, use_preandpost=use_preandpost, use_full=use_full)
+            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, images=images)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=DrawingsAsImagesAnnotatedDataset.collate_fn)
         return loader

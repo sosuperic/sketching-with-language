@@ -940,6 +940,7 @@ def save_annotated_precurrentpost_data():
 
             id_to_data[id]['pre_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat / id / f'0-{ndjson_start}.jpg')
             id_to_data[id]['annotated_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat/ id / f'{ndjson_start}-{ndjson_end}.jpg')
+            id_to_data[id]['start_to_annotated_fp'] = str(PRECURRENTPOST_DATA_PATH / cat/ id / f'0-{ndjson_end}.jpg')
             id_to_data[id]['post_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / cat/ id / f'{ndjson_end}-{n_segments}.jpg')
             id_to_data[id]['full_fp'] = str(PRECURRENTPOST_DATA_PATH / cat / id / 'full.jpg')
 

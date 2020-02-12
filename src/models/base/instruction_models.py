@@ -154,11 +154,16 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
     Annotated with instructions, drawing is represented as images
     (generated from src/data_manger/quickdraw.py's save_drawings_split_into_precurrentpost()).
     """
-    def __init__(self, dataset_split, use_preandpost=True, use_full=True):
+    def __init__(self, dataset_split, images='annotated'):
+        """
+        Args:
+            dataset_split (str): 'train', 'valid', 'test'
+            images (str): comma separated list. Possible values
+                annotated,pre,post,start_to_annotated,full
+        """
         super().__init__()
         self.dataset_split = dataset_split
-        self.use_preandpost = use_preandpost
-        self.use_full = use_full
+        self.images = images.split(',')
 
         # Get data
         fp = None
@@ -190,20 +195,17 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         sample = self.data[idx]
 
         imgs = []
-        annotated_seg = self._load_img_as_np(sample['annotated_seg_fp'])
-        imgs.append(annotated_seg)
-        if self.use_preandpost:
-            pre_seg = self._load_img_as_np(sample['pre_seg_fp'])
-            post_seg = self._load_img_as_np(sample['post_seg_fp'])
-            imgs.extend([pre_seg, post_seg])
-        if self.use_full:
-            full_img = self._load_img_as_np(sample['full_fp'])  # [112, 112]
-            imgs.append(full_img)
-
-        try:
-            drawing = np.stack(imgs)  # ["channels", H, W]
-        except Exception as e:
-            import pdb; pdb.set_trace()
+        if 'annotated' in self.images:
+            imgs.append(self._load_img_as_np(sample['annotated_seg_fp']))
+        if 'pre' in self.images:
+            imgs.append(self._load_img_as_np(sample['pre_seg_fp']))
+        if 'start_to_annotated' in self.images:
+            imgs.append(self._load_img_as_np(sample['start_to_annotated_fp']))
+        if 'post' in self.images:
+            imgs.append(self._load_img_as_np(sample['post_seg_fp']))
+        if 'full' in self.images:
+            imgs.append(self._load_img_as_np(sample['full_fp']))
+        drawing = np.stack(imgs)  # ["channels", H, W]
 
         # Map
         text = sample['annotation']

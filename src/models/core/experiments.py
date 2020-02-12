@@ -110,8 +110,7 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
         if i < n_available:  # run immediately
             gpu_id = available_gpu_ids[i]
             cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
-            if i == 0:
-                print(f'Sample command: {cmd}')
+            print(f'Command: {cmd}')
             proc = subprocess.Popen(cmd, shell=True)
             processes.append(proc)
             n_ran += 1
@@ -135,6 +134,7 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
             combo = queued_combos[cur_combo_idx]
             gpu_id = available_gpu_ids[i]
             cmd = f'CUDA_VISIBLE_DEVICES={gpu_id} {base_cmd} {combo}'
+            print(f'Command: {cmd}')
             proc = subprocess.Popen(cmd, shell=True)
             processes.append(proc)
             cur_combo_idx += 1

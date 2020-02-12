@@ -4,7 +4,7 @@
 Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname bigsweep
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname lstm_layernorm
-    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname mediumimagesweep
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_images
 """
 
 import argparse
@@ -17,15 +17,21 @@ NGPUS_PER_RUN = 1
 GRID = {
     # Data (and model)
     'drawing_type': ['image'],
-    'use_preandpost': ['true', 'false'],
-    'use_full': ['true', 'false'],
-
+    'images': [
+        'pre,start_to_annotated',
+        'pre,start_to_annotated,full',
+        'annotated,full',
+        'pre,start_to_annotated,post',
+        'pre,annotated,post',
+    ],
 
     # Model
     'dim': [
+        128,
         256,
         512,
     ],
+    ''
     'model_type': [
         # 'cnn_lstm',
         'lstm',
