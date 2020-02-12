@@ -45,7 +45,7 @@ from config import QUICKDRAW_DATA_PATH, NDJSON_PATH, \
     S3_PROGRESSION_PAIRS_URL, S3_PROGRESSION_PAIRS_PATH, \
     ANNOTATED_PROGRESSION_PAIRS_CSV_PATH, LABELED_PROGRESSION_PAIRS_PATH, LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     SEGMENTATIONS_PATH, \
-    PRECURRENTPOST_PATH
+    PRECURRENTPOST_DATA_PATH, PRECURRENTPOST_DATAWITHANNOTATIONS_PATH
 import src.utils as utils
 
 # Params
@@ -617,21 +617,28 @@ def _prep_progressions_data_for_turk(data_dir, s3_url, out_fn, n):
 #
 ###################################################################
 
-def save_drawings_split_into_precurrentpost(n=None):
+def save_drawings_split_into_precurrentpost(n=None, limit_to_annotated=False):
     """
-    Saw progressions of strokes of data
+    Saw drawings split into 3 segments (pre, current, post)
     """
+    annotated_df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+    annotated_ids = set(annotated_df['Input.id'].tolist())
+
     categories = final_categories()
     for cat in categories:
         drawings = ndjson_drawings(cat)
-        for i, d in enumerate(drawings):
-            if i % 100 == 0:
-                print(cat, i)
+        count = 0
+        for d in enumerate(drawings):
+            if count % 100 == 0:
+                print(cat, count)
 
-            if (n is not None) and (i == n):
+            if (n is not None) and (count == n):
                 break
 
             id, strokes = d['key_id'], d['drawing']
+
+            if (limit_to_annotated) and (int(id) not in annotated_ids):
+                continue
 
             out_dir = PRECURRENTPOST_PATH / cat / str(id)
             os.makedirs(out_dir, exist_ok=True)
@@ -684,6 +691,8 @@ def save_drawings_split_into_precurrentpost(n=None):
             img_vec = vector_to_raster([strokes], side=SIDE, line_diameter=2)[0]
             img = ImageOps.invert(Image.fromarray(img_vec.reshape(SIDE, SIDE), 'L'))
             img.save(out_fp)
+
+            count += 1
 
 
 ###################################################################
@@ -882,6 +891,73 @@ def save_annotated_progression_pairs_data():
 
     # TODO: calculate tfidf on annotaitons
 
+
+def save_annotated_precurrentpost_data():
+    """
+    Combine precurrentpost images (generated from save_drawings_split_into_precurrentpost())
+    with annotaitons. Preprocesses for use with a data loader.
+
+    Save <category>.pkl files that is a dictionary from id to data.
+    Data is a dictionary that contains:
+        url: S3 url of progression pair
+        annotation: instruction written by MTurker
+
+        ndjson_strokes: drawing in ndjson format (list of subsegments, each subsegment is list of x y points)
+        ndjson_start: ndjson_strokes index of start of annotated segment
+            - Offset by 1 relative to ndjson_strokes
+            - When 0, this is the start of the drawing (before any strokes)
+        ndjson_end: ndjson_strokes index of end of annotated segment
+            - Offset by 1 relative to ndjson_strokes
+
+        pre_seg_fp: filepath to image of strokes before annotated segment
+        annotated_seg_fp: filepath to image of annotated segment
+        post_seg_fp: filepath to image of strokes after annotated segment
+        full_fp: filepath to image of full drawing
+    """
+    os.makedirs(PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, exist_ok=True)
+
+    df = pd.read_csv(ANNOTATED_PROGRESSION_PAIRS_CSV_PATH)
+    for cat in df['Input.category'].unique():
+        if cat != 'bear':
+            continue
+
+        df_cat = df[df['Input.category'] == cat]
+        print(cat, len(df_cat))
+
+        id_to_data = defaultdict(dict)
+
+        # map annotations to strokes
+        for i in range(len(df_cat)):
+            id = df_cat.iloc[i]['Input.id']
+            id = str(id)
+            annotation = df_cat.iloc[i]['Answer.annotation'].replace('\r', '')
+            ndjson_start = df_cat.iloc[i]['Input.start']
+            ndjson_end = df_cat.iloc[i]['Input.end']
+            url = df_cat.iloc[i]['Input.url']
+            n_segments = df_cat.iloc[i]['Input.n_segments']
+
+            id_to_data[id]['ndjson_start'] = int(ndjson_start)
+            id_to_data[id]['ndjson_end'] = int(ndjson_end)
+            id_to_data[id]['url'] = url
+            id_to_data[id]['annotation'] = annotation
+
+            id_to_data[id]['pre_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'0-{ndjson_start}.jpg')
+            id_to_data[id]['annotated_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'{ndjson_start}-{ndjson_end}.jpg')
+            id_to_data[id]['post_seg_fp'] = str(PRECURRENTPOST_DATA_PATH / id / f'{ndjson_end}-{n_segments}.jpg')
+            id_to_data[id]['full_fp'] = str(PRECURRENTPOST_DATA_PATH / id / 'full.jpg')
+
+        # flatten
+        result = []
+        for id, data in id_to_data.items():
+            data['id'] = id
+            data['category'] = cat
+            result.append(data)
+
+        # save
+        out_fn = f'{cat}.pkl'
+        out_fp = PRECURRENTPOST_DATAWITHANNOTATIONS_PATH / out_fn
+        utils.save_file(result, out_fp)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--pairs', action='store_true')
@@ -896,6 +972,7 @@ if __name__ == '__main__':
     parser.add_argument('--push_to_aws', action='store_true')
     parser.add_argument('--html', action='store_true')
     parser.add_argument('--save_annotated_progression_pairs_data', action='store_true')
+    parser.add_argument('--save_annotated_precurrentpost_data', action='store_true')
     args = parser.parse_args()
 
     if args.pairs:
@@ -907,7 +984,7 @@ if __name__ == '__main__':
     if args.progression_pairs:
         save_progression_pairs(n=250)
     if args.precurrentpost:
-        save_drawings_split_into_precurrentpost()
+        save_drawings_split_into_precurrentpost(n=2500)
     if args.prep_progressions_data:
         prep_progressions_data_for_turk(args.prep_data, args.prep_data_n)
     if args.push_to_aws:
@@ -916,3 +993,5 @@ if __name__ == '__main__':
         convert_turk_results_to_html()
     if args.save_annotated_progression_pairs_data:
         save_annotated_progression_pairs_data()
+    if args.save_annotated_precurrentpost_data:
+        save_annotated_precurrentpost_data()
