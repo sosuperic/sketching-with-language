@@ -63,6 +63,9 @@ def calc_bleu_and_rouge_on_samples(samples_fp, print=True):
         # cat = sample['category']  # this wasn't saved in earlier runs.
         cat = sample['url'].split('fullinput/')[1].split('/progress')[0]
         gt, gen = sample['ground_truth'], sample['generated']
+        # gt, gen = gt.lower(), gen.lower()
+        # gt = gt.replace('draw', 'add')
+        # gen = gen.replace('draw', 'add')
         for scorer in scorers:
             for name, value in scorer.score(gt, gen).items():
                 m2scores[name].append(value)
