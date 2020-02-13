@@ -60,6 +60,7 @@ class HParams():
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
+        self.cnn_type = 'wideresnet'  #'wideresnet,se,cbam'
         self.use_layer_norm = False   # currently only for lstm
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_categories_enc = False
@@ -99,7 +100,7 @@ class StrokesToInstructionModel(TrainNN):
         if hp.model_type.endswith('lstm'):
             if hp.drawing_type == 'image':
                 n_channels = len(hp.images.split(','))
-                self.enc = StrokeAsImageEncoderCNN(n_channels, hp.dim)
+                self.enc = StrokeAsImageEncoderCNN(hp.cnn_type, n_channels, hp.dim)
             else:  # drawing_type is stroke
 
                 # encoders may be different

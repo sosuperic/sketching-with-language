@@ -6,6 +6,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname lstm_layernorm
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_images
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_cnnse
 """
 
 import argparse
@@ -25,6 +26,12 @@ GRID = {
         'pre,start_to_annotated,post',
         'pre,annotated,post',
         'annotated',
+    ],
+
+    'cnn_type': [
+        # 'wideresnet',
+        'se',
+        # 'cbam'
     ],
 
     'data_aug_on_text': [

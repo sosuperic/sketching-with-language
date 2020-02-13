@@ -23,6 +23,7 @@ from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
 # from src.models.core.custom_lstms import script_lnlstm, LSTMState
 from src.models.core.layernormlstm import LayerNormLSTM
+import src.models.core.resnet_with_cbam as resnet_with_cbam
 
 ##############################################################################
 #
@@ -213,19 +214,35 @@ class NpzStrokeDataset(StrokeDataset):
 ##############################################################################
 
 class StrokeAsImageEncoderCNN(nn.Module):
-    def __init__(self, n_channels, output_dim):
+    def __init__(self, cnn_type, n_channels, output_dim):
         """
 
         Args:
+            cnn_type (str): wideresnet, cbam, or se
             n_channels (int): Number of input channels, which can vary depending on if
                 pre, post, full images are used
             output_dim (int): output dim
         """
         super().__init__()
+        self.cnn_type = cnn_type
+        self.n_channels = n_channels
+        self.output_dim = output_dim
 
-        self.cnn = torchvision.models.wide_resnet50_2()
-        self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.cnn.fc = nn.Linear(2048, output_dim)
+        # Load cnn and override first conv to take appropriate number of channels
+        if cnn_type == 'wideresnet':
+            self.cnn = torchvision.models.wide_resnet50_2()
+            self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            self.cnn.fc = nn.Linear(2048, output_dim)
+        elif cnn_type == 'se':
+            self.cnn = torch.hub.load('moskomule/senet.pytorch', 'se_resnet50', pretrained=False)
+            self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+            self.cnn.fc = nn.Linear(2048, output_dim)
+        elif cnn_type == 'cbam':
+            # Using CIFAR and not ImageNet because ImageNet model expects larger images (224 works, 112 doesn't)
+            self.cnn = resnet_with_cbam.ResidualNet('CIFAR100', 50, output_dim, 'CBAM')
+            self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+            # self.cnn.conv1 = nn.Conv2d(n_channels, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+
 
     def forward(self, images):
         """
