@@ -133,10 +133,6 @@ def data_augmentation_on_instruction(text):
             text_tokens[i] = random.choice(['draw', 'add'])
     text = ' '.join(text_tokens)
 
-    # every sentence ends with period
-    if (text != '?') and (not text.endswith('.')):
-        text = text + '.'
-
     # shuffle order of sentences
     text = nltk.sent_tokenize(text)
     random.shuffle(text)
@@ -240,6 +236,9 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         # Map
         text = sample['annotation']
         text = text.lower()
+        # every sentence ends with period
+        if (text != '?') and (not text.endswith('.')):
+            text = text + '.'
 
         if self.data_aug_on_text:
             text = data_augmentation_on_instruction(text)
@@ -372,6 +371,11 @@ class ProgressionPairDataset(Dataset):
 
         # Map
         text = sample['annotation']
+        text = text.lower()
+        # every sentence ends with period
+        if (text != '?') and (not text.endswith('.')):
+            text = text + '.'
+
         text_indices = map_sentence_to_index(text, self.token2idx)
         text_indices = [SOS_ID] + text_indices + [EOS_ID]
 
