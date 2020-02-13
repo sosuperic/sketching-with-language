@@ -53,6 +53,7 @@ class HParams():
         self.drawing_type = 'stroke'  # 'stroke' or 'image'
         self.use_prestrokes = False  # for 'stroke'
         self.images = 'annotated'  # for image; annotated,pre,post,start_to_annotated,full
+        self.data_aug_on_text = False   # only for drawing_type=image right now
 
         # Model
         self.dim = 512
@@ -77,15 +78,14 @@ class HParams():
 class StrokesToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
-
         self.tr_loader =  self.get_data_loader('train', hp.batch_size, shuffle=True,
                                                drawing_type=hp.drawing_type,
                                                use_prestrokes=hp.use_prestrokes,
-                                               images=hp.images)
+                                               images=hp.images, data_aug_on_text=hp.data_aug_on_text)
         self.val_loader = self.get_data_loader('valid', hp.batch_size, shuffle=False,
                                                drawing_type=hp.drawing_type,
                                                use_prestrokes=hp.use_prestrokes,
-                                               images=hp.images)
+                                               images=hp.images, data_aug_on_text=False)
         self.end_epoch_loader = self.val_loader
 
         # Model
@@ -199,7 +199,8 @@ class StrokesToInstructionModel(TrainNN):
             dataset_split, batch_size, shuffle=True,
             drawing_type='strokes',
             use_prestrokes=False,
-            images=None
+            images=None,
+            data_aug_on_text=False
             ):
         """
         Args:
@@ -215,7 +216,8 @@ class StrokesToInstructionModel(TrainNN):
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
         elif drawing_type == 'image':
-            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, images=images)
+            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, images=images,
+                                                  data_aug_on_text=data_aug_on_text)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=DrawingsAsImagesAnnotatedDataset.collate_fn)
         return loader

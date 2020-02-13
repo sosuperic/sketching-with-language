@@ -4,8 +4,11 @@
 Instruction (annotations from MTurk) related models and dataset
 """
 
-import numpy as np
 import os
+import random
+
+import numpy as np
+import nltk
 from PIL import Image
 
 import torch
@@ -115,6 +118,32 @@ def map_sentence_to_index(sentence, token2idx):
     return [int(token2idx[tok]) for tok in utils.normalize_sentence(sentence)]
 
 
+def data_augmentation_on_instruction(text):
+    """
+    Args:
+        text (str): instruction
+
+    Returns:
+        str
+    """
+    # swap "draw" / "add"
+    text_tokens = nltk.word_tokenize(text)
+    for i, token in enumerate(text_tokens):
+        if token in ['draw', 'add']:
+            text_tokens[i] = random.choice(['draw', 'add'])
+    text = ' '.join(text_tokens)
+
+    # every sentence ends with period
+    if (text != '?') and (not text.endswith('.')):
+        text = text + '.'
+
+    # shuffle order of sentences
+    text = nltk.sent_tokenize(text)
+    random.shuffle(text)
+    text = ' '.join(text)
+
+    return text
+
 def save_drawingsasimages_annotated_dataset_splits():
     """
     Each split is a list of dicts, each dict is one example
@@ -154,7 +183,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
     Annotated with instructions, drawing is represented as images
     (generated from src/data_manger/quickdraw.py's save_drawings_split_into_precurrentpost()).
     """
-    def __init__(self, dataset_split, images='annotated'):
+    def __init__(self, dataset_split, images='annotated', data_aug_on_text=True):
         """
         Args:
             dataset_split (str): 'train', 'valid', 'test'
@@ -164,6 +193,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         super().__init__()
         self.dataset_split = dataset_split
         self.images = images.split(',')
+        self.data_aug_on_text = data_aug_on_text
 
         # Get data
         fp = None
@@ -209,6 +239,11 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
 
         # Map
         text = sample['annotation']
+        text = text.lower()
+
+        if self.data_aug_on_text:
+            text = data_augmentation_on_instruction(text)
+
         text_indices = map_sentence_to_index(text, self.token2idx)
         text_indices = [SOS_ID] + text_indices + [EOS_ID]
 
@@ -274,6 +309,7 @@ class ProgressionPairDataset(Dataset):
         self.dataset_split = dataset_split
         self.use_prestrokes = use_prestrokes
         self.use_full_drawings = use_full_drawings
+        # TODO: add data_aug_on_text (as done in DrawingsAsImagesAnnotatedDataset)
 
         # Get data
         fp = None

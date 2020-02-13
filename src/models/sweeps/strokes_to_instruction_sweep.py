@@ -5,6 +5,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname bigsweep
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname lstm_layernorm
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_images
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug
 """
 
 import argparse
@@ -23,6 +24,11 @@ GRID = {
         'annotated,full',
         'pre,start_to_annotated,post',
         'pre,annotated,post',
+        'annotated',
+    ],
+
+    'data_aug_on_text': [
+        'true'
     ],
 
     # Model
