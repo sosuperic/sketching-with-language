@@ -95,11 +95,14 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
         combos[i] = ' '.join(combo)
     print(f'Number of runs: {len(combos)}')
 
+    # from pprint import pprint
+    # pprint(combos)
+
     # get gpus
     system_gpus = GPUtil.getGPUs()
     system_gpu_ids = [gpu.id for gpu in system_gpus]
     available_gpu_ids = get_available_GPUs(free_gpu_max_mem)
-    # available_gpu_ids = [id for id in available_gpu_ids if id in range(6)]
+    available_gpu_ids = [id for id in available_gpu_ids if id in range(7)]
     n_available = len(available_gpu_ids)
 
     # Run commands on available GPUs
@@ -125,7 +128,7 @@ def run_param_sweep(base_cmd, grid, ngpus_per_run=1,
     while True:
         time.sleep(check_queue_every_nmin * 60)
         available_gpu_ids = get_available_GPUs(free_gpu_max_mem)
-        # available_gpu_ids = [id for id in available_gpu_ids if id in range(6)]
+        available_gpu_ids = [id for id in available_gpu_ids if id in range(7)]
 
         for i in range(len(available_gpu_ids)):  # run on available gpus
             if cur_combo_idx >= len(queued_combos):  # exit if all combos ran

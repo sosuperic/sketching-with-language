@@ -7,6 +7,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_images
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_cnnse
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_rankimgs4
 """
 
 import argparse
@@ -20,17 +21,17 @@ GRID = {
     # Data (and model)
     'drawing_type': ['image'],
     'images': [
-        'pre,start_to_annotated',
-        'pre,start_to_annotated,full',
-        'annotated,full',
-        'pre,start_to_annotated,post',
-        'pre,annotated,post',
-        'annotated',
+        # 'pre,start_to_annotated',  # 7
+        'pre,start_to_annotated,full',  # 14
+        # 'annotated,full',  # 13
+        # 'pre,start_to_annotated,post',  # 5
+        # 'pre,annotated,post',  # 8
+        # 'annotated',  # 3
     ],
 
     'cnn_type': [
-        # 'wideresnet',
-        'se',
+        'wideresnet',
+        # 'se',
         # 'cbam'
     ],
 
@@ -38,11 +39,24 @@ GRID = {
         'true'
     ],
 
+    'rank_imgs_text': ['true'],
+    'n_rank_imgs': [
+        2,
+        4,
+        8
+    ],
+    'rank_sim': [
+        'dot',
+        'bilinear',
+    ],
+    'batch_size': [16],
+
     # Model
     'dim': [
+        64,
         128,
         256,
-        512,
+        # 512,
     ],
     ''
     'model_type': [
@@ -66,7 +80,7 @@ GRID = {
     'lr': [
         0.001,
         0.0005,
-        0.0001,
+        # 0.0001,
     ],
 }
 

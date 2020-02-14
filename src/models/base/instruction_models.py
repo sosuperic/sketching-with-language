@@ -179,17 +179,25 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
     Annotated with instructions, drawing is represented as images
     (generated from src/data_manger/quickdraw.py's save_drawings_split_into_precurrentpost()).
     """
-    def __init__(self, dataset_split, images='annotated', data_aug_on_text=True):
+    def __init__(self,
+                 dataset_split,
+                 images='annotated',
+                 data_aug_on_text=True,
+                 rank_imgs_text=False, n_rank_imgs=8):
         """
         Args:
             dataset_split (str): 'train', 'valid', 'test'
             images (str): comma separated list. Possible values
                 annotated,pre,post,start_to_annotated,full
+            data_aug_on_text (bool): simple data augmentation of instructions
+            predict_img_text (bool): predict which image (which slice of drawing) matches with annotation
         """
         super().__init__()
         self.dataset_split = dataset_split
         self.images = images.split(',')
         self.data_aug_on_text = data_aug_on_text
+        self.rank_imgs_text = rank_imgs_text
+        self.n_rank_imgs = n_rank_imgs
 
         # Get data
         fp = None
@@ -217,9 +225,14 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
     def _load_img_as_np(self, img_fp):
         return np.array(Image.open(img_fp))
 
-    def __getitem__(self, idx):
-        sample = self.data[idx]
+    def _construct_image(self, sample):
+        """
+        An "image" a [N_channels, H, W] tensor where each channel is an
+        image of the drawing (i.e. the annotated segment, the full drawing, etc.)
 
+        Returns:
+            [N_channel, H, W] np array
+        """
         imgs = []
         if 'annotated' in self.images:
             imgs.append(self._load_img_as_np(sample['annotated_seg_fp']))
@@ -232,12 +245,194 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         if 'full' in self.images:
             imgs.append(self._load_img_as_np(sample['full_fp']))
         drawing = np.stack(imgs)  # ["channels", H, W]
+        return drawing
 
-        # Map
+    def _construct_rank_image(self, start, end, n_segs, sample):
+        """
+        Construct "image" for a image that will be used in ranking loss.
+        "Image" channels are various segments of the drawing.
+
+        Returns:
+            [N_channel, H, W] np array
+        """
+        base_dir = os.path.dirname(sample['annotated_seg_fp'])
+
+        imgs = []
+        if 'annotated' in self.images:
+            fn = f'{start}-{end}.jpg'
+            imgs.append(self._load_img_as_np(os.path.join(base_dir, fn)))
+        if 'pre' in self.images:
+            fn = f'0-{start}.jpg'
+            imgs.append(self._load_img_as_np(os.path.join(base_dir, fn)))
+        if 'start_to_annotated' in self.images:
+            fn = f'0-{end}.jpg'
+            imgs.append(self._load_img_as_np(os.path.join(base_dir, fn)))
+        if 'post' in self.images:
+            fn = f'{end}-{n_segs}.jpg'
+            imgs.append(self._load_img_as_np(os.path.join(base_dir, fn)))
+        if 'full' in self.images:
+            imgs.append(self._load_img_as_np(sample['full_fp']))
+        drawing = np.stack(imgs)  # ["channels", H, W]
+        return drawing
+
+    def _get_start_end_from_imgfp(self, imgfp):
+        """
+        Helper to to get start and end of segment for drawing segment in imgfp
+
+        data/quickdraw/precurrentpost/data/zebra/6223547657617408/9-12.jpg' -> 9, 12
+        """
+        fn = os.path.basename(imgfp)
+        start, end = fn.strip('.jpg').split('-')
+        start, end = int(start), int(end)
+        return start, end
+
+    def _get_imgfp_from_start_end(self, start, end, sample):
+        """Helper to return fp for image of segment from start to end"""
+        base_dir = os.path.dirname(sample['annotated_seg_fp'])
+        fn = f'{start}-{end}.jpg'
+        fp = os.path.join(base_dir, fn)
+        return fp
+
+    def get_rankimgs_and_prefs(self, seg_start, seg_end, n_segs, sample):
+        """
+        Args:
+            seg_start (int): start idx of annotated segment
+            seg_end (int): end idx of annotated segment
+            n_segs (int):
+            sample: __getitem__ sample
+
+        Note:
+            Pref is top-1 probability of that image (probability that it should be ranked first)
+
+        Returns:
+            rank_imgs: [n_rank_imgs, C, H, W]
+            prefs: [n_rank_imgs] np array
+                Softmax over scores
+        """
+
+        def add_img(imgfps_pref, added_ranges, left, right, n_segs, sample, pref, allow_dups=False):
+            """
+            Add image (segment of drawing) to rank images
+
+            Args:
+                imgfps_pref (list of tuples): tuple is (fp to image, preference score)
+                added_ranges (set): set of tuples storing which (left, right) segments have been added
+                left (int): start idx of segment
+                right (int): end idx of segment
+                n_segs (int)
+                sample (__getitem__ sample)
+                pref (int): preference
+                allow_dups (bool): allow duplicate segments in imgfps_pref
+
+            Returns:
+                potentially modified versions of imgfps_pref, added_ranges
+            """
+            # Early shortcut. Range doesn't make sense
+            if (left >= right) or (left < 0) or (right > n_segs):
+                return imgfps_pref, added_ranges
+
+            # Add if segment hasn't been added before
+            if ((left, right) not in added_ranges) or allow_dups:
+                fp = self._get_imgfp_from_start_end(left, right, sample)
+                imgfps_pref.append((fp, pref))
+                added_ranges.add((left, right))
+
+            return imgfps_pref, added_ranges
+
+        PERFECT_PREF = 5
+        DISTANT_PREF = 1
+
+        # Add the actual annotated segment
+        imgfps_prefs = [(self._get_imgfp_from_start_end(seg_start, seg_end, sample), PERFECT_PREF)]
+        added_ranges = set([(seg_start, seg_end)])
+
+        # Add some close images
+        max_delta = 2
+        for delta in range(1, max_delta+1):
+            left, right = seg_start - delta, seg_end
+            imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, PERFECT_PREF - delta)
+            left, right = seg_start + delta, seg_end
+            imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, PERFECT_PREF - delta)
+            left, right = seg_start, seg_end - delta
+            imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, PERFECT_PREF - delta)
+            left, right = seg_start, seg_end + delta
+            imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, PERFECT_PREF - delta)
+
+        # Add some "distant" images (random segments) that have no overlap with the annotated segment
+        # There may be duplicates in order to ensure that there is a total of self.n_rank_imgs
+        # want a mix of close and distant
+        n_added = 0
+        left_seg_exists, right_seg_exists = False, False
+        while n_added < self.n_rank_imgs:
+            # Segments on the left of the annotated segment
+            if (seg_start > 0):
+                left_seg_exists = True
+                left = random.choice(range(0, seg_start))
+                right = random.choice(range(left + 1, seg_start + 1))
+                imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, DISTANT_PREF, allow_dups=True)
+                n_added += 1
+
+            # Segments on the right of the annotated segment
+            if (seg_end < n_segs):
+                right_seg_exists = True
+                left = random.choice(range(seg_end, n_segs))
+                right = random.choice(range(left + 1, n_segs + 1))
+                imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, left, right, n_segs, sample, DISTANT_PREF, allow_dups=True)
+                n_added += 1
+
+            if (not left_seg_exists) and (not right_seg_exists):
+                break
+
+        # If there aren't any distant segments (from above), we may have to sample within the annotated segment
+        # / add the annotated segment itself
+        # For example, full drawing is just 0-1.jpg, and segment is 0-1
+        if (not left_seg_exists) and (not right_seg_exists):
+            while len(imgfps_prefs) < self.n_rank_imgs:
+                # Note: not sampling within right now.
+                imgfps_pref, added_ranges = add_img(imgfps_prefs, added_ranges, seg_start, seg_end, n_segs, sample, PERFECT_PREF, allow_dups=True)
+
+        # Get n_rank_imgs (actually annotated image that we want the model to rank first, and other images)
+        annotated_imgfp_pref = imgfps_prefs[0]
+        other_imgfps_prefs = imgfps_prefs[1:]
+        random.shuffle(other_imgfps_prefs)
+        imgfps_prefs = [annotated_imgfp_pref] + other_imgfps_prefs[:self.n_rank_imgs - 1]    # select (n_rank_imgs - 1) random other imgs
+
+
+        # Shuffle them so it's not always the first image that is weighted highest
+        random.shuffle(imgfps_prefs)
+        imgfps, prefs = zip(*imgfps_prefs)
+
+        # Load the actual images and combine them into one tensor
+        rank_imgs = []
+        for imgfp in imgfps:
+            start, end = self._get_start_end_from_imgfp(imgfp)
+            rank_img = self._construct_rank_image(start, end, n_segs, sample)
+            rank_imgs.append(rank_img)
+        rank_imgs = np.stack(rank_imgs)  # [n_rank_imgs, C, H, W]
+
+        # Softmax
+        prefs = np.array(prefs)
+        prefs = np.exp(prefs) / np.sum(np.exp(prefs), axis=0)
+
+        return rank_imgs, prefs
+
+
+    def __getitem__(self, idx):
+        sample = self.data[idx]
+        drawing = self._construct_image(sample)  # [C, H, W] np array
+
+        # Images to be ranked against generated instruction embedding
+        rank_imgs = np.array([1])  # dummy (not None because it's stacked in the collate_fn)
+        rank_imgs_pref = np.array([1])  # dummy (not None because it's stacked in the collate_fn)
+        if self.rank_imgs_text:
+            _, n_segs = self._get_start_end_from_imgfp(sample['post_seg_fp'])
+            seg_start, seg_end = self._get_start_end_from_imgfp(sample['annotated_seg_fp'])
+            rank_imgs, rank_imgs_pref = self.get_rankimgs_and_prefs(seg_start, seg_end, n_segs, sample)
+
+        # Get text
         text = sample['annotation']
         text = text.lower()
-        # every sentence ends with period
-        if (text != '?') and (not text.endswith('.')):
+        if (text != '?') and (not text.endswith('.')):  # every sentence ends with period
             text = text + '.'
 
         if self.data_aug_on_text:
@@ -251,8 +446,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         cat_idx = self.cat2idx[cat]
         url = sample['url']
 
-        # Return None so that it has the same API as ProgressionPairDataset
-        return (drawing, None, text, text_indices, cat, cat_idx, url)
+        return (drawing, rank_imgs, rank_imgs_pref, text, text_indices, cat, cat_idx, url)
 
     @staticmethod
     def collate_fn(batch):
@@ -267,7 +461,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
         """
-        imgs, _, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
+        imgs, rank_imgs, rank_imgs_pref, texts, texts_indices, cats, cats_idx, urls = zip(*batch)
         bsz = len(batch)
         # sample_dim = strokes[0].shape[1]  # 3 if stroke-3, 5 if stroke-5 format
 
@@ -284,8 +478,13 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         batch_text_indices = torch.LongTensor(batch_text_indices)
         cats_idx = torch.LongTensor(cats_idx)
 
-        return batch_imgs, None, \
+        batch_rank_imgs = torch.FloatTensor(np.stack(rank_imgs))  # [bsz, n_rank_imgs, C, H, W]
+        batch_rank_imgs_pref = torch.FloatTensor(np.stack(rank_imgs_pref))  # [bsz, n_rank_imgs]
+
+        # Returning rank data as a tuple to match the API of ProgressionPairDataset...
+        return batch_imgs, (batch_rank_imgs, batch_rank_imgs_pref), \
             texts, text_lens, batch_text_indices, cats, cats_idx, urls
+
 
 class ProgressionPairDataset(Dataset):
     def __init__(self,

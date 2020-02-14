@@ -50,22 +50,27 @@ class HParams():
         self.unlikelihood_loss = False
 
         # Dataset (and model)
-        self.drawing_type = 'stroke'  # 'stroke' or 'image'
+        self.drawing_type = 'image'  # 'stroke' or 'image'
+        self.cnn_type = 'wideresnet'  #'wideresnet,se,cbam' (when drawing_type == 'image')
         self.use_prestrokes = False  # for 'stroke'
-        self.images = 'annotated'  # for image; annotated,pre,post,start_to_annotated,full
-        self.data_aug_on_text = False   # only for drawing_type=image right now
+        self.images = 'pre,start_to_annotated,full'  # for image; annotated,pre,post,start_to_annotated,full
+        self.data_aug_on_text = True   # only for drawing_type=image right now
 
         # Model
         self.dim = 512
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
-        self.cnn_type = 'wideresnet'  #'wideresnet,se,cbam'
         self.use_layer_norm = False   # currently only for lstm
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_categories_enc = False
         self.use_categories_dec = True
         self.dropout = 0.2
+
+        # Additional ranking metric loss
+        self.rank_imgs_text = False
+        self.n_rank_imgs = 4
+        self.rank_sim = 'bilinear'  # 'dot'
 
         # inference
         self.decode_method = 'greedy'  # 'sample', 'greedy'
@@ -79,28 +84,28 @@ class HParams():
 class StrokesToInstructionModel(TrainNN):
     def __init__(self, hp, save_dir=None):
         super().__init__(hp, save_dir)
-        self.tr_loader =  self.get_data_loader('train', hp.batch_size, shuffle=True,
-                                               drawing_type=hp.drawing_type,
-                                               use_prestrokes=hp.use_prestrokes,
-                                               images=hp.images, data_aug_on_text=hp.data_aug_on_text)
-        self.val_loader = self.get_data_loader('valid', hp.batch_size, shuffle=False,
-                                               drawing_type=hp.drawing_type,
-                                               use_prestrokes=hp.use_prestrokes,
-                                               images=hp.images, data_aug_on_text=False)
+        self.tr_loader = self.get_data_loader('train', shuffle=True)
+        self.val_loader = self.get_data_loader('valid', shuffle=False)
         self.end_epoch_loader = self.val_loader
 
+        #
         # Model
+        #
         self.token_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.dim)
         self.models.append(self.token_embedding)
         self.category_embedding = None
-        if (self.hp.use_categories_enc) or (self.hp.use_categories_dec):
-            self.category_embedding = nn.Embedding(35, self.hp.dim)
+        if (self.hp.use_categories_enc) or (hp.use_categories_dec):
+            self.category_embedding = nn.Embedding(35, hp.dim)
             self.models.append(self.category_embedding)
+        if self.hp.rank_imgs_text:
+            self.rank_bilin_mod = torch.nn.Bilinear(hp.dim, hp.dim, 1)
+            self.models.append(self.rank_bilin_mod)
 
+        # Encoder decoder
         if hp.model_type.endswith('lstm'):
             if hp.drawing_type == 'image':
-                n_channels = len(hp.images.split(','))
-                self.enc = StrokeAsImageEncoderCNN(hp.cnn_type, n_channels, hp.dim)
+                self.n_channels = len(hp.images.split(','))
+                self.enc = StrokeAsImageEncoderCNN(hp.cnn_type, self.n_channels, hp.dim)
             else:  # drawing_type is stroke
 
                 # encoders may be different
@@ -147,12 +152,12 @@ class StrokesToInstructionModel(TrainNN):
                     nn.init.xavier_uniform_(p)
             self.models.extend([self.strokes_input_fc, self.pos_enc, self.transformer])
 
-
         for model in self.models:
             model.cuda()
 
+        # Additional loss
         if hp.unlikelihood_loss:
-            assert hp.model_type == 'cnn_lstm'
+            # assert hp.model_type == 'cnn_lstm'
 
             # load true vocab distribution
             token2idx = self.tr_loader.dataset.token2idx
@@ -196,30 +201,22 @@ class StrokesToInstructionModel(TrainNN):
     #
     # Data
     #
-    def get_data_loader(self,
-            dataset_split, batch_size, shuffle=True,
-            drawing_type='strokes',
-            use_prestrokes=False,
-            images=None,
-            data_aug_on_text=False
-            ):
+    def get_data_loader(self, dataset_split, shuffle=False):
         """
         Args:
             dataset_split (str): 'train', 'valid', 'test'
-            batch_size (int)
             shuffle (bool)
-            drawing_type (str): 'strokes' or 'image'
-            use_prestrokes (bool): for stroke dataset
-            images (str)
         """
-        if drawing_type == 'stroke':
-            ds = ProgressionPairDataset(dataset_split, use_prestrokes=use_prestrokes)
-            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+        if self.hp.drawing_type == 'stroke':
+            ds = ProgressionPairDataset(dataset_split, use_prestrokes=self.hp.use_prestrokes)
+            loader = DataLoader(ds, batch_size=self.hp.batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
-        elif drawing_type == 'image':
-            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, images=images,
-                                                  data_aug_on_text=data_aug_on_text)
-            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+        elif self.hp.drawing_type == 'image':
+            ds = DrawingsAsImagesAnnotatedDataset(dataset_split, images=self.hp.images,
+                                                  data_aug_on_text=self.hp.data_aug_on_text,
+                                                  rank_imgs_text=self.hp.rank_imgs_text,
+                                                  n_rank_imgs=self.hp.n_rank_imgs)
+            loader = DataLoader(ds, batch_size=self.hp.batch_size, shuffle=shuffle,
                                 collate_fn=DrawingsAsImagesAnnotatedDataset.collate_fn)
         return loader
 
@@ -254,7 +251,7 @@ class StrokesToInstructionModel(TrainNN):
         return loss
 
     def compute_unlikelihood_loss(self, logits, text_lens):
-        loss = torch.FloatTensor([0])
+        loss = torch.tensor(0.)
 
         # Keep track of last n batches of probs. Shift by 1, add latest
         # updated = nn_utils.move_to_cuda(torch.zeros_like(self.model_vocab_prob))
@@ -284,9 +281,42 @@ class StrokesToInstructionModel(TrainNN):
         unlikelihood = torch.log(1 - probs) * mask  # [len, bsz, vocab]
         loss = -(mismatch * unlikelihood).mean()
 
-        loss *= 10000  # mixing parameter
+        loss *= 500  # mixing parameter
         # print('ull, ', loss.item())
 
+        return loss
+
+    def rank_imgs_text_loss(self, imgs_emb, texts_emb, imgs_pref):
+        """
+        Compute list-wise ranking loss. Text_emb is the query,
+        imgs_emb are list of possible images being ranked, imgs_pref is the
+        ranking we are trying to achieve.
+
+        Args:
+            imgs_emb ([bsz, n_rank_imgs, dim])
+            texts_emb ([bsz, dim])
+            imgs_pref ([bsz, n_rank_imgs]): Target ranking preference
+
+        Returns:
+            loss: FloatTensor
+        """
+        # Compute similarity between images and text
+        if self.hp.rank_sim == 'dot':
+            # Bmm([b * n * m], [b * m * p]) -> [b * n * p]
+            texts_emb = texts_emb.unsqueeze(2)  # [bsz, dim, 1]
+            sims = imgs_emb.bmm(texts_emb)  # [bsz, n_rank_imgs, 1]
+            sims = sims.squeeze()  # [bsz, n_rank_imgs]
+        elif self.hp.rank_sim == 'bilinear':
+            texts_emb = texts_emb.unsqueeze(1).repeat(1, self.hp.n_rank_imgs, 1)  # [bsz, n_rank_imgs, dim]
+            sims = self.rank_bilin_mod(imgs_emb, texts_emb)  # [bsz, n_rank_imgs, 1]
+            sims = sims.squeeze()  # [bsz, n_rank_imgs]
+
+        # Cross entropy (-p * log q)
+        loss = torch.mean(torch.sum(-imgs_pref * F.log_softmax(sims, dim=1), dim=1))
+
+        # print(sims[0].cpu().detach().numpy().tolist())
+        # print(imgs_pref[0].cpu().detach().numpy().tolist())
+        # print(loss)
         return loss
 
     def one_forward_pass(self, batch):
@@ -318,10 +348,10 @@ class StrokesToInstructionModel(TrainNN):
 
 
     def one_forward_pass_imagecnn_lstm(self, batch):
-        images, _, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
+        imgs, (rank_imgs, rank_imgs_pref), texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = batch
 
         # Encode strokes
-        embedded = self.enc(images)  # [bsz, dim]
+        embedded = self.enc(imgs)  # [bsz, dim]
 
         embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
         hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -329,15 +359,34 @@ class StrokesToInstructionModel(TrainNN):
 
         # Decode
         texts_emb = self.token_embedding(text_indices_w_sos_eos)  # [max_text_len + 2, bsz, dim]
-        logits, _ = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
-                             token_embedding=self.token_embedding,
-                             category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
+        logits, texts_hidden = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
+                                        token_embedding=self.token_embedding,
+                                        category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
-        result = {'loss': loss}
+        result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         if self.hp.unlikelihood_loss:
             loss_UL = self.compute_unlikelihood_loss(logits, text_lens)
-            result['loss_unlikelihood'] = loss_UL
+            result['loss'] += loss_UL  # for backward
+            result['loss_unlikelihood'] = loss_UL.clone().detach()  # for logging
+
+        if self.hp.rank_imgs_text:
+            # not on cuda because it's a tuple within the batch... not done by preprocess()
+            rank_imgs = nn_utils.move_to_cuda(rank_imgs)
+            rank_imgs_pref = nn_utils.move_to_cuda(rank_imgs_pref)
+
+            # embed rank images
+            C, bsz, H, W = imgs.size()
+            rank_imgs = rank_imgs.view(bsz * self.hp.n_rank_imgs, C, H, W)  # [bsz, rank_n_imgs, C, H, W] ->  [bsz * rank_n_imgs, C, H, W]
+            rank_imgs = rank_imgs.transpose(0,1) # [C, bsz * rank_n_imgs, H, W]  (CNN expects batch second)
+            rank_imgs_emb = self.enc(rank_imgs)   # [bsz * rank_n_imgs, dim]
+            rank_imgs_emb = rank_imgs_emb.view(bsz, self.hp.n_rank_imgs, -1)  # [bsz, rank_n_imgs, dim]
+
+            # Compute loss
+            texts_hidden = texts_hidden[0][-1,:,:]  # last layer hidden? -> [bsz, dim]  # TODO:
+            loss_rank = self.rank_imgs_text_loss(rank_imgs_emb, texts_hidden, rank_imgs_pref)
+            result['loss'] += loss_rank  # for backward
+            result['loss_rank_imgs_text'] = loss_rank.clone().detach()  # for logging
 
         return result
 
@@ -358,11 +407,13 @@ class StrokesToInstructionModel(TrainNN):
                              token_embedding=self.token_embedding,
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
-        result = {'loss': loss}
+        result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         if self.hp.unlikelihood_loss:
             loss_UL = self.compute_unlikelihood_loss(logits, text_lens)
-            result['loss_unlikelihood'] = loss_UL
+
+            result['loss'] += loss_UL  # for backward
+            result['loss_unlikelihood'] = loss_UL.clone().detach()  # for logging
 
         return result
 
@@ -383,7 +434,7 @@ class StrokesToInstructionModel(TrainNN):
                              token_embedding=self.token_embedding,
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
-        result = {'loss': loss}
+        result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         return result
 
@@ -401,7 +452,7 @@ class StrokesToInstructionModel(TrainNN):
                              token_embedding=self.token_embedding,
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
-        result = {'loss': loss}
+        result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         return result
 
@@ -435,7 +486,7 @@ class StrokesToInstructionModel(TrainNN):
         # Compute logits and loss
         logits = torch.matmul(dec_outputs, self.token_embedding.weight.t())  # [max_text_len + 2, bsz, vocab]
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
-        result = {'loss': loss, 'logits': logits}
+        result = {'loss': loss, 'loss_decode': loss.clone().detach(), 'logits': logits}
 
         return result
 
@@ -475,10 +526,14 @@ class StrokesToInstructionModel(TrainNN):
 
         if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
             if self.hp.drawing_type == 'image':
-                embedded = self.enc(strokes)  # strokes is actually images [C, B, H, W]
+                # TODO: this is horribly confusing...
+                # strokes is actually images [C, B, H, W]
+                # stroke_lens (2nd item in batch) is actually a tuple of rank_imgs and rank_imgs_pref
+                # We don't need to use rank imgs during inference, it's just used during training as an auxiliary loss
+                embedded = self.enc(strokes)
                 # [bsz, dim]
                 embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
-                hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
+                hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_  glayers, bsz, dim]
                 cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
             else:
                 if self.hp.model_type == 'cnn_lstm':
