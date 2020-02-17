@@ -122,6 +122,8 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
 
     runs_stats = []
     n = 0
+
+    hiplot_stats = []
     for root, dirs, fns in os.walk(dir):
         for fn in fns:
             # Get loss from model fn (e<epoch>_loss<loss>.pt)
@@ -146,6 +148,30 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
                 ])
                 n += 1
                 # print(n)
+
+                run_hiplot = {
+                    'n_gen_toks': len(gen_toks),
+                    'loss': loss,
+                    'rougeL': np.mean(m2scores['rougeL']),
+                    'bleu1': np.mean(m2scores['bleu1']),
+                    'bleu2': np.mean(m2scores['bleu2']),
+                }
+
+                # runs/strokes_to_instruction/Feb14_2020/imagesweep_textaug_rankimgs/batch_size_16-cnn_type_wideresnet-data_aug_on_text_True-dim_64-drawing_type_image-images_pre,start_to_annotated,full-lr_0.0005-model_type_lstm-n_dec_layers_4-n_rank_imgs_2-rank_imgs_text_True-rank_sim_bilinear
+                run_dir = os.path.basename(run)
+                for param in run_dir.split('-'):
+                    for param_name in ['dim', 'lr', 'images', 'n_rank_imgs', 'rank_sim']:
+                        if param_name in param:
+                            val = param.replace('{}_'.format(param_name), '')  # loss_...
+                            try:
+                                float(val)
+                            except ValueError:
+                                pass
+                            run_hiplot[param_name] = val
+                hiplot_stats.append(run_hiplot)
+                utils.save_file(hiplot_stats, './hiplot_{}.json'.format(os.path.basename(os.path.dirname(dir))), verbose=True)
+
+
 
     # Print best runs
     print('-' * 100)
