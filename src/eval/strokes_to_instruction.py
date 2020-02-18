@@ -5,9 +5,10 @@ Evaluating StrokesToInstruction model by calcaulting ROUGE and other
 word-based stats.
 
 Usage:
-    PYTHONPATH=. python src/eval/strokes_to_instruction.py --fp <dir>/outputs/samples_e11.json
-    PYTHONPATH=. python src/eval/strokes_to_instruction.py -d runs/strokes_to_instruction/dec18_2019/bigsweep/
-    PYTHONPATH=. python src/eval/strokes_to_instruction.py -d best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/
+    Specific samples path
+        PYTHONPATH=. python src/eval/strokes_to_instruction.py --fp <dir>/outputs/samples_e11.json
+    Big sweep
+        PYTHONPATH=. python src/eval/strokes_to_instruction.py -d runs/strokes_to_instruction/dec18_2019/bigsweep/
 """
 
 import argparse
@@ -120,9 +121,8 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
     """
     print(f'Looking in: {dir}\n')
 
-    runs_stats = []
     n = 0
-
+    runs_stats = []
     hiplot_stats = []
     for root, dirs, fns in os.walk(dir):
         for fn in fns:
@@ -133,61 +133,63 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
                 loss = float(fn.split('loss')[1].strip('.pt'))
                 run = root.replace(dir + '/', '')
                 best_sample_fp = os.path.join(root, 'outputs', f'samples_e{epoch}.json')
+
                 # Calculate stats
                 m2scores, m2cat2scores = calc_bleu_and_rouge_on_samples(best_sample_fp, print=False)
                 gt_toks, gen_toks = calc_rare_words_stats(best_sample_fp, print=False)
-                runs_stats.append([
-                    run,
-                    {
-                        'n_gen_toks': len(gen_toks),
-                        'loss': loss,
-                        'rougeL': np.mean(m2scores['rougeL']),
-                        'bleu1': np.mean(m2scores['bleu1']),
-                        'bleu2': np.mean(m2scores['bleu2']),
-                    }
-                ])
-                n += 1
-                # print(n)
-
-                run_hiplot = {
+                run_results = {
                     'n_gen_toks': len(gen_toks),
+                    'n_gt_toks': len(gt_toks),
                     'loss': loss,
+                    'rouge1': np.mean(m2scores['rouge1']),
+                    'rouge2': np.mean(m2scores['rouge2']),
                     'rougeL': np.mean(m2scores['rougeL']),
                     'bleu1': np.mean(m2scores['bleu1']),
                     'bleu2': np.mean(m2scores['bleu2']),
                 }
+                runs_stats.append([run, run_results])
 
-                # runs/strokes_to_instruction/Feb14_2020/imagesweep_textaug_rankimgs/batch_size_16-cnn_type_wideresnet-data_aug_on_text_True-dim_64-drawing_type_image-images_pre,start_to_annotated,full-lr_0.0005-model_type_lstm-n_dec_layers_4-n_rank_imgs_2-rank_imgs_text_True-rank_sim_bilinear
-                run_dir = os.path.basename(run)
-                for param in run_dir.split('-'):
-                    for param_name in ['dim', 'lr', 'images', 'n_rank_imgs', 'rank_sim', 'category_mem_size', 'base_mem_size', 'mem_dim']:
-                        if param_name in param:
-                            val = param.replace('{}_'.format(param_name), '')  # loss_...
-                            try:
-                                float(val)
-                            except ValueError:
-                                pass
-                            run_hiplot[param_name] = val
+                # Save json data to be visualized by hiplot
+                hp_dict = utils.load_file(os.path.join(root, 'hp.json'))
+                run_hiplot = {}
+                for k, val in hp_dict.items():
+                    run_hiplot[k] = val
+                run_hiplot.update(run_results)
                 hiplot_stats.append(run_hiplot)
-                utils.save_file(hiplot_stats, './hiplot_{}.json'.format(os.path.basename(os.path.dirname(dir))), verbose=True)
 
+                n += 1
 
+    #
+    # Write best runs sorted to file
+    out_fp = os.path.join(dir, 'best_runs.txt')
+    with open(out_fp, 'w') as f:
+        print('-' * 100)
+        for main_stat in runs_stats[0][1].keys():  # n_gen_toks, loss, rougeL, bleu1, bleu2
+            print(f'RUNS WITH BEST: {main_stat}', file=f)
+            if main_stat == 'loss':  # lower is beter
+                sorted_by_main_stat = sorted(runs_stats, key=lambda x: -x[1][main_stat])[-best_n:]
+            else:  # higher is better
+                sorted_by_main_stat = sorted(runs_stats, key=lambda x: x[1][main_stat])[-best_n:]
 
-    # Print best runs
-    print('-' * 100)
-    for main_stat in runs_stats[0][1].keys():  # n_gen_toks, loss, rougeL, bleu1, bleu2
-        print(f'RUNS WITH BEST: {main_stat}')
-        if main_stat == 'loss':  # lower is beter
-            sorted_by_main_stat = sorted(runs_stats, key=lambda x: -x[1][main_stat])[-best_n:]
-        else:  # higher is better
-            sorted_by_main_stat = sorted(runs_stats, key=lambda x: x[1][main_stat])[-best_n:]
+            for run, stats in sorted_by_main_stat:
+                main_stat_val = stats[main_stat]
+                other_stats_str = ', '.join(['{}: {:.4f}'.format(stat, val) for stat, val in stats.items() if (main_stat != stat)])
+                out_str = '{}: {:.4f}'.format(main_stat, main_stat_val)
+                print(out_str + ', ' + other_stats_str + ', run: ' + run, file=f)
+            print(file=f)
 
-        for run, stats in sorted_by_main_stat:
-            main_stat_val = stats[main_stat]
-            other_stats_str = ', '.join(['{}: {:.4f}'.format(stat, val) for stat, val in stats.items() if (main_stat != stat)])
-            out_str = '{}: {:.4f}'.format(main_stat, main_stat_val)
-            print(out_str + ', ' + other_stats_str + ', run: ' + run)
-        print()
+    # Print to stdout
+    for line in open(out_fp, 'r').readlines():
+        print(line.strip())
+    print('\nWrote best runs sorted to: ', out_fp)
+
+    #
+    # Save hiplot data in runs/strokes_to_instruction/Feb14_2020/imagesweep_textaug_rankimgs/
+    #
+    out_fn = 'hiplot_data.json'
+    out_fp = os.path.join(dir, out_fn)
+    print()
+    utils.save_file(hiplot_stats, out_fp, verbose=True)
 
 
 if __name__ == '__main__':
