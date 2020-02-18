@@ -160,7 +160,7 @@ def calc_stats_for_runs_in_dir(dir, best_n=10):
                 # runs/strokes_to_instruction/Feb14_2020/imagesweep_textaug_rankimgs/batch_size_16-cnn_type_wideresnet-data_aug_on_text_True-dim_64-drawing_type_image-images_pre,start_to_annotated,full-lr_0.0005-model_type_lstm-n_dec_layers_4-n_rank_imgs_2-rank_imgs_text_True-rank_sim_bilinear
                 run_dir = os.path.basename(run)
                 for param in run_dir.split('-'):
-                    for param_name in ['dim', 'lr', 'images', 'n_rank_imgs', 'rank_sim']:
+                    for param_name in ['dim', 'lr', 'images', 'n_rank_imgs', 'rank_sim', 'category_mem_size', 'base_mem_size', 'mem_dim']:
                         if param_name in param:
                             val = param.replace('{}_'.format(param_name), '')  # loss_...
                             try:

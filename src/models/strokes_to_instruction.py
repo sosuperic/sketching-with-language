@@ -133,7 +133,7 @@ class StrokesToInstructionModel(TrainNN):
 
             if hp.use_mem:
                 self.mem = SketchMem(base_mem_size=hp.base_mem_size, category_mem_size=hp.category_mem_size,
-                                     mem_dim=hp.mem_dim, input_dim=hp.dim, output_dim=hp.mem_dim)
+                                     mem_dim=hp.mem_dim, input_dim=hp.dim, output_dim=hp.dim)
                 self.models.append(self.mem)
 
             # decoder is lstm
@@ -142,8 +142,6 @@ class StrokesToInstructionModel(TrainNN):
                 dec_input_dim += hp.dim
             if hp.use_categories_dec:
                 dec_input_dim += hp.dim
-            if hp.use_mem:
-                dec_input_dim += hp.mem_dim
             self.dec = InstructionDecoderLSTM(
                 dec_input_dim, hp.dim, num_layers=hp.n_dec_layers, dropout=hp.dropout, batch_first=False,
                 condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories_dec
@@ -368,7 +366,9 @@ class StrokesToInstructionModel(TrainNN):
         embedded = self.enc(imgs)  # [bsz, dim]
 
         if self.hp.use_mem:
-            mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+            # mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+            embedded = embedded + self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+            mem_emb = None
 
         embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
         hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -550,7 +550,9 @@ class StrokesToInstructionModel(TrainNN):
                 # We don't need to use rank imgs during inference, it's just used during training as an auxiliary loss
                 embedded = self.enc(strokes)  # [bsz, dim]
                 if self.hp.use_mem:
-                    mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+                    # mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+                    embedded = embedded + self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+                    mem_emb = None
 
                 embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
                 hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_  glayers, bsz, dim]

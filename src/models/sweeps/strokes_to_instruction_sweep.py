@@ -59,16 +59,29 @@ GRID = {
         128,
         256,
     ],
-    'mem_dim': [
-        64,
-        128,
+    'category_mem_size': [
+        # 8,
+        32,
     ],
+    # 'mem_dim': [
+    #     64,
+    #     128,
+    # ],
 
     # Model
+    # 'dim': [
+    #     64,
+    #     128,
+    #     256,
+    #     # 512,
+    # ],
     'dim': [
-        64,
-        128,
-        256,
+        # '64 --mem_dim 64',
+        '128 --mem_dim 64',
+        '128 --mem_dim 256',
+        # '256 --mem_dim 256',
+        '256 --mem_dim 64',
+        '256 --mem_dim 128',
         # 512,
     ],
     ''
@@ -108,4 +121,4 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname=args.email_groupname, free_gpu_max_mem=0.2)
+                    email_groupname=args.email_groupname, free_gpu_max_mem=0.4)
