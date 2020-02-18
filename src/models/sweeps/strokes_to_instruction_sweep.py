@@ -39,17 +39,30 @@ GRID = {
         'true'
     ],
 
-    'rank_imgs_text': ['true'],
-    'n_rank_imgs': [
-        2,
-        4,
-        8
+    # Ranking images auxiliary loss
+    # 'rank_imgs_text': ['true'],
+    # 'n_rank_imgs': [
+    #     2,
+    #     4,
+    #     8
+    # ],
+    # 'rank_sim': [
+    #     'dot',
+    #     'bilinear',
+    # ],
+    # 'batch_size': [16],
+
+    # Using memory
+    'use_mem': [True],
+    'base_mem_size': [
+        64,
+        128,
+        256,
     ],
-    'rank_sim': [
-        'dot',
-        'bilinear',
+    'mem_dim': [
+        64,
+        128,
     ],
-    'batch_size': [16],
 
     # Model
     'dim': [
@@ -95,4 +108,4 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname=args.email_groupname)
+                    email_groupname=args.email_groupname, free_gpu_max_mem=0.2)

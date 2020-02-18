@@ -5,7 +5,7 @@ Use the annotated MTurk data (ProgressionPairDataset) to train a P(instruction |
 
 Usage:
     CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type lstm
-    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --drawing_type image
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --use_mem true
 """
 
 from datetime import datetime
@@ -25,6 +25,7 @@ from src.models.base.instruction_models import ProgressionPairDataset, Instructi
     PAD_ID, OOV_ID, SOS_ID, EOS_ID, DrawingsAsImagesAnnotatedDataset
 from src.models.base.stroke_models import StrokeEncoderTransformer, StrokeEncoderLSTM, StrokeEncoderCNN, \
     StrokeAsImageEncoderCNN
+from src.models.base.memory import SketchMem
 from src.models.core.train_nn import TrainNN
 from src.models.core.transformer_utils import *
 from src.models.core import experiments, nn_utils
@@ -60,12 +61,18 @@ class HParams():
         self.dim = 512
         self.n_enc_layers = 4
         self.n_dec_layers = 4
-        self.model_type = 'cnn_lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
+        self.model_type = 'lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
         self.use_layer_norm = False   # currently only for lstm
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_categories_enc = False
         self.use_categories_dec = True
         self.dropout = 0.2
+
+        # memory
+        self.use_mem = False
+        self.base_mem_size = 100
+        self.category_mem_size = 5
+        self.mem_dim = 128
 
         # Additional ranking metric loss
         self.rank_imgs_text = False
@@ -124,12 +131,19 @@ class StrokesToInstructionModel(TrainNN):
                         use_categories=hp.use_categories_enc, use_layer_norm=hp.use_layer_norm
                     )
 
+            if hp.use_mem:
+                self.mem = SketchMem(base_mem_size=hp.base_mem_size, category_mem_size=hp.category_mem_size,
+                                     mem_dim=hp.mem_dim, input_dim=hp.dim, output_dim=hp.mem_dim)
+                self.models.append(self.mem)
+
             # decoder is lstm
             dec_input_dim = hp.dim
             if hp.condition_on_hc:
                 dec_input_dim += hp.dim
             if hp.use_categories_dec:
                 dec_input_dim += hp.dim
+            if hp.use_mem:
+                dec_input_dim += hp.mem_dim
             self.dec = InstructionDecoderLSTM(
                 dec_input_dim, hp.dim, num_layers=hp.n_dec_layers, dropout=hp.dropout, batch_first=False,
                 condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories_dec
@@ -353,6 +367,9 @@ class StrokesToInstructionModel(TrainNN):
         # Encode strokes
         embedded = self.enc(imgs)  # [bsz, dim]
 
+        if self.hp.use_mem:
+            mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+
         embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
         hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
         cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -361,7 +378,8 @@ class StrokesToInstructionModel(TrainNN):
         texts_emb = self.token_embedding(text_indices_w_sos_eos)  # [max_text_len + 2, bsz, dim]
         logits, texts_hidden = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
                                         token_embedding=self.token_embedding,
-                                        category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
+                                        category_embedding=self.category_embedding, categories=cats_idx,  # [max_text_len + 2, bsz, vocab]; h/c
+                                        mem_emb=mem_emb)
         loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
         result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
@@ -530,8 +548,10 @@ class StrokesToInstructionModel(TrainNN):
                 # strokes is actually images [C, B, H, W]
                 # stroke_lens (2nd item in batch) is actually a tuple of rank_imgs and rank_imgs_pref
                 # We don't need to use rank imgs during inference, it's just used during training as an auxiliary loss
-                embedded = self.enc(strokes)
-                # [bsz, dim]
+                embedded = self.enc(strokes)  # [bsz, dim]
+                if self.hp.use_mem:
+                    mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+
                 embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
                 hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_  glayers, bsz, dim]
                 cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -565,6 +585,7 @@ class StrokesToInstructionModel(TrainNN):
             decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
                 self.token_embedding,
                 category_embedding=self.category_embedding, categories=cats_idx,
+                mem_emb=mem_emb,
                 init_ids=init_ids, hidden=hidden, cell=cell,
                 pad_id=PAD_ID, eos_id=EOS_ID, max_len=25,
                 decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,

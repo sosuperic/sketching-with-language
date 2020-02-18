@@ -1015,7 +1015,8 @@ class InstructionDecoderLSTM(nn.Module):
                             num_layers=num_layers, dropout=dropout, batch_first= batch_first)
 
     def forward(self, texts_emb, text_lens, hidden=None, cell=None,
-                token_embedding=None, category_embedding=None, categories=None):
+                token_embedding=None, category_embedding=None, categories=None,
+                mem_emb=None):
         """
         Args:
             texts_emb: [len, bsz, dim] FloatTensor
@@ -1025,6 +1026,7 @@ class InstructionDecoderLSTM(nn.Module):
             token_embedding: nn.Embedding(vocab, dim)
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
+            mem_emb: [bsz, mem_dim] FloatTensor returned by memory lookup
 
         Returns:
             outputs:
@@ -1047,8 +1049,14 @@ class InstructionDecoderLSTM(nn.Module):
         if self.use_categories and category_embedding:
             cats_emb = category_embedding(categories)  # [bsz, dim]
             cats_emb = self.dropout_mod(cats_emb)
+            # repeat embedding along time dimension
             cats_emb = cats_emb.repeat(inputs_emb.size(0), 1, 1)  # [len, bsz, dim]
             inputs_emb = torch.cat([inputs_emb, cats_emb], dim=2)  # [len, bsz, dim * 2 or dim *3]
+
+        if mem_emb is not None:
+            # repeat embedding along time dimension
+            mem_emb = mem_emb.repeat(inputs_emb.size(0), 1, 1)  # [len, bsz, mem_dim]
+            inputs_emb = torch.cat([inputs_emb, mem_emb], dim=2)  # [len, bsz, ...]
 
         # decode
         packed_inputs = nn.utils.rnn.pack_padded_sequence(inputs_emb, text_lens, enforce_sorted=False)
@@ -1064,6 +1072,7 @@ class InstructionDecoderLSTM(nn.Module):
     def generate(self,
                  token_embedding,
                  category_embedding=None, categories=None,
+                 mem_emb=None,
                  init_ids=None, hidden=None, cell=None,
                  pad_id=None, eos_id=None,
                  max_len=100,
@@ -1078,6 +1087,7 @@ class InstructionDecoderLSTM(nn.Module):
             token_embedding: nn.Embedding(vocab, dim)
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
+            mem_emb ([bsz, mem_dim]): returned by memory lookup
             init_ids:   # [init_len, bsz]
             init_embs: [init_len, bsz, emb] (e.g. embedded SOS ids)
             hidden: [layers * direc, bsz, dim]
@@ -1108,7 +1118,11 @@ class InstructionDecoderLSTM(nn.Module):
         decoded_probs = nn_utils.move_to_cuda(torch.zeros(bsz, max_len, vocab_size))  #
         decoded_ids = nn_utils.move_to_cuda(torch.zeros(bsz, max_len).long())  # [bsz, max_len]
         cur_input_id = init_ids
+
+        # unsqueeze in time dimension
         cats_emb = category_embedding(categories).unsqueeze(0) if (category_embedding is not None) else None  # [1, bsz, dim]
+        mem_emb = mem_emb.unsqueeze(0) if (mem_emb is not None) else None  # [1, bsz, mem_dim]
+
         for t in range(max_len):
             cur_input_emb = token_embedding(cur_input_id)  # [1, bsz, dim]
             if self.condition_on_hc:
@@ -1116,7 +1130,9 @@ class InstructionDecoderLSTM(nn.Module):
                 last_hc = last_hc.unsqueeze(0)  # [1, bsz, dim]
                 cur_input_emb = torch.cat([cur_input_emb, last_hc], dim=2)  # [1, bsz, dim * 2]
             if (cats_emb is not None):
-                cur_input_emb = torch.cat([cur_input_emb, cats_emb], dim=2)  # 1, bsz, dim * 2 or dim * 3]
+                cur_input_emb = torch.cat([cur_input_emb, cats_emb], dim=2)  # [1, bsz, dim * 2 or dim * 3]
+            if (mem_emb is not None):
+                cur_input_emb = torch.cat([cur_input_emb, mem_emb], dim=2)  # [1, bsz, ...]
 
             dec_outputs, (hidden, cell) = self.lstm(cur_input_emb, (hidden, cell))  # [cur_len, bsz, dim]; h/c
 
