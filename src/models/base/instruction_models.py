@@ -9,12 +9,14 @@ import random
 
 import numpy as np
 import nltk
+import PIL
 from PIL import Image
 
 import torch
 from torch import nn
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+import torchvision
 
 from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_TRAIN_PATH, \
@@ -31,8 +33,6 @@ from src.data_manager.quickdraw import build_category_index, \
     normalize_strokes, stroke3_to_stroke5
 from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.core import nn_utils, transformer_utils
-
-
 
 
 
@@ -183,6 +183,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
                  dataset_split,
                  images='annotated',
                  data_aug_on_text=True,
+                 data_aug_on_imgs=False,
                  rank_imgs_text=False, n_rank_imgs=8):
         """
         Args:
@@ -196,6 +197,7 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         self.dataset_split = dataset_split
         self.images = images.split(',')
         self.data_aug_on_text = data_aug_on_text
+        self.data_aug_on_imgs = data_aug_on_imgs
         self.rank_imgs_text = rank_imgs_text
         self.n_rank_imgs = n_rank_imgs
 
@@ -218,6 +220,14 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
 
         self.idx2cat = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH)
         self.cat2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH)
+
+        # For data augmentation
+        self.img_transforms = torchvision.transforms.Compose([
+            torchvision.transforms.ToPILImage(),
+            # torchvision.transforms.RandomAffine(0, translate=(0, 0.1)),
+            torchvision.transforms.RandomHorizontalFlip(),
+            # torchvision.transforms.RandomRotation(10, resample=PIL.Image.BILINEAR)
+        ])
 
     def __len__(self):
         return len(self.data)
@@ -245,6 +255,10 @@ class DrawingsAsImagesAnnotatedDataset(Dataset):
         if 'full' in self.images:
             imgs.append(self._load_img_as_np(sample['full_fp']))
         drawing = np.stack(imgs)  # ["channels", H, W]
+
+        if (self.dataset_split == 'train') and self.data_aug_on_imgs:
+            drawing = self.img_transforms(drawing)
+
         return drawing
 
     def _construct_rank_image(self, start, end, n_segs, sample):
