@@ -4,8 +4,7 @@
 Currently uses trained StrokesToInstruction model to segment unseen sequences.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair --score_parent_child_text_sim true
-    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/segmentation.py -ds ndjson
+    CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python src/models/segmentation.py -ds progressionpair
 """
 
 import argparse
@@ -30,6 +29,7 @@ from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.base.instruction_models import ProgressionPairDataset, map_sentence_to_index
 from src.models.core import experiments, nn_utils
 from src.models.instruction_to_strokes import InstructionToStrokesModel
+from src.models.strokes_to_instruction import HParams as s2i_default_hparams
 from src.models.strokes_to_instruction import StrokesToInstructionModel, EOS_ID
 
 
@@ -42,7 +42,7 @@ class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
 
-        self.score_parent_child_text_sim = False  # similarity b/n parent text and children text (concatenated)
+        self.score_parent_child_text_sim = True  # similarity b/n parent text and children text (concatenated)
         self.score_exponentiate = 1.0  # seg1_score ** alpha * seg2_score ** alpha
         self.score_childinst_parstroke = False   # P(parent_strokes | [child_inst1, child_inst2])
 
@@ -74,6 +74,37 @@ def remove_stopwords(nlp, text):
     result = ' '.join(result)
     return result
 
+
+def prune_seg_tree(seg_tree, prob_threshold):
+    """
+    Args:
+        seg_tree (list of dicts):
+            In order of splits as done by SegmentationModel.
+                E.g. 0-4, then 0-3, then 0-1, then 1-3, then 1-2, then 2-3, then 3-4
+
+            Each dict contains data about that segment.
+                'left': start idx
+                'right': end idx
+                'id':
+                'parent': parent's id
+                'text':
+                'score': Currently P(I|S) for that segment
+
+        prob_threshold (float): score must be greater than prob_threshold
+
+    Returns seg_tree (list of dicts)
+        all segments that fall below prob_threshold removed (including each segment's subsegments)
+    """
+    pruned = [seg_tree[0]]  # must have root
+    added_ids = set([seg_tree[0]['id']])
+    for i in range(1, len(seg_tree)):
+        seg = seg_tree[i]
+        if seg['score'] > prob_threshold:
+            if seg['parent'] in added_ids:  # parent must have been added (i.e. above threshold)
+                pruned.append(seg)
+                added_ids.add(seg['id'])
+    return pruned
+
 ##############################################################################
 #
 # Model
@@ -92,12 +123,21 @@ class SegmentationModel(object):
 
         # Load hp used to train model
         self.s2i_hp = experiments.load_hp(copy.deepcopy(hp), hp.strokes_to_instruction_dir)
+        default_s2i_hp = s2i_default_hparams()
+        # For backwards compatibility:
+        # hparams may have been added since model was trained; add them to s2i_hp
+        for k, v in vars(default_s2i_hp).items():
+            if not hasattr(self.s2i_hp, k):
+                setattr(self.s2i_hp, k, v)
+        self.s2i_hp.drawing_type = 'stroke'  # TODO: this should be image once we switch to the images model
+
         self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
         self.strokes_to_instruction.cuda()
 
         if (hp.split_scorer == 'instruction_to_strokes') or (hp.score_childinst_parstroke):
             self.i2s_hp = experiments.load_hp(copy.deepcopy(hp), hp.instruction_to_strokes_dir)
+            # TODO: should do same backwards compatibility as above
             self.instruction_to_strokes = InstructionToStrokesModel(self.i2s_hp, save_dir=None)
             self.instruction_to_strokes.load_model(hp.instruction_to_strokes_dir)  # TODO: change param for load_model
             self.instruction_to_strokes.cuda()
@@ -479,16 +519,21 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         # Note: append and splits must be called in the following order to get correct parent id
         parent_id = segmented[-1]['id']
 
+        # add left
         segmented.append({'left': left_penup_idx, 'right': best_split_penup_idx,
                           'score': best_left_seg_score, 'text': best_left_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
+        # recursively split left
         segmented = self.split(left_penup_idx, best_split_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
-                               parchild_scores, leftrightsegidx_to_parchildidx)
+                            parchild_scores, leftrightsegidx_to_parchildidx)
+
+        # add right
         segmented.append({'left': best_split_penup_idx, 'right': right_penup_idx,
                           'score': best_right_seg_score, 'text': best_right_seg_text,
                           'id': uuid4().hex, 'parent': parent_id})
+        # recursively split right
         segmented = self.split(best_split_penup_idx, right_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
-                               parchild_scores, leftrightsegidx_to_parchildidx)
+                            parchild_scores, leftrightsegidx_to_parchildidx)
         return segmented
 
 
@@ -511,11 +556,6 @@ if __name__ == '__main__':
     if opt.groupname is not None:
         save_dir = save_dir / opt.groupname
 
-    # TODO: find a better way to handle this...
-    hp.use_categories_enc = False
-    hp.use_categories_dec = True  # backwards compatability (InstructionToStrokes model was trained without that hparams)
-    hp.unlikelihood_loss = False
-    hp.use_layer_norm = False
     # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
     # utils.save_file(vars(hp), save_dir / 'hp.json')
     experiments.save_run_data(save_dir, hp,  ask_if_exists=False)

@@ -66,9 +66,9 @@ LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2i
 RUNS_PATH = Path('runs/')
 
 # Models
-BEST_STROKES_TO_INSTRUCTION_PATH = 'runs/strokes_to_instruction/dec18_2019/bigsweep/condition_on_hc_True-dim_256-dropout_0.2-lr_0.0005-model_type_lstm-n_dec_layers_4-n_enc_layers_4-use_categories_dec_True-use_categories_enc_False-use_prestrokes_False'
+BEST_STROKES_TO_INSTRUCTION_PATH = 'runs/strokes_to_instruction/Dec18_2019/bigsweep/condition_on_hc_True-dim_256-dropout_0.2-lr_0.0005-model_type_lstm-n_dec_layers_4-n_enc_layers_4-use_categories_dec_True-use_categories_enc_False-use_prestrokes_False'
 # BEST_STROKES_TO_INSTRUCTION_PATH = 'best_models/strokes_to_instruction/catsdecoder-dim_512-model_type_cnn_lstm-use_prestrokes_False/'  # OLDER run
-BEST_INSTRUCTION_TO_STROKES_PATH = 'runs/instruction_to_strokes/dec17_2019/cond_instructions_initdec-dec_dim_512-enc_dim_512-lr_0.001-model_type_decodergmm/'
+BEST_INSTRUCTION_TO_STROKES_PATH = 'runs/instruction_to_strokes/Dec17_2019/cond_instructions_initdec-dec_dim_512-enc_dim_512-lr_0.001-model_type_decodergmm/'
 
 # Segmentations
 BEST_SEG_NDJSON_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/ndjson/nov30_2019/strokes_to_instruction'

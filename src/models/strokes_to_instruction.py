@@ -543,6 +543,7 @@ class StrokesToInstructionModel(TrainNN):
         bsz = strokes.size(1)
 
         if self.hp.model_type in ['cnn_lstm', 'transformer_lstm', 'lstm']:
+            mem_emb = None
             if self.hp.drawing_type == 'image':
                 # TODO: this is horribly confusing...
                 # strokes is actually images [C, B, H, W]
@@ -552,7 +553,6 @@ class StrokesToInstructionModel(TrainNN):
                 if self.hp.use_mem:
                     # mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
                     embedded = embedded + self.mem(embedded, cats_idx)  # [bsz, mem_dim]
-                    mem_emb = None
 
                 embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
                 hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_  glayers, bsz, dim]

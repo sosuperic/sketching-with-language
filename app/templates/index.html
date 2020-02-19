@@ -60,7 +60,7 @@
         <div id="progression">
             <img src=" {{ url_for('static', filename=img_fp ) }} "></img>
         </div>
-        <p>Split scoring function: max P(I1|S1)*P(I2|S2)*P(S|[I1,I2]) + Sim([I1, I2], I)</p>
+        <p>Split scoring function: max P(I1|S1)*P(I2|S2) + Sim([I1, I2], I), threshold=0.5</p>
         <div id="tree1"></div>
         <p>Split scoring function: max P(I1|S1)*P(I2|S2) + Sim([I1, I2], I)</p>
         <div id="tree2"></div>
