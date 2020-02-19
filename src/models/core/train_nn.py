@@ -211,6 +211,7 @@ class TrainNN(nn.Module):
 
         # Load trained weights
         weights_fp = os.path.join(dir, 'model.pt')
+        print('Loading model weights from: ', weights_fp)
         self.load_state_dict(torch.load(weights_fp))
 
     def save_inference_on_split(self, loader=None, dataset_split=None, dir=None, ext=None):

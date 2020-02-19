@@ -11,6 +11,7 @@ import argparse
 import copy
 from datetime import datetime
 import numpy as np
+from PIL import Image
 import os
 from pprint import pprint
 from uuid import uuid4
@@ -26,7 +27,8 @@ from config import SEGMENTATIONS_PATH, LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH,
 from src import utils
 from src.data_manager.quickdraw import final_categories, create_progression_image_from_ndjson_seq
 from src.models.base.stroke_models import NdjsonStrokeDataset
-from src.models.base.instruction_models import ProgressionPairDataset, map_sentence_to_index
+from src.models.base.instruction_models import ProgressionPairDataset, map_sentence_to_index, \
+    DrawingsAsImagesAnnotatedDataset
 from src.models.core import experiments, nn_utils
 from src.models.instruction_to_strokes import InstructionToStrokesModel
 from src.models.strokes_to_instruction import HParams as s2i_default_hparams
@@ -129,7 +131,7 @@ class SegmentationModel(object):
         for k, v in vars(default_s2i_hp).items():
             if not hasattr(self.s2i_hp, k):
                 setattr(self.s2i_hp, k, v)
-        self.s2i_hp.drawing_type = 'stroke'  # TODO: this should be image once we switch to the images model
+        # self.s2i_hp.drawing_type = 'stroke'  # TODO: this should be image once we switch to the images model
 
         self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
@@ -155,24 +157,34 @@ class SegmentationModel(object):
         """
         for split in ['train', 'valid', 'test']:
             print(split)
-            ds = ProgressionPairDataset(split, use_full_drawings=True)
-            loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=ProgressionPairDataset.collate_fn)
+            if self.s2i_hp.drawing_type == 'stroke':
+                self.ds = ProgressionPairDataset(split, use_full_drawings=True)
+                loader = DataLoader(self.ds, batch_size=1, shuffle=False, collate_fn=ProgressionPairDataset.collate_fn)
+            elif self.s2i_hp.drawing_type == 'image':
+                self.ds = DrawingsAsImagesAnnotatedDataset(split, images=self.s2i_hp.images, data_aug_on_text=False)
+                loader = DataLoader(self.ds, batch_size=1, shuffle=False, collate_fn=DrawingsAsImagesAnnotatedDataset.collate_fn)
+
             for i, sample in enumerate(loader):
                 try:
                     id, category = loader.dataset.data[i]['id'], loader.dataset.data[i]['category']
                     out_dir = self.save_dir / split
 
+                    if self.s2i_hp.drawing_type == 'image':
+                        sample = loader.dataset.data[i]  # contains the fp, n_segments data we need
+
                     # save segmentations
-                    strokes, segmented = self.segment_sample(sample, dataset='progressionpair')
+                    segmented = self.segment_sample(sample, dataset='progressionpair')
                     # TODO: save sample / strokes as well so that we have all the data in one place?
                     out_fp = out_dir / f'{category}_{id}.json'
                     utils.save_file(segmented, out_fp)
 
                     # save original image too for comparisons
-                    ndjson_strokes = loader.dataset.data[i]['ndjson_strokes']
-                    img = create_progression_image_from_ndjson_seq(ndjson_strokes)
+                    # TODO: image dataset doesn't have ndjson_strokes
+                    # ndjson_strokes = loader.dataset.data[i]['ndjson_strokes']
+                    # img = create_progression_image_from_ndjson_seq(ndjson_strokes)
                     out_fp = out_dir / f'{category}_{id}.jpg'
-                    img.save(out_fp)
+                    open(out_fp, 'a').close()
+                    # img.save(out_fp)
 
                 except Exception as e:
                     print(e)
@@ -201,7 +213,7 @@ class SegmentationModel(object):
                         # TODO: should we do the same for ProgressionPair?
 
                         # save segmentations
-                        strokes, segmented = self.segment_sample(sample, dataset='ndjson')
+                        segmented = self.segment_sample(sample, dataset='ndjson')
                         # TODO: save sample / strokes as well so that we have all the data in one place?
                         out_fp = out_dir / f'{id}.json'
                         utils.save_file(segmented, out_fp)
@@ -216,7 +228,39 @@ class SegmentationModel(object):
                         print(e)
                         continue
 
-    def construct_batch_of_segments_from_one_sample(self, strokes):
+    def construct_batch_of_segments_from_one_sample_image(self, sample):
+        """
+        See construct_batch_of_segments_from_one_sample_stroke for more details
+
+        Args:
+            sample (dict): one data point from DrawingAsImage...Dataset
+                contains fp's and n_segments
+        """
+        fn = os.path.basename(sample['post_seg_fp'])  # data/quickdraw/precurrentpost/data/pig/5598031527280640/7-10.jpg
+        start, end = fn.strip('.jpg').split('-')
+        end = int(end)
+        n_penups = end
+
+        seg_idx = 0
+        seg_idx_map = {}  # maps tuple of (left_idx, right_idx) in terms of penups to seg_idx in batch
+        batch = []
+        for i in range(n_penups):  # i is left index
+            for j in range(i+1, n_penups + 1):  # j is right index
+                img = self.ds._construct_rank_image(i, j, n_penups, sample)
+                batch.append(img)
+                seg_idx_map[(i,j)] = seg_idx
+                seg_idx += 1
+
+        seg_lens = [1 for _ in range(len(batch))]  # dummy lengths (not used)
+
+        batch = np.stack(batch)  # [n_segs, C, H, W]
+        batch = torch.Tensor(batch)
+        batch = batch.transpose(0,1)  # [C, n_segs, H, W]
+        batch = nn_utils.move_to_cuda(batch)
+
+        return batch, n_penups, seg_lens, seg_idx_map
+
+    def construct_batch_of_segments_from_one_sample_stroke(self, strokes):
         """
         Args:
             strokes: [len, 5] np array
@@ -432,18 +476,30 @@ class SegmentationGreedyParsingModel(SegmentationModel):
                 leftrightsegidx_to_parchildidx: (left_seg_idx, right_seg_idx) -> par_child_idx
 
         """
-        if dataset == 'ndjson':
-            strokes, stroke_lens, cats, cats_idx = sample
-        elif dataset == 'progressionpair':
-            strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = sample
 
-        strokes = strokes.transpose(0, 1).float()  # strokes: [len, 1, 5]
-        strokes = nn_utils.move_to_cuda(strokes)
-        strokes = strokes.squeeze(1)  # [len, 5]
+        if self.s2i_hp.drawing_type == 'stroke':
+            if dataset == 'ndjson':
+                strokes, stroke_lens, cats, cats_idx = sample
+            elif dataset == 'progressionpair':
+                strokes, stroke_lens, texts, text_lens, text_indices_w_sos_eos, cats, cats_idx, urls = sample
 
-        segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample(strokes)
-        cats_idx = cats_idx.repeat(len(seg_lens))
-        cats_idx = nn_utils.move_to_cuda(cats_idx)
+            strokes = strokes.transpose(0, 1).float()  # strokes: [len, 1, 5]
+            strokes = nn_utils.move_to_cuda(strokes)
+            strokes = strokes.squeeze(1)  # [len, 5]
+
+            segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample_stroke(strokes)
+            cats_idx = cats_idx.repeat(len(seg_lens))
+            cats_idx = nn_utils.move_to_cuda(cats_idx)
+
+        elif self.s2i_hp.drawing_type == 'image':
+            if dataset == 'ndjson':
+                raise NotImplementedError
+            elif dataset == 'progressionpair':
+                segs, n_penups, seg_lens, seg_idx_map = self.construct_batch_of_segments_from_one_sample_image(sample)
+                cats_idx = self.ds.cat2idx[sample['category']]
+                cats_idx = torch.LongTensor([cats_idx for _ in range(len(seg_lens))])
+                cats_idx = nn_utils.move_to_cuda(cats_idx)
+
         seg_scores, seg_texts, parchild_scores, leftrightsegidx_to_parchildidx = self.calculate_seg_scores(segs, seg_lens, cats_idx, seg_idx_map)
 
         # top level segmentation
@@ -455,7 +511,7 @@ class SegmentationGreedyParsingModel(SegmentationModel):
         segmented = self.split(0, n_penups, seg_idx_map, seg_scores, seg_texts, segmented,
                                parchild_scores, leftrightsegidx_to_parchildidx)
 
-        return strokes, segmented
+        return segmented
 
     def split(self, left_penup_idx, right_penup_idx, seg_idx_map, seg_scores, seg_texts, segmented,
               parchild_scores, leftrightsegidx_to_parchildidx):
