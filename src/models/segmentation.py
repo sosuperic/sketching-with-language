@@ -44,7 +44,7 @@ class HParams():
     def __init__(self):
         self.split_scorer = 'strokes_to_instruction'  # 'instruction_to_strokes'
 
-        self.score_parent_child_text_sim = True  # similarity b/n parent text and children text (concatenated)
+        self.score_parent_child_text_sim = False  # similarity b/n parent text and children text (concatenated)
         self.score_exponentiate = 1.0  # seg1_score ** alpha * seg2_score ** alpha
         self.score_childinst_parstroke = False   # P(parent_strokes | [child_inst1, child_inst2])
 
@@ -131,7 +131,7 @@ class SegmentationModel(object):
         for k, v in vars(default_s2i_hp).items():
             if not hasattr(self.s2i_hp, k):
                 setattr(self.s2i_hp, k, v)
-        # self.s2i_hp.drawing_type = 'stroke'  # TODO: this should be image once we switch to the images model
+        self.s2i_hp.drawing_type = 'stroke'  # TODO: this should be image if we switch to the images model
 
         self.strokes_to_instruction = StrokesToInstructionModel(self.s2i_hp, save_dir=None)  # save_dir=None means inference mode
         self.strokes_to_instruction.load_model(hp.strokes_to_instruction_dir)
@@ -200,12 +200,17 @@ class SegmentationModel(object):
                 if (self.hp.categories != 'all') and (category not in self.hp.categories):
                     continue
                 print(f'{split}: {category}')
-                ds = NdjsonStrokeDataset(category, split, max_per_category=self.hp.max_per_category)
+                # ds = NdjsonStrokeDataset(category, split)
+                ds = NdjsonStrokeDataset(category, split, max_per_category=3000)
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
+                n_segd = 0
                 for i, sample in enumerate(loader):
                     try:
                         id, category = loader.dataset.data[i]['id'], loader.dataset.data[i]['category']
                         out_dir = self.save_dir / category
+                        out_fp = out_dir / f'{id}.json'
+                        if os.path.exists(out_fp):
+                            continue
                         # note: we are NOT saving it into separate split categories in the case that
                         # we want to train on 30 categories and then do test on 5 held out categories.
                         # (i.e. keep it flexible to splitting within categories vs. across categories, which
@@ -215,7 +220,6 @@ class SegmentationModel(object):
                         # save segmentations
                         segmented = self.segment_sample(sample, dataset='ndjson')
                         # TODO: save sample / strokes as well so that we have all the data in one place?
-                        out_fp = out_dir / f'{id}.json'
                         utils.save_file(segmented, out_fp)
 
                         # save original image too for comparisons
@@ -223,6 +227,10 @@ class SegmentationModel(object):
                         img = create_progression_image_from_ndjson_seq(ndjson_strokes)
                         out_fp = out_dir / f'{id}.jpg'
                         img.save(out_fp)
+
+                        n_segd += 1
+                        if n_segd == self.hp.max_per_category:
+                            break
 
                     except Exception as e:
                         print(e)
