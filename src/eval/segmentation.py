@@ -108,7 +108,7 @@ def convert_all_segmentations_to_treants(seg_dir, prob_threshold):
 #
 ###############################################################
 
-def score_segtree_on_parent_child_splits(seg_dir):
+def score_segtree_on_parent_child_splits(seg_dir, prob_threshold):
 
     def map_parents_to_children(seg_tree):
         """seg_tree is list of dicts"""
@@ -143,6 +143,7 @@ def score_segtree_on_parent_child_splits(seg_dir):
             if (fn != 'hp.json') and fn.endswith('json') and ('treant' not in fn):
                 fp = os.path.join(root, fn)
                 seg_tree = utils.load_file(fp)
+                seg_tree = prune_seg_tree(seg_tree, prob_threshold)
 
                 # calculate score for this tree
                 id_to_node, parid_to_childids = map_parents_to_children(seg_tree)
@@ -161,7 +162,7 @@ def score_segtree_on_parent_child_splits(seg_dir):
     print('Std:')
     pprint(metric2allscores_std)
 
-def score_segtree_match_with_annotations(seg_dir):
+def score_segtree_match_with_annotations(seg_dir, prob_threshold):
     def load_annotations():
         """
         Returns:
@@ -209,8 +210,6 @@ def score_segtree_match_with_annotations(seg_dir):
                     'gt_instruction': gt_instruction,
                     'category': category,
                     'url': url,
-
-                    # 'metric2score': metric2score,
                 }
 
         return metric2score, match
@@ -230,6 +229,7 @@ def score_segtree_match_with_annotations(seg_dir):
                 drawing_id = fn.split('_')[1].replace('.json', '') # fn: lion_6247028344487936.jpg
                 drawing_id = int(drawing_id)
                 seg_tree = utils.load_file(fp)
+                seg_tree = prune_seg_tree(seg_tree, prob_threshold)
 
                 # calculate score for this tree
                 metric2score, match = calc_seg_score(drawing_id, seg_tree, id_to_annotations, scorers)
@@ -249,14 +249,12 @@ def score_segtree_match_with_annotations(seg_dir):
     print(f'Scores for: {seg_dir}')
     print('Mean:')
     pprint(metric2allscores_mean)
-    print()
-    print('Std:')
-    pprint(metric2allscores_std)
+    # print()
+    # print('Std:')
+    # pprint(metric2allscores_std)
 
     # TODO: save all_matches?
     # pprint(all_matches[:100])
-
-
 
 
 if __name__ == "__main__":
@@ -273,6 +271,6 @@ if __name__ == "__main__":
     if args.treant:
         convert_all_segmentations_to_treants(args.seg_dir, args.prob_threshold)
     if args.score_split:
-        score_segtree_on_parent_child_splits(args.seg_dir)
+        score_segtree_on_parent_child_splits(args.seg_dir, args.prob_threshold)
     if args.score_match:
-        score_segtree_match_with_annotations(args.seg_dir)
+        score_segtree_match_with_annotations(args.seg_dir, args.prob_threshold)

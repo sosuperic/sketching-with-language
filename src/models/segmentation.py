@@ -75,7 +75,7 @@ def remove_stopwords(nlp, text):
     return result
 
 
-def prune_seg_tree(seg_tree, prob_threshold):
+def prune_seg_tree(seg_tree, prob_threshold=0):
     """
     Args:
         seg_tree (list of dicts):
