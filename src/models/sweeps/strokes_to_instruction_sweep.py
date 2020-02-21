@@ -8,6 +8,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_cnnse
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_rankimgs4
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug_mem
 """
 
 import argparse
@@ -19,21 +20,21 @@ NGPUS_PER_RUN = 1
 
 GRID = {
     # Data (and model)
-    'drawing_type': ['image'],
-    'images': [
-        # 'pre,start_to_annotated',  # 7
-        'pre,start_to_annotated,full',  # 14
-        # 'annotated,full',  # 13
-        # 'pre,start_to_annotated,post',  # 5
-        # 'pre,annotated,post',  # 8
-        # 'annotated',  # 3
-    ],
+    'drawing_type': ['stroke'],
+    # 'images': [
+    #     # 'pre,start_to_annotated',  # 7
+    #     'pre,start_to_annotated,full',  # 14
+    #     # 'annotated,full',  # 13
+    #     # 'pre,start_to_annotated,post',  # 5
+    #     # 'pre,annotated,post',  # 8
+    #     # 'annotated',  # 3
+    # ],
 
-    'cnn_type': [
-        'wideresnet',
-        # 'se',
-        # 'cbam'
-    ],
+    # 'cnn_type': [
+    #     'wideresnet',
+    #     # 'se',
+    #     # 'cbam'
+    # ],
 
     'data_aug_on_text': [
         'true'
@@ -52,21 +53,6 @@ GRID = {
     # ],
     # 'batch_size': [16],
 
-    # Using memory
-    'use_mem': [True],
-    'base_mem_size': [
-        64,
-        128,
-        256,
-    ],
-    'category_mem_size': [
-        # 8,
-        32,
-    ],
-    # 'mem_dim': [
-    #     64,
-    #     128,
-    # ],
 
     # Model
     # 'dim': [
@@ -76,18 +62,14 @@ GRID = {
     #     # 512,
     # ],
     'dim': [
-        # '64 --mem_dim 64',
-        '128 --mem_dim 64',
-        '128 --mem_dim 256',
-        # '256 --mem_dim 256',
-        '256 --mem_dim 64',
-        '256 --mem_dim 128',
+        '256 --mem_dim 256',
+        '128 --mem_dim 128',
+        '64 --mem_dim 64',
         # 512,
     ],
-    ''
     'model_type': [
-        # 'cnn_lstm',
-        'lstm',
+        'cnn_lstm',
+        # 'lstm',
         # 'lstm --use_layer_norm true',
         # 'transformer_lstm',
     ],
@@ -102,11 +84,23 @@ GRID = {
         4,
     ],
 
+    # Using memory
+    'use_mem': [True],
+    'base_mem_size': [
+        # 64,
+        128,
+        # 256,
+    ],
+    'category_mem_size': [
+        128,
+        32,
+    ],
+
      # Training
     'lr': [
         0.001,
         0.0005,
-        # 0.0001,
+        0.0001,
     ],
 }
 

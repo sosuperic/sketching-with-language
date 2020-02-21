@@ -4,8 +4,8 @@
 Use the annotated MTurk data (ProgressionPairDataset) to train a P(instruction | drawing_segment) model.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type lstm
-    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --use_mem true
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type cnn_lstm
+    CUDA_VISIBLE_DEVICES=7 PYTHONPATH=. python src/models/strokes_to_instruction.py --model_type cnn_lstm --use_mem true
 """
 
 from datetime import datetime
@@ -51,14 +51,14 @@ class HParams():
         self.unlikelihood_loss = False
 
         # Dataset (and model)
-        self.drawing_type = 'image'  # 'stroke' or 'image'
+        self.drawing_type = 'stroke'  # 'stroke' or 'image'
         self.cnn_type = 'wideresnet'  #'wideresnet,se,cbam' (when drawing_type == 'image')
         self.use_prestrokes = False  # for 'stroke'
         self.images = 'pre,start_to_annotated,full'  # for image; annotated,pre,post,start_to_annotated,full
         self.data_aug_on_text = True   # only for drawing_type=image right now
 
         # Model
-        self.dim = 512
+        self.dim = 256
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
@@ -70,9 +70,9 @@ class HParams():
 
         # memory
         self.use_mem = False
-        self.base_mem_size = 100
-        self.category_mem_size = 5
-        self.mem_dim = 128
+        self.base_mem_size = 128
+        self.category_mem_size = 32
+        self.mem_dim = 256
 
         # Additional ranking metric loss
         self.rank_imgs_text = False
@@ -415,6 +415,9 @@ class StrokesToInstructionModel(TrainNN):
         embedded = self.enc(strokes, stroke_lens,
                             category_embedding=self.category_embedding, categories=cats_idx)
         # [bsz, dim]
+        if self.hp.use_mem:
+            embedded = embedded + self.mem(embedded, cats_idx)  # [bsz, dim]
+
         embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
         hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
         cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
@@ -563,6 +566,9 @@ class StrokesToInstructionModel(TrainNN):
                     embedded = self.enc(strokes, stroke_lens,
                                         category_embedding=self.category_embedding, categories=cats_idx)
                     # [bsz, dim]
+                    if self.hp.use_mem:
+                        # mem_emb = self.mem(embedded, cats_idx)  # [bsz, mem_dim]
+                        embedded = embedded + self.mem(embedded, cats_idx)  # [bsz, mem_dim]
                     embedded = embedded.unsqueeze(0)  # [1, bsz, dim]
                     hidden = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
                     cell = embedded.repeat(self.dec.num_layers, 1, 1)  # [n_layers, bsz, dim]
