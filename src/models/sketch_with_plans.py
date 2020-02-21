@@ -40,6 +40,7 @@ class HParams(SketchRNNHParams):
         # Data
         self.dataset = 'ndjson'   # 'progressionpair' or 'ndjson'
         self.max_per_category = 2500
+        self.prob_threshold = 0.0  # prune trees
 
         # Model
         self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
@@ -96,7 +97,8 @@ class SketchRNNWithPlans(SketchRNNModel):
                                                               max_len=max_len,
                                                               max_per_category=hp.max_per_category,
                                                               dataset_split=dataset_split,
-                                                              instruction_set=self.hp.instruction_set)
+                                                              instruction_set=self.hp.instruction_set,
+                                                         prob_threshold=self.hp.prob_threshold)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
         elif self.hp.instruction_set == 'stack':
@@ -104,7 +106,8 @@ class SketchRNNWithPlans(SketchRNNModel):
                                                          max_len=max_len,
                                                          max_per_category=hp.max_per_category,
                                                          dataset_split=dataset_split,
-                                                         instruction_set=self.hp.instruction_set)
+                                                         instruction_set=self.hp.instruction_set,
+                                                         prob_threshold=self.hp.prob_threshold)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=partial(SketchWithPlansConditionSegmentsDataset.collate_fn, token2idx=ds.token2idx))
         return loader

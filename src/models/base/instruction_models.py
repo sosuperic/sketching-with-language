@@ -798,10 +798,12 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                  max_len=200,
                  max_per_category=250,
                  dataset_split='train',
-                 instruction_set='toplevel'
+                 instruction_set='toplevel',
+                 prob_threshold=0.0
                  ):
         super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
-                         dataset_split=dataset_split, instruction_set=instruction_set)
+                         dataset_split=dataset_split, instruction_set=instruction_set,
+                         prob_threshold=prob_threshold)
 
     def __getitem__(self, idx):
         stroke5, stroke_len, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
@@ -833,10 +835,12 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
                  max_len=200,
                  max_per_category=250,
                  dataset_split='train',
-                 instruction_set='stack'
+                 instruction_set='stack',
+                 prob_threshold=0.0,
                  ):
         super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
-                         dataset_split=dataset_split, instruction_set=instruction_set)
+                         dataset_split=dataset_split, instruction_set=instruction_set,
+                         prob_threshold=prob_threshold)
 
     def __getitem__(self, idx):
         """

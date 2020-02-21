@@ -24,9 +24,10 @@ BASE_GRID = {
         2500,
         # 25000,
     ],
+    'prob_threshold': [
+        0.55
+    ],
     'cond_instructions': [
-        # 'initdec',
-        # 'decinputs',
         'match',
     ],
     'batch_size': [16],

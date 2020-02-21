@@ -71,5 +71,6 @@ BEST_STROKES_TO_INSTRUCTION_PATH = 'runs/strokes_to_instruction/Dec18_2019/bigsw
 BEST_INSTRUCTION_TO_STROKES_PATH = 'runs/instruction_to_strokes/Dec17_2019/cond_instructions_initdec-dec_dim_512-enc_dim_512-lr_0.001-model_type_decodergmm/'
 
 # Segmentations
-BEST_SEG_NDJSON_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/ndjson/nov30_2019/strokes_to_instruction'
+# BEST_SEG_NDJSON_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/ndjson/nov30_2019/strokes_to_instruction'
+BEST_SEG_NDJSON_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/ndjson/Feb20_2020/strokes_to_instruction/strokebasedS2I'
 BEST_SEG_PROGRESSION_PAIRS_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/progressionpair/nov26_2019/strokes_to_instruction'
