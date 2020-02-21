@@ -28,7 +28,7 @@ from src import utils
 from src.data_manager.quickdraw import final_categories, create_progression_image_from_ndjson_seq
 from src.models.base.stroke_models import NdjsonStrokeDataset
 from src.models.base.instruction_models import ProgressionPairDataset, map_sentence_to_index, \
-    DrawingsAsImagesAnnotatedDataset
+    DrawingsAsImagesAnnotatedDataset, prune_seg_tree
 from src.models.core import experiments, nn_utils
 from src.models.instruction_to_strokes import InstructionToStrokesModel
 from src.models.strokes_to_instruction import HParams as s2i_default_hparams
@@ -76,36 +76,6 @@ def remove_stopwords(nlp, text):
     result = ' '.join(result)
     return result
 
-
-def prune_seg_tree(seg_tree, prob_threshold=0):
-    """
-    Args:
-        seg_tree (list of dicts):
-            In order of splits as done by SegmentationModel.
-                E.g. 0-4, then 0-3, then 0-1, then 1-3, then 1-2, then 2-3, then 3-4
-
-            Each dict contains data about that segment.
-                'left': start idx
-                'right': end idx
-                'id':
-                'parent': parent's id
-                'text':
-                'score': Currently P(I|S) for that segment
-
-        prob_threshold (float): score must be greater than prob_threshold
-
-    Returns seg_tree (list of dicts)
-        all segments that fall below prob_threshold removed (including each segment's subsegments)
-    """
-    pruned = [seg_tree[0]]  # must have root
-    added_ids = set([seg_tree[0]['id']])
-    for i in range(1, len(seg_tree)):
-        seg = seg_tree[i]
-        if seg['score'] > prob_threshold:
-            if seg['parent'] in added_ids:  # parent must have been added (i.e. above threshold)
-                pruned.append(seg)
-                added_ids.add(seg['id'])
-    return pruned
 
 ##############################################################################
 #

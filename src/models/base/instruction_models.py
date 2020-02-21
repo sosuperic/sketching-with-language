@@ -672,13 +672,45 @@ class ProgressionPairDataset(Dataset):
 #
 # Dataset for two-stage models
 #
+
+def prune_seg_tree(seg_tree, prob_threshold=0):
+    """
+    Args:
+        seg_tree (list of dicts):
+            In order of splits as done by SegmentationModel.
+                E.g. 0-4, then 0-3, then 0-1, then 1-3, then 1-2, then 2-3, then 3-4
+
+            Each dict contains data about that segment.
+                'left': start idx
+                'right': end idx
+                'id':
+                'parent': parent's id
+                'text':
+                'score': Currently P(I|S) for that segment
+
+        prob_threshold (float): score must be greater than prob_threshold
+
+    Returns seg_tree (list of dicts)
+        all segments that fall below prob_threshold removed (including each segment's subsegments)
+    """
+    pruned = [seg_tree[0]]  # must have root
+    added_ids = set([seg_tree[0]['id']])
+    for i in range(1, len(seg_tree)):
+        seg = seg_tree[i]
+        if seg['score'] > prob_threshold:
+            if seg['parent'] in added_ids:  # parent must have been added (i.e. above threshold)
+                pruned.append(seg)
+                added_ids.add(seg['id'])
+    return pruned
+
 class SketchWithPlansDataset(Dataset):
     def __init__(self,
                  dataset='progressionpair',
                  max_len=200,
                  max_per_category=250,  # used with dataset='ndjson'
                  dataset_split='train',
-                 instruction_set='toplevel'
+                 instruction_set='toplevel',
+                 prob_threshold=0,
                  ):
         """
         Args:
@@ -690,6 +722,7 @@ class SketchWithPlansDataset(Dataset):
             instruction_set (str):
                 'toplevel': only use instruction generated for entire drawing
                 'toplevel_leaves': use toplevel and all leaf instructions
+            prob_threshold (float): used to prune instruction trees
         """
         # TODO: pass in categories
 
@@ -698,6 +731,7 @@ class SketchWithPlansDataset(Dataset):
         self.max_per_category = max_per_category
         self.dataset_split = dataset_split
         self.instruction_set = instruction_set
+        self.prob_threshold = prob_threshold
 
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
 
@@ -722,12 +756,14 @@ class SketchWithPlansDataset(Dataset):
             stroke5, stroke_len, _, _, cat, cat_idx, url = self.ds.__getitem__(idx)  # the _ are the ground-truth annotations for a segment of the drawing
             id = self.ds.data[idx]['id']
             plan = self.id_to_plan[id]
+            plan = prune_seg_tree(plan, prob_threshold=self.prob_threshold)
             return stroke5, stroke_len, cat, cat_idx, url, plan
         elif self.dataset == 'ndjson':
             stroke5, stroke_len, cat, cat_idx = self.ds.__getitem__(idx, pad_to_max_len_in_data=False)  # _ is stroke_len
             id = self.ds.data[idx]['id']
             plan_fp = self.plans_dir / cat / f'{id}.json'
             plan = utils.load_file(plan_fp)
+            plan = prune_seg_tree(plan, prob_threshold=self.prob_threshold)
             return stroke5, stroke_len, cat, cat_idx, '', plan
 
     def load_progression_pair_plans(self, plans_dir):

@@ -39,13 +39,13 @@ class HParams(SketchRNNHParams):
 
         # Data
         self.dataset = 'ndjson'   # 'progressionpair' or 'ndjson'
-        self.max_per_category = 250
+        self.max_per_category = 2500
 
         # Model
         self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
         self.cond_instructions = 'match'  # 'initdec', 'decinputs', 'match'
-        self.enc_dim = 512
-        self.dec_dim = 512  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
+        self.enc_dim = 256
+        self.dec_dim = 256  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
 
         self.lr = 0.0005
 
@@ -184,7 +184,7 @@ class SketchRNNWithPlans(SketchRNNModel):
                 # loss_match = 0.0
 
                 # For each sequence in batch, divide drawing into segments (based on penup strokes)
-                # For each segment, compute a matching loss between its hidden state and the 
+                # For each segment, compute a matching loss between its hidden state and the
                 # the encoded instruction stack for that segment
                 all_instruction_embs = []
                 all_seg_hiddens = []

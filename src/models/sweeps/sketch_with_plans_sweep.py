@@ -36,8 +36,8 @@ BASE_GRID = {
         0.0001,
     ],
     'enc_dim': [
-        '256 --dec_dim 256',
-        '512 --dec_dim 512',
+        '256 --dec_dim 256 --categories_dim 128',
+        '512 --dec_dim 512 --categories_dim 256',
         # '1024 --dec_dim 1024',
         # '2048 --dec_dim 2048'
     ],
@@ -45,10 +45,10 @@ BASE_GRID = {
         'true',
         # 'false',
     ],
-    'categories_dim': [
-        128,
-        256,
-    ],
+    # 'categories_dim': [
+    #     128,
+    #     256,
+    # ],
 
 }
 
