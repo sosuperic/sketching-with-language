@@ -4,6 +4,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from src.models.core.nn_utils import cosine_sim
+
+
 class SketchMem(nn.Module):
     """
     Overview:
@@ -35,22 +38,6 @@ class SketchMem(nn.Module):
         nn.init.kaiming_uniform_(self.category_mem_keys)
         nn.init.kaiming_uniform_(self.category_mem_vals)
 
-    def cosine_sim(self, x1, x2=None, eps=1e-8):
-        """
-        Return pair-wise cosine similarity between each row in x1 and each row in x2.
-
-        Args:
-            x1 ([A, B])
-            x2 ([C, B])
-
-        Returns:
-            [A, C]
-        """
-        x2 = x1 if x2 is None else x2
-        w1 = x1.norm(p=2, dim=1, keepdim=True)
-        w2 = w1 if x2 is x1 else x2.norm(p=2, dim=1, keepdim=True)
-        return torch.mm(x1, x2.t()) / (w1 * w2.t()).clamp(min=eps)
-
     def forward(self, query, category_idxs):
         """
         Args:
@@ -62,7 +49,7 @@ class SketchMem(nn.Module):
         """
         # Look up base memories
         base_query = self.input_base_fc(query)  # [bsz, mem_dim]
-        base_sims = self.cosine_sim(base_query, self.base_mem_keys)  # [bsz, base_mem_size]
+        base_sims = cosine_sim(base_query, self.base_mem_keys)  # [bsz, base_mem_size]
         base_sims = F.softmax(base_sims, dim=-1)
         base_lookup = base_sims.mm(self.base_mem_vals)  # [bsz, mem_dim]
 

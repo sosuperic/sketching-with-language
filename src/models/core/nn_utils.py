@@ -22,6 +22,22 @@ def setup_seeds(seed=1234):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
+def cosine_sim(x1, x2=None, eps=1e-8):
+    """
+    Return pair-wise cosine similarity between each row in x1 and each row in x2.
+
+    Args:
+        x1 ([A, B])
+        x2 ([C, B])
+
+    Returns:
+        [A, C]
+    """
+    x2 = x1 if x2 is None else x2
+    w1 = x1.norm(p=2, dim=1, keepdim=True)
+    w2 = w1 if x2 is x1 else x2.norm(p=2, dim=1, keepdim=True)
+    return torch.mm(x1, x2.t()) / (w1 * w2.t()).clamp(min=eps)
+
 class AccessibleDataParallel(nn.DataParallel):
     """
     After wrapping a Module with DataParallel, the attributes of the module (e.g. custom methods) became inaccessible.
