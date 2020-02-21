@@ -28,11 +28,6 @@ GRID = {
     'max_per_category': [
         2750,
     ],
-    # Segmenation model
-    'split_scorer': ['strokes_to_instruction'],
-    'score_parent_child_text_sim': [
-        'true',
-    ],
 }
 
 if __name__ == "__main__":
