@@ -70,12 +70,15 @@ class StrokeDataset(Dataset):
         cat_idx = self.cat2idx[category]
         stroke3 = sample['stroke3']
         stroke_len = len(stroke3)
+
         if pad_to_max_len_in_data:
             stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
             # TODO: padding to the max in data is a bit non-transparent / unnecessary imo
             # Maybe I should write a collate_fn to pad to max in batch.
         else:
             stroke5 = stroke3_to_stroke5(stroke3)
+
+        stroke_len += 1  # during stroke 5 conversion, there is a end of drawing point
         return stroke5, stroke_len, category, cat_idx
 
 class NdjsonStrokeDataset(StrokeDataset):
@@ -125,7 +128,7 @@ class NdjsonStrokeDataset(StrokeDataset):
                         continue
 
                 stroke3 = ndjson_to_stroke3(ndjson_strokes)  # convert to stroke3 format
-                sample_len = stroke3.shape[0]
+                sample_len = stroke3.shape[0] + 1  # + 1 because stroke5 appends 1 basically
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category,
                                   'id': id, 'ndjson_strokes': ndjson_strokes})

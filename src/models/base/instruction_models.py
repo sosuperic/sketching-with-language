@@ -568,6 +568,7 @@ class ProgressionPairDataset(Dataset):
             stroke3 = sample['stroke3_segment']
         stroke_len = len(stroke3)
         stroke5 = stroke3_to_stroke5(stroke3)
+        stroke_len += 1  # during stroke 5 conversion, there is a end of drawing point
 
         if self.use_prestrokes:
             # Get subsequence that precedes the annotated
