@@ -4,6 +4,7 @@
 Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname testsweep
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname categories
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname reproduce
 """
 
 import argparse
@@ -12,6 +13,23 @@ from src.models.core.experiments import run_param_sweep
 CMD = 'PYTHONPATH=. python src/models/sketch_rnn.py'
 
 NGPUS_PER_RUN = 1
+
+GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
+    'dataset': ['ndjson'],  # they use npz dataset actually
+    'categories': ['pig', 'cat'],
+    'max_per_category': [70000],
+
+    'enc_dim': [512],
+    'dec_dim': [2048],
+    'enc_num_layers': [1],
+    'use_categories_dec': [False],
+    'model_type': [
+        # 'decodergmm',
+        'vae'
+    ],
+
+    'lr': [0.0001],
+}
 
 GRID = {
     # Data
@@ -63,6 +81,11 @@ if __name__ == "__main__":
     base_cmd = CMD + f' --groupname {groupname}'
     # print(base_cmd)
 
-    run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
+    # grid = GRID
+    grid = GRID_REPRODUCE
+
+    run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    free_gpu_max_mem=0.67,
+                    gpus=[6,7],
                     email_groupname=args.email_groupname)

@@ -14,19 +14,15 @@ GRID = {
     'model_type': ['lstm'],
     'n_enc_layers': [4],
 
-
-    'loss_tau': [
-        0.1,
-        1.0,
+    'dim': [
+        128,
+        256,
     ],
     'max_per_category': [
         '7000 --lr 0.0005',
         '7000 --lr 0.0001',
+        '70000 --lr 0.0005',
         '70000 --lr 0.0001',
-    ],
-    'dim': [
-        128,
-        256,
     ],
 }
 
@@ -41,5 +37,6 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    gpus=[0,1,2,3],
                     free_gpu_max_mem=0.67,
                     email_groupname=args.email_groupname)

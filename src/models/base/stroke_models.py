@@ -199,7 +199,7 @@ class NpzStrokeDataset(StrokeDataset):
             n_samples = len(category_data)
             for i in range(n_samples):
                 stroke3 = category_data[i]
-                sample_len = stroke3.shape[0]  # number of points in stroke3 format
+                sample_len = stroke3.shape[0] + 1 # + 1 because stroke5 appends 1 basically
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category})
 
