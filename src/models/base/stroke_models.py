@@ -535,7 +535,7 @@ class SketchRNNDecoderGMM(nn.Module):
     def forward(self, strokes, stroke_lens=None, output_all=True, hidden_cell=None):
         """
         Args:
-            strokes: [len, bsz, esz + 5]
+            strokes: [len, bsz, input_dim (e.g. dim + 5)]
             output_all: boolean, return output at every timestep or just the last
             hidden_cell: tuple of [n_layers, bsz, dec_dim]
 

@@ -90,8 +90,7 @@ class SketchRNNModel(TrainNN):
         self.eta_step = hp.eta_min
         self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, True)
         self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, False)
-        # TODO: uncomment once generate_and_save() is reimplemented
-        # self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
+        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
 
     #
     # Data
@@ -148,13 +147,13 @@ class SketchRNNModel(TrainNN):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
-        pass
-        # self.generate_and_save(data_loader, epoch, n_gens=5, outputs_path=outputs_path)
+        if self.hp.model_type == 'decodergmm':
+            self.generate_and_save(data_loader, epoch, 25, outputs_path=outputs_path)
 
     ##############################################################################
     # Generate
     ##############################################################################
-    def generate_and_save(self, data_loader, epoch, n_gens=1, outputs_path=None):
+    def generate_and_save(self, data_loader, epoch, n_gens, outputs_path=None):
         """
         Generate sequence
         """
@@ -187,14 +186,18 @@ class SketchRNNModel(TrainNN):
             for _ in range(max_len):
                 if self.hp.model_type == 'vae':  # input is last state, z, and hidden_cell
                     input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
+
                 elif self.hp.model_type == 'decodergmm':  # input is last state and hidden_cell
-                    input = s
-                    # TODO: category embedding
+                    input = s   # [1, bsz (1), 5]
+                    if self.hp.use_categories_dec:
+                        cat_embs = self.category_embedding(cats_idx)  # [bsz (1), cat_dim]
+                        input = torch.cat([input, cat_embs.unsqueeze(0)], dim=2)  # [1, 1, cat_dim + 5]
                     outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
                         self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
-                    hidden_cell = (hidden, cell)
+                    hidden_cell = (hidden, cell)  # for next timie step
                     # sample next state
                     s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
+
                 elif self.hp.model_type == 'decoderlstm':  # input is last state and hidden_cell
                     input = s
                     xy, q, hidden, cell = self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
@@ -253,7 +256,7 @@ class SketchRNNModel(TrainNN):
             When used during generation, len should be 1 (decoding step by step)
 
         Returns:
-            s: [1, 1, 5]
+            s: [1, (bsz), 5]
             dx: [1]
             dy: [1]
             pen_up: bool
@@ -431,7 +434,6 @@ class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
 
         if self.hp.use_categories_dec:
             cat_embs = self.category_embedding(cats_idx)  # [bsz, cat_dim]
-            # import pdb; pdb.set_trace()
             cat_embs = cat_embs.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, cat_dim]
             dec_inputs = torch.cat([dec_inputs, cat_embs], dim=2)  # [max_len+1, bsz, 5 + cat_dim]
 
