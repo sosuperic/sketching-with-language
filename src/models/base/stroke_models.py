@@ -16,6 +16,8 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 import torchvision
 
+import haste_pytorch as haste
+
 from config import SEGMENTATIONS_PATH, NPZ_DATA_PATH
 from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, build_category_index, final_categories, \
     ndjson_drawings, ndjson_to_stroke3
@@ -530,9 +532,11 @@ class SketchRNNDecoderGMM(nn.Module):
         self.dec_dim = dec_dim
         self.M = M
         self.num_layers = 1
+        self.use_layer_norm = use_layer_norm
 
         if use_layer_norm:
-            self.lstm = LayerNormLSTM(input_dim, dec_dim, num_layers=self.num_layers, rec_dropout=rec_dropout)
+            self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=dec_dim, zoneout=dropout, dropout=rec_dropout)
+            # self.lstm = LayerNormLSTM(input_dim, dec_dim, num_layers=self.num_layers, rec_dropout=rec_dropout)
         else:
             self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
@@ -560,13 +564,17 @@ class SketchRNNDecoderGMM(nn.Module):
                   last cell state
         """
         bsz = strokes.size(1)
-        if hidden_cell is None:  # init
-            hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
-            hidden_cell = (hidden, cell)
 
-        outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
+
+        if self.use_layer_norm:
+            outputs, (hidden, cell) = self.lstm(strokes)
+        else:
+            if hidden_cell is None:  # init
+                hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+                cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
+                hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
+                hidden_cell = (hidden, cell)
+            outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
         # self.outputs = outputs
 
         # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)

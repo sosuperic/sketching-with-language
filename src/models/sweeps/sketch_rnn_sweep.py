@@ -42,7 +42,7 @@ GRID_DRAW = {
     'use_categories_dec': [True],
     'model_type': [
         # 'decodergmm',
-        'decodergmm --use_layer_norm true --rec_dropout 0.1'
+        'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
     'lr': [0.0001],
 }
