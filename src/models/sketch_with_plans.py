@@ -52,7 +52,7 @@ class HParams(SketchRNNHParams):
         self.cond_instructions = 'match'  # 'match'
         self.categories_dim = 256
         self.loss_match = 'decode' # 'triplet', 'decode'
-        self.enc_dim = 256 # only used with loss_match=triplet, has to be same as dec_dim?
+        self.enc_dim = 512 # only used with loss_match=triplet
 
 class SketchRNNWithPlans(SketchRNNModel):
     """"
@@ -79,7 +79,8 @@ class SketchRNNWithPlans(SketchRNNModel):
         # For shaping representation loss, want to decode into instructions
         if hp.loss_match == 'triplet':
             self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
-            self.models.append(self.enc)
+            self.fc_dec = nn.Linear(hp.dec_dim, hp.enc_dim)  # project decoder hidden states to enc hidden states
+            self.models.extend([self.enc, self.fc_dec])
         elif hp.loss_match == 'decode':
             ins_hid_dim = hp.enc_dim  # Note: this has to be because there's no fc_out layer. I just multiply by token embedding directly to get outputs
             self.ins_dec = InstructionDecoderLSTM(
@@ -210,13 +211,14 @@ class SketchRNNWithPlans(SketchRNNModel):
 
             # Concate all segs across all batch items
             if self.hp.loss_match == 'triplet':
-                all_instruction_embs = torch.cat(all_instruction_embs, dim=0)  # [n_total_segs, dim]
-                all_seg_hiddens = torch.cat(all_seg_hiddens, dim=0)  # [n_total_segs, dim]
+                all_instruction_embs = torch.cat(all_instruction_embs, dim=0)  # [n_total_segs, enc_dim]
+                all_seg_hiddens = torch.cat(all_seg_hiddens, dim=0)  # [n_total_segs, dec_dim]
+                all_seg_hiddens = self.fc_dec(all_seg_hiddens)  # [n_total_segs, enc_dim]
 
                 # Compute triplet loss
-                pos = (all_seg_hiddens - all_instruction_embs) ** 2  # [n_total_segs, dim]
-                all_instruction_embs_shuffled = all_instruction_embs[torch.randperm(pos.size(0)), :]  # [n_total_segs, dim]
-                neg = (all_seg_hiddens - all_instruction_embs_shuffled) ** 2  # [n_total_segs, dim]
+                pos = (all_seg_hiddens - all_instruction_embs) ** 2  # [n_total_segs, enc_dim]
+                all_instruction_embs_shuffled = all_instruction_embs[torch.randperm(pos.size(0)), :]  # [n_total_segs, enc_dim]
+                neg = (all_seg_hiddens - all_instruction_embs_shuffled) ** 2  # [n_total_segs, enc_dim]
                 loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
             elif self.hp.loss_match == 'decode':
@@ -226,18 +228,19 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
             outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
-            outputs = outputs.mean(dim=0)  # [bsz, dim]
+            outputs = outputs.mean(dim=0)  # [bsz, dec_dim]
 
             # triplet loss
             if self.hp.loss_match == 'triplet':
                 # Encode instructions
                 # text_indices: [len, bsz], text_lens: [bsz]
                 instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
-                                category_embedding=None, categories=cats_idx)  # [bsz, dim]
+                                category_embedding=None, categories=cats_idx)  # [bsz, enc_dim]
+                outputs = self.fc_dec(outputs)  # [bsz, enc_dim]
 
-                pos = (outputs - instructions_emb) ** 2  # [bsz, dim]
-                instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, dim]
-                neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, dim]
+                pos = (outputs - instructions_emb) ** 2  # [bsz, enc_dim]
+                instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, enc_dim]
+                neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, enc_dim]
                 loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
             elif self.hp.loss_match == 'decode':

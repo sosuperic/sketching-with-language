@@ -27,7 +27,7 @@ BASE_GRID = {
     ],
 
     'loss_match': [
-        'triplet',
+        'triplet --enc_dim 512',
         # 'decode',
     ],
     'max_per_category': [
