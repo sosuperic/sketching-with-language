@@ -16,40 +16,24 @@ CMD = 'PYTHONPATH=. python src/models/sketch_with_plans.py'
 NGPUS_PER_RUN = 1
 
 BASE_GRID = {
-    'dataset': [
-        'ndjson'
-    ],
+    'dataset': ['ndjson'],
     'max_per_category': [
-        # 250,
-        2500,
-        # 25000,
+        2000,
+        20000,
     ],
-    'prob_threshold': [
-        0.55
-    ],
-    'cond_instructions': [
-        'match',
-    ],
+    'prob_threshold': [0],
     'batch_size': [16],
     'lr': [
-        # 0.001,
         0.0005,
         0.0001,
     ],
+    ''
     'enc_dim': [
         '256 --dec_dim 256 --categories_dim 128',
-        '512 --dec_dim 512 --categories_dim 256',
+        '512 --dec_dim 2048 --categories_dim 256',
         # '1024 --dec_dim 1024',
         # '2048 --dec_dim 2048'
     ],
-    'use_categories_dec': [
-        'true',
-        # 'false',
-    ],
-    # 'categories_dim': [
-    #     128,
-    #     256,
-    # ],
 
 }
 

@@ -735,6 +735,7 @@ class SketchWithPlansDataset(Dataset):
         self.prob_threshold = prob_threshold
 
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
+        self.vocab_size = len(self.token2idx)
 
         if dataset == 'progressionpair':
             self.ds = ProgressionPairDataset(dataset_split, use_prestrokes=False, use_full_drawings=True, max_length=max_len)
@@ -1044,7 +1045,7 @@ class InstructionDecoderLSTM(nn.Module):
                  condition_on_hc=False, use_categories=False):
         super().__init__()
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim,
+        self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
         self.batch_first = batch_first
@@ -1076,6 +1077,7 @@ class InstructionDecoderLSTM(nn.Module):
             hidden: [n_layers * n_directions, bsz, dim]
             cell: [n_layers * n_directions, bsz, dim] FloatTensor
         """
+
 
         # Condition on last layer's hidden and cell on every time step by combining last hidden and cell,
         # repeating along time dimension, and concatenating with encoded texts in feature dimension

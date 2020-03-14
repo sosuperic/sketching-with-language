@@ -18,7 +18,7 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from config import RUNS_PATH, LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH
+from config import RUNS_PATH
 from src import utils
 from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import TrainNN
@@ -44,12 +44,15 @@ class HParams(SketchRNNHParams):
 
         # Model
         self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
-        self.cond_instructions = 'match'  # 'match'
-        self.loss_match = 'decode' # 'triplet', 'decode'
-        self.categories_dim = 256
-        self.enc_dim = 512  # has to be same as dec_dim when loss_match == 'triplet'
         self.dec_dim = 2048
         self.lr = 0.0001
+
+        # do not change these
+        self.use_categories_dec = True
+        self.cond_instructions = 'match'  # 'match'
+        self.categories_dim = 256
+        self.loss_match = 'decode' # 'triplet', 'decode'
+        self.enc_dim = 256 # only used with loss_match=triplet, has to be same as dec_dim?
 
 class SketchRNNWithPlans(SketchRNNModel):
     """"
@@ -62,12 +65,11 @@ class SketchRNNWithPlans(SketchRNNModel):
         self.end_epoch_loader = None  # TODO: not generating yet, need to refactor that
 
         # Model
-        vocab_size = len(utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH))
-        self.text_embedding = nn.Embedding(vocab_size, hp.enc_dim)
+        self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.enc_dim)
 
         self.category_embedding = None
         if hp.use_categories_dec:
-            self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
+            self.category_embedding = nn.Embedding(35, 	hp.categories_dim)
             self.models.append(self.category_embedding)
         dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
         self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
@@ -79,10 +81,11 @@ class SketchRNNWithPlans(SketchRNNModel):
             self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
             self.models.append(self.enc)
         elif hp.loss_match == 'decode':
+            ins_hid_dim = hp.enc_dim  # Note: this has to be because there's no fc_out layer. I just multiply by token embedding directly to get outputs
             self.ins_dec = InstructionDecoderLSTM(
-                hp.dec_dim + hp.categories_dim, 128, num_layers=4, dropout=0.1, batch_first=False,
+                hp.enc_dim + hp.categories_dim, ins_hid_dim, num_layers=4, dropout=0.1, batch_first=False,
                 condition_on_hc=False, use_categories=True)
-            self.models.append(self.ins_dec)
+            self.models.extend([self.ins_dec])
 
         if USE_CUDA:
             for model in self.models:
@@ -222,25 +225,31 @@ class SketchRNNWithPlans(SketchRNNModel):
             # TODO: check if text_indices is correct
 
         elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
-
-            # Encode instructions
-            # text_indices: [len, bsz], text_lens: [bsz]
-            instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
-                            category_embedding=None, categories=cats_idx)  # [bsz, dim]
-
             outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
             outputs = outputs.mean(dim=0)  # [bsz, dim]
 
             # triplet loss
             if self.hp.loss_match == 'triplet':
+                # Encode instructions
+                # text_indices: [len, bsz], text_lens: [bsz]
+                instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
+                                category_embedding=None, categories=cats_idx)  # [bsz, dim]
+
                 pos = (outputs - instructions_emb) ** 2  # [bsz, dim]
                 instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, dim]
                 neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, dim]
                 loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
             elif self.hp.loss_match == 'decode':
-                raise NotImplementedError
+                hidden = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
+                cell = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
 
+                # Decode
+                texts_emb = self.text_embedding(text_indices)  # [len, bsz, dim]
+                logits, texts_hidden = self.ins_dec(texts_emb, text_lens, hidden=hidden, cell=cell,
+                                                    token_embedding=self.text_embedding,
+                                                    category_embedding=self.category_embedding, categories=cats_idx)
+                loss_match = self.compute_dec_loss(logits, text_indices)
 
         #
         # Calculate losses
@@ -258,6 +267,24 @@ class SketchRNNWithPlans(SketchRNNModel):
             raise Exception('Nan in SketchRNnDecoderGMMOnly forward pass')
 
         return result
+
+
+    def compute_dec_loss(self, logits, tf_inputs):
+        """
+        Args:
+            logits: [len, bsz, vocab]
+            tf_inputs: [len, bsz] ("teacher-forced inputs", inputs to decoder used to generate logits)
+                (text_indices_w_sos_eos)
+        """
+        logits = logits[:-1, :, :]    # last input that produced logits is EOS. Don't care about the EOS -> mapping
+        targets = tf_inputs[1: :, :]  # remove first input (sos)
+
+        vocab_size = logits.size(-1)
+        logits = logits.reshape(-1, vocab_size)
+        targets = targets.reshape(-1)
+        loss = F.cross_entropy(logits, targets, ignore_index=0)
+
+        return loss
 
     def generate_and_save(self, data_loader, epoch, n_gens=1, outputs_path=None):
         # TODO: need to overwrite this. SketchRNN's generate_and_save() unpacks a batch from
