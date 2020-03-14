@@ -4,7 +4,6 @@
 Usage:
     PYTHONPATH=. python src/models/sketch_with_plans.py --instruction_set toplevel_leaves
     PYTHONPATH=. python src/models/sketch_with_plans.py --dataset ndjson --instruction_set stack
-    PYTHONPATH=. python src/models/sketch_with_plans.py --dataset ndjson --instruction_set toplevel --cond_instructions match
 """
 
 from datetime import datetime
@@ -26,7 +25,8 @@ from src.models.core.train_nn import TrainNN
 from src.models.base.instruction_models import ProgressionPairDataset, \
     SketchWithPlansConditionEntireDrawingDataset, \
     SketchWithPlansConditionSegmentsDataset, \
-    InstructionEncoderTransformer
+    InstructionEncoderTransformer, \
+    InstructionDecoderLSTM
 from src.models.base.stroke_models import SketchRNNDecoderGMM
 from src.models.sketch_rnn import SketchRNNModel
 from src.models.sketch_rnn import HParams as SketchRNNHParams
@@ -39,16 +39,17 @@ class HParams(SketchRNNHParams):
 
         # Data
         self.dataset = 'ndjson'   # 'progressionpair' or 'ndjson'
-        self.max_per_category = 2500
+        self.max_per_category = 2000
         self.prob_threshold = 0.0  # prune trees
 
         # Model
         self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
-        self.cond_instructions = 'match'  # 'initdec', 'decinputs', 'match'
-        self.enc_dim = 256
-        self.dec_dim = 256  # as is implemented right now, enc_dim == dec_dim when cond_instructions==initdec
-
-        self.lr = 0.0005
+        self.cond_instructions = 'match'  # 'match'
+        self.loss_match = 'decode' # 'triplet', 'decode'
+        self.categories_dim = 256
+        self.enc_dim = 512  # has to be same as dec_dim when loss_match == 'triplet'
+        self.dec_dim = 2048
+        self.lr = 0.0001
 
 class SketchRNNWithPlans(SketchRNNModel):
     """"
@@ -60,24 +61,29 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         self.end_epoch_loader = None  # TODO: not generating yet, need to refactor that
 
-        if hp.instruction_set == 'stack':
-            hp.cond_instructions == 'decinputs'
-
         # Model
         vocab_size = len(utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH))
         self.text_embedding = nn.Embedding(vocab_size, hp.enc_dim)
-
-        self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
 
         self.category_embedding = None
         if hp.use_categories_dec:
             self.category_embedding = nn.Embedding(35, 	self.hp.categories_dim)
             self.models.append(self.category_embedding)
         dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
-        dec_input_dim = (5 + dec_input_dim) if (hp.cond_instructions == 'decinputs') else dec_input_dim  # dec_inputs
         self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
 
-        self.models.extend([self.text_embedding, self.enc, self.dec])
+        self.models.extend([self.text_embedding,  self.dec])
+
+        # For shaping representation loss, want to decode into instructions
+        if hp.loss_match == 'triplet':
+            self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
+            self.models.append(self.enc)
+        elif hp.loss_match == 'decode':
+            self.ins_dec = InstructionDecoderLSTM(
+                hp.dec_dim + hp.categories_dim, 128, num_layers=4, dropout=0.1, batch_first=False,
+                condition_on_hc=False, use_categories=True)
+            self.models.append(self.ins_dec)
+
         if USE_CUDA:
             for model in self.models:
                 model.cuda()
@@ -155,75 +161,52 @@ class SketchRNNWithPlans(SketchRNNModel):
         if self.hp.instruction_set == 'stack':
             # text_indices: [max_seq_len, bsz, max_instruction_len], # text_lens: [max_seq_len, bsz]
 
-            if hp.cond_instructions == 'decinputs':
-                # decoder is conditioned on stack of instructions at every time step
-                max_seq_len = strokes.size(0)
-                hidden = []
-                for i in range(max_seq_len):
-                    drawing_text_indices = text_indices[i].t()               # [max_instruction_len, bsz]
-                    drawing_text_lens = text_lens[i].cpu().numpy().tolist()  # [bsz]
-                    # however, max_instruction_len is max across all drawings. Transformer encoder module
-                    # must have input length equal to maximum length. Thus, do the following:
-                    drawing_text_indices = drawing_text_indices[:max(drawing_text_lens),:]
-                    hidden_i = self.enc(drawing_text_indices,
-                                        drawing_text_lens,
-                                        self.text_embedding,
-                                        category_embedding=None, categories=cats_idx)  # [bsz, dim]
-                    hidden.append(hidden_i)
-                hidden = torch.stack(hidden)  # [max_seq_len, bsz, dim]
+            # decoder's hidden states are "matched" with language representations
+            outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
-                # Concat stack of instructions (which occur at every time step) to dec_inputs
-                hidden = torch.cat([hidden[0].unsqueeze(0), hidden], dim=0)  # sos adds a timestep
-                dec_inputs = torch.cat([dec_inputs, hidden], dim=2)  # [max_len + 1, bsz, _]
-                _, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+            # # PLAN get hidden states and instruction stack for each batch input, for each segment
+            # import pdb; pdb.set_trace()  # outputs: [max_seq_len, bsz, dim]
+            # loss_match = 0.0
 
-            elif hp.cond_instructions == 'match':
-                # decoder's hidden states are "matched" with language representations
+            # For each sequence in batch, divide drawing into segments (based on penup strokes)
+            # For each segment, compute a matching loss between its hidden state and the
+            # the encoded instruction stack for that segment
+            all_instruction_embs = []
+            all_seg_hiddens = []
+            for i in range(bsz):
+                penups = np.where(strokes[:,i,:].cpu().numpy()[:,3] == 1)[0].tolist()
+                penups = ([0] + penups) if (penups[0] != 0) else penups  # first element could already be 0
+                # TODO: find other place that I do [0] + penups, see if I need to account for the case
+                # where the first element is 0
 
-                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+                # Encode instruction stacks
+                # text_indices: [max_seq_len, bsz, max_instruction_len]
+                instructions = [text_indices[start_idx, i, :] for start_idx in penups[:-1]]
+                # Note on above:
+                #   [:-1] because that's the end of the last segment
+                #   instructions for each timestep within segment are the same, take the start_idx
+                instructions = torch.stack(instructions, dim=1)  # [max_instruction_len, n_segs] (max across all segs in batch)
+                # (n_segs is the "batch" for the encoder)
+                instructions_lens = [text_lens[start_idx, i].item() for start_idx in penups[:-1]]
+                instructions = instructions[:max(instructions_lens), :]  # encoder requires this
+                cur_cats_idx = [cats_idx[i] for _ in range(len(instructions_lens))]  # all segs are from same drawing (i.e. same category)
+                instruction_embs = self.enc(instructions, instructions_lens, self.text_embedding,
+                                            category_embedding=None, categories=cur_cats_idx)  # [n_segs, dim]
+                all_instruction_embs.append(instruction_embs)
 
-                # # PLAN get hidden states and instruction stack for each batch input, for each segment
-                # import pdb; pdb.set_trace()  # outputs: [max_seq_len, bsz, dim]
-                # loss_match = 0.0
+                # Compute hidden states mean for each seg
+                seg_hiddens = []
+                for j in range(len(penups) - 1):  # n_segs
+                    start_idx = penups[j]
+                    end_idx = penups[j+1]
+                    seg_outputs = outputs[start_idx:end_idx+1, i, :]  # [seg_len, dim]
+                    seg_hidden = seg_outputs.mean(dim=0)  # [dim]
+                    seg_hiddens.append(seg_hidden)
+                seg_hiddens = torch.stack(seg_hiddens, dim=0)  # [n_segs, dim]
+                all_seg_hiddens.append(seg_hiddens)
 
-                # For each sequence in batch, divide drawing into segments (based on penup strokes)
-                # For each segment, compute a matching loss between its hidden state and the
-                # the encoded instruction stack for that segment
-                all_instruction_embs = []
-                all_seg_hiddens = []
-                for i in range(bsz):
-                    penups = np.where(strokes[:,i,:].cpu().numpy()[:,3] == 1)[0].tolist()
-                    penups = ([0] + penups) if (penups[0] != 0) else penups  # first element could already be 0
-                    # TODO: find other place that I do [0] + penups, see if I need to account for the case
-                    # where the first element is 0
-
-                    # Encode instruction stacks
-                    # text_indices: [max_seq_len, bsz, max_instruction_len]
-                    instructions = [text_indices[start_idx, i, :] for start_idx in penups[:-1]]
-                    # Note on above:
-                    #   [:-1] because that's the end of the last segment
-                    #   instructions for each timestep within segment are the same, take the start_idx
-                    instructions = torch.stack(instructions, dim=1)  # [max_instruction_len, n_segs] (max across all segs in batch)
-                    # (n_segs is the "batch" for the encoder)
-                    instructions_lens = [text_lens[start_idx, i].item() for start_idx in penups[:-1]]
-                    instructions = instructions[:max(instructions_lens), :]  # encoder requires this
-                    cur_cats_idx = [cats_idx[i] for _ in range(len(instructions_lens))]  # all segs are from same drawing (i.e. same category)
-                    instruction_embs = self.enc(instructions, instructions_lens, self.text_embedding,
-                                                category_embedding=None, categories=cur_cats_idx)  # [n_segs, dim]
-                    all_instruction_embs.append(instruction_embs)
-
-                    # Compute hidden states mean for each seg
-                    seg_hiddens = []
-                    for j in range(len(penups) - 1):  # n_segs
-                        start_idx = penups[j]
-                        end_idx = penups[j+1]
-                        seg_outputs = outputs[start_idx:end_idx+1, i, :]  # [seg_len, dim]
-                        seg_hidden = seg_outputs.mean(dim=0)  # [dim]
-                        seg_hiddens.append(seg_hidden)
-                    seg_hiddens = torch.stack(seg_hiddens, dim=0)  # [n_segs, dim]
-                    all_seg_hiddens.append(seg_hiddens)
-
-                # Concate all segs across all batch items
+            # Concate all segs across all batch items
+            if self.hp.loss_match == 'triplet':
                 all_instruction_embs = torch.cat(all_instruction_embs, dim=0)  # [n_total_segs, dim]
                 all_seg_hiddens = torch.cat(all_seg_hiddens, dim=0)  # [n_total_segs, dim]
 
@@ -233,38 +216,30 @@ class SketchRNNWithPlans(SketchRNNModel):
                 neg = (all_seg_hiddens - all_instruction_embs_shuffled) ** 2  # [n_total_segs, dim]
                 loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
+            elif self.hp.loss_match == 'decode':
+                raise NotImplementedError
 
-                # TODO: check if text_indices is correct
+            # TODO: check if text_indices is correct
 
         elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
+
             # Encode instructions
             # text_indices: [len, bsz], text_lens: [bsz]
             instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
-                              category_embedding=None, categories=cats_idx)  # [bsz, dim]
+                            category_embedding=None, categories=cats_idx)  # [bsz, dim]
 
-            # Method 1: concatenate instruction embedding to every time step
-            if self.hp.cond_instructions == 'decinputs':
-                instructions_emb = instructions_emb.unsqueeze(0)  #  [1, bsz, dim]
-                instructions_emb = instructions_emb.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
-                dec_inputs = torch.cat([dec_inputs, instructions_emb], dim=2)  # [max_len + 1, bsz, 5 + dim]
-                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
+            outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
+            outputs = outputs.mean(dim=0)  # [bsz, dim]
 
-            # Method 2: initialize decoder's hidden state with instruction embedding
-            elif self.hp.cond_instructions == 'initdec':
-                instructions_emb = instructions_emb.unsqueeze(0)  #  [1, bsz, dim]
-                hidden_cell = (instructions_emb, instructions_emb.clone())
-                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True, hidden_cell=hidden_cell)
-
-            elif self.hp.cond_instructions == 'match':
-                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
-                outputs = outputs.mean(dim=0)  # [bsz, dim]
-
-                # triplet loss
+            # triplet loss
+            if self.hp.loss_match == 'triplet':
                 pos = (outputs - instructions_emb) ** 2  # [bsz, dim]
                 instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, dim]
                 neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, dim]
                 loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
                 loss_match = max(torch.tensor(0.0), loss_match)
+            elif self.hp.loss_match == 'decode':
+                raise NotImplementedError
 
 
         #
@@ -276,11 +251,8 @@ class SketchRNNWithPlans(SketchRNNModel):
                                             dx, dy, p,
                                             pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                                             q)
-        if hp.cond_instructions == 'match':
-            loss = loss_R + loss_match
-            result = {'loss': loss, 'loss_R': loss_R, 'loss_match': loss_match}
-        else:
-            result = {'loss': loss_R, 'loss_R': loss_R}
+        loss = loss_R + loss_match
+        result = {'loss': loss, 'loss_R': loss_R, 'loss_match': loss_match}
 
         if ((loss != loss).any() or (loss == float('inf')).any() or (loss == float('-inf')).any()):
             raise Exception('Nan in SketchRNnDecoderGMMOnly forward pass')

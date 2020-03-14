@@ -204,7 +204,7 @@ def stroke3_to_stroke5(seq, max_len=None):
         result: [max_len, 5] float array
         l: int, length of sequence
     """
-    result_len = max_len if max_len else len(seq)
+    result_len = max_len if max_len else (len(seq) + 1)  # + 1 so that result[l,4] = 1 (we have an eos point)
     result = np.zeros((result_len, 5), dtype=float)
     l = len(seq)
     assert l <= result_len
