@@ -41,10 +41,10 @@ GRID_DRAW = {
     'enc_num_layers': [1],
     'use_categories_dec': [True],
     'model_type': [
-        'decodergmm --notes dataaug',
-        # 'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        # 'decodergmm --notes dataaug',
+        'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
-    'lr': [0.0001],
+    'lr': [0.001, 0.0005, 0.0001],
 }
 
 GRID = {

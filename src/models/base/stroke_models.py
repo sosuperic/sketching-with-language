@@ -572,16 +572,13 @@ class SketchRNNDecoderGMM(nn.Module):
         """
         bsz = strokes.size(1)
 
+        if hidden_cell is None:  # init
+            hidden = torch.zeros(self.num_layers, bsz, self.dec_dim)
+            cell = torch.zeros(self.num_layers, bsz, self.dec_dim)
+            hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
+            hidden_cell = (hidden, cell)
 
-        if self.use_layer_norm:
-            outputs, (hidden, cell) = self.lstm(strokes)
-        else:
-            if hidden_cell is None:  # init
-                hidden = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-                cell = torch.zeros(self.lstm.num_layers, bsz, self.dec_dim)
-                hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
-                hidden_cell = (hidden, cell)
-            outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
+        outputs, (hidden, cell) = self.lstm(strokes, hidden_cell)
         # self.outputs = outputs
 
         # Pass hidden state at each step to fully connected layer (Fig 2, Eq. 4)
