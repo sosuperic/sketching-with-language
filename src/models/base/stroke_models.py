@@ -73,6 +73,11 @@ class StrokeDataset(Dataset):
         stroke3 = sample['stroke3']
         stroke_len = len(stroke3)
 
+        # data augmentation
+        if self.data_aug:
+            noise = np.random.uniform(0.9, 1.1, size=(stroke3.shape[0], 2))
+            stroke3[:,:2] *= noise
+
         if pad_to_max_len_in_data:
             stroke5 = stroke3_to_stroke5(stroke3, self.max_len_in_data)
             # TODO: padding to the max in data is a bit non-transparent / unnecessary imo
@@ -93,6 +98,7 @@ class NdjsonStrokeDataset(StrokeDataset):
         self.max_len = max_len
         self.max_per_category = max_per_category
         self.must_have_instruction_tree = must_have_instruction_tree
+        self.data_aug = dataset_split == 'train'
 
         if categories == 'all':
             self.categories = final_categories()
@@ -181,6 +187,7 @@ class NpzStrokeDataset(StrokeDataset):
         """
         self.dataset_split = dataset_split
         self.max_len = max_len
+        self.data_aug = dataset_split == 'train'
 
         # get categories
         self.categories = None
