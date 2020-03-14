@@ -4,6 +4,7 @@
 Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --instruction_set toplevel
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --groupname stack_segs --instruction_set stack
+    PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --groupname decode
 """
 
 
@@ -17,24 +18,26 @@ NGPUS_PER_RUN = 1
 
 BASE_GRID = {
     'dataset': ['ndjson'],
-    'max_per_category': [
-        2000,
-        20000,
-    ],
     'prob_threshold': [0],
-    'batch_size': [16],
+    'dec_dim': [2048],
+    'categories_dim': [256],
     'lr': [
-        0.0005,
-        0.0001,
-    ],
-    ''
-    'enc_dim': [
-        '256 --dec_dim 256 --categories_dim 128',
-        '512 --dec_dim 2048 --categories_dim 256',
-        # '1024 --dec_dim 1024',
-        # '2048 --dec_dim 2048'
+        # 0.0005,
+        0.0001  # should just keep this constant (and same as SketchRNN)
     ],
 
+    'loss_match': [
+        # 'triplet',
+        'decode',
+    ],
+    'max_per_category': [
+        2000,
+        # 20000,
+    ],
+    'instruction_set':  [
+        'toplevel --batch_size 32',
+        'toplevel_leaves --batch_size 32',
+    ],
 }
 
 
@@ -47,7 +50,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     grid = BASE_GRID
-    grid['instruction_set'] = [args.instruction_set]
 
     groupname = args.groupname
     if groupname is None:
