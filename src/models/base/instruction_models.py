@@ -505,6 +505,7 @@ class ProgressionPairDataset(Dataset):
                  dataset_split,
                  use_prestrokes=False,
                  use_full_drawings=False,
+                 data_aug_on_text=True,
                  max_length=200,
                  ):
         """
@@ -521,7 +522,7 @@ class ProgressionPairDataset(Dataset):
         self.dataset_split = dataset_split
         self.use_prestrokes = use_prestrokes
         self.use_full_drawings = use_full_drawings
-        # TODO: add data_aug_on_text (as done in DrawingsAsImagesAnnotatedDataset)
+        self.data_aug_on_text = data_aug_on_text
 
         # Get data
         fp = None
@@ -589,6 +590,9 @@ class ProgressionPairDataset(Dataset):
         # every sentence ends with period
         if (text != '?') and (not text.endswith('.')):
             text = text + '.'
+
+        if self.data_aug_on_text:
+            text = data_augmentation_on_instruction(text)
 
         text_indices = map_sentence_to_index(text, self.token2idx)
         text_indices = [SOS_ID] + text_indices + [EOS_ID]
@@ -1041,7 +1045,8 @@ class InstructionEncoderTransformer(nn.Module):
 
 class InstructionDecoderLSTM(nn.Module):
     def __init__(self,
-                 input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=True,
+                 input_dim, hidden_dim,
+                 num_layers=1, dropout=0, batch_first=True,
                  condition_on_hc=False, use_categories=False):
         super().__init__()
         self.input_dim = input_dim
