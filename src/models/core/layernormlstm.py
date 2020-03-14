@@ -10,12 +10,14 @@ import torch.nn.functional as F
 
 class LayerNormLSTMCell(nn.LSTMCell):
 
-    def __init__(self, input_size, hidden_size, bias=True):
+    def __init__(self, input_size, hidden_size, bias=True, dropout=0.0):
         super().__init__(input_size, hidden_size, bias)
 
         self.ln_ih = nn.LayerNorm(4 * hidden_size)
         self.ln_hh = nn.LayerNorm(4 * hidden_size)
         self.ln_ho = nn.LayerNorm(hidden_size)
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, input, hidden=None):
         self.check_forward_input(input)
@@ -32,14 +34,14 @@ class LayerNormLSTMCell(nn.LSTMCell):
         i, f, o = gates[:, :(3 * self.hidden_size)].sigmoid().chunk(3, 1)
         g = gates[:, (3 * self.hidden_size):].tanh()
 
-        cy = (f * cx) + (i * g)
+        cy = (f * cx) + (i * self.dropout(g))
         hy = o * self.ln_ho(cy).tanh()
         return hy, cy
 
 
 class LayerNormLSTM(nn.Module):
 
-    def __init__(self, input_size, hidden_size, num_layers=1, bias=True, bidirectional=False):
+    def __init__(self, input_size, hidden_size, num_layers=1, bias=True, bidirectional=False, rec_dropout=0.0):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -49,14 +51,14 @@ class LayerNormLSTM(nn.Module):
         num_directions = 2 if bidirectional else 1
         self.hidden0 = nn.ModuleList([
             LayerNormLSTMCell(input_size=(input_size if layer == 0 else hidden_size * num_directions),
-                              hidden_size=hidden_size, bias=bias)
+                              hidden_size=hidden_size, bias=bias, dropout=rec_dropout)
             for layer in range(num_layers)
         ])
 
         if self.bidirectional:
             self.hidden1 = nn.ModuleList([
                 LayerNormLSTMCell(input_size=(input_size if layer == 0 else hidden_size * num_directions),
-                                  hidden_size=hidden_size, bias=bias)
+                                  hidden_size=hidden_size, bias=bias, dropout=rec_dropout)
                 for layer in range(num_layers)
             ])
 

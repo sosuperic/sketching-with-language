@@ -57,6 +57,8 @@ class HParams():
 
         # Model
         self.model_type = 'decodergmm'  # 'vae', 'decodergmm', 'decoderlstm'
+        self.use_layer_norm = False
+        self.rec_dropout = 0.1  # only with use_layer_norm=True
         self.use_categories_dec = False
         self.categories_dim = 256
         self.enc_dim = 512  # 512
@@ -423,7 +425,8 @@ class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
             self.category_embedding = nn.Embedding(35, self.hp.categories_dim)
             self.models.append(self.category_embedding)
         inp_dim = (5 + hp.categories_dim) if self.category_embedding else 5
-        self.dec = SketchRNNDecoderGMM(inp_dim, hp.dec_dim, hp.M)
+        self.dec = SketchRNNDecoderGMM(inp_dim, hp.dec_dim, hp.M, dropout=self.hp.dropout,
+            use_layer_norm=self.hp.use_layer_norm, rec_dropout=self.hp.rec_dropout)
         self.models.append(self.dec)
         if USE_CUDA:
             for model in self.models:

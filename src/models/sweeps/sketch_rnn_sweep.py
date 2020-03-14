@@ -24,10 +24,7 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [False],
-    'model_type': [
-        # 'decodergmm',
-        'vae'
-    ],
+    'model_type': ['decodergmm'],
 
     'lr': [0.0001],
 }
@@ -36,14 +33,17 @@ GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
         '70000 --categories pig',
-        '2000 --categories all',
-        '20000 --categories all',
+        # '2000 --categories all',
+        # '20000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [True],
-    'model_type': ['decodergmm'],
+    'model_type': [
+        # 'decodergmm',
+        'decodergmm --use_layer_norm true --rec_dropout 0.1'
+    ],
     'lr': [0.0001],
 }
 

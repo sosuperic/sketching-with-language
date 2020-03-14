@@ -513,13 +513,16 @@ class SketchRNNVAEEncoder(nn.Module):
 ##############################################################################
 
 class SketchRNNDecoderGMM(nn.Module):
-    def __init__(self, input_dim, dec_dim, M, dropout=0.0):
+    def __init__(self, input_dim, dec_dim, M, dropout=0.0,
+                       use_layer_norm=False, rec_dropout=0.0):
         """
         Args:
             input_dim: int (size of input)
             dec_dim: int (size of hidden states)
             M: int (number of mixtures)
-            dropout: float
+            use_layer_norm (bool)
+            rec_dropout: float
+                - https://arxiv.org/pdf/1603.05118.pdf
         """
         super().__init__()
 
@@ -528,7 +531,10 @@ class SketchRNNDecoderGMM(nn.Module):
         self.M = M
         self.num_layers = 1
 
-        self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
+        if use_layer_norm:
+            self.lstm = LayerNormLSTM(input_dim, dec_dim, num_layers=self.num_layers, rec_dropout=rec_dropout)
+        else:
+            self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
         self.fc_params = nn.Linear(dec_dim, 6 * M + 3)  # create mixture params and probs from hiddens
 
