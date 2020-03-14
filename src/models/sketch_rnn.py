@@ -6,6 +6,9 @@ SketchRNN model as in "Neural Representation of Sketch Drawings"
 Usage:
     PYTHONPATH=. python src/models/sketch_rnn.py --model_type vae
     PYTHONPATH=. python src/models/sketch_rnn.py --model_type decodergmm
+
+PYTHONPATH=. python src/models/sketch_rnn.py --inference --temperature 0.1 \
+--load_model_path runs/sketchrnn/Mar13_2020/drawings/categories_pig-dataset_ndjson-dec_dim_2048-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_decodergmm-use_categories_dec_True/
 """
 
 from datetime import datetime
@@ -84,13 +87,14 @@ class HParams():
 ##############################################################################
 
 class SketchRNNModel(TrainNN):
-    def __init__(self, hp, save_dir):
+    def __init__(self, hp, save_dir, skip_data=False):
         super().__init__(hp, save_dir)
 
         self.eta_step = hp.eta_min
-        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, True)
-        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, False)
-        self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
+        if not skip_data:
+            self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, True)
+            self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.categories, hp.max_len, hp.max_per_category, False)
+            self.end_epoch_loader = self.get_data_loader('train', 1, hp.categories, hp.max_len, hp.max_per_category, True)
 
     #
     # Data
@@ -346,6 +350,20 @@ class SketchRNNModel(TrainNN):
         return x[0][0], x[0][1]
 
 
+    ##############################################################################
+    #
+    # Testing / Inference
+    #
+    ##############################################################################
+    def save_imgs_inference_time(self, model_dir):
+        n_gens = 25
+        loader = self.get_data_loader('train', 1, self.hp.categories, self.hp.max_len, n_gens, False)
+        outputs_path = os.path.join(opt.load_model_path, 'inference', str(self.hp.temperature))
+        os.makedirs(outputs_path, exist_ok=True)
+        print('Saving images to: ', outputs_path)
+        self.generate_and_save(loader, 'dummy', n_gens, outputs_path=outputs_path)
+
+
 ##############################################################################
 #
 # Decoder only ("Unconditional" model)
@@ -353,8 +371,8 @@ class SketchRNNModel(TrainNN):
 ##############################################################################
 
 class SketchRNNDecoderLSTMOnlyModel(SketchRNNModel):
-    def __init__(self, hp, save_dir):
-        super().__init__(hp, save_dir)
+    def __init__(self, hp, save_dir, skip_data=False):
+        super().__init__(hp, save_dir, skip_data=skip_data)
 
         # Model
         self.dec = SketchRNNDecoderLSTM(5, hp.dec_dim, dropout=hp.dropout)
@@ -396,8 +414,8 @@ class SketchRNNDecoderLSTMOnlyModel(SketchRNNModel):
 
 
 class SketchRNNDecoderGMMOnlyModel(SketchRNNModel):
-    def __init__(self, hp, save_dir):
-        super().__init__(hp, save_dir)
+    def __init__(self, hp, save_dir, skip_data=False):
+        super().__init__(hp, save_dir, skip_data=skip_data)
 
         # Model
         self.category_embedding = None
@@ -466,8 +484,8 @@ class SketchRNNVAEModel(SketchRNNModel):
     Create entire sketch model by combining encoder and decoder. Training, generation, etc.
     """
 
-    def __init__(self, hp, save_dir):
-        super().__init__(hp, save_dir)
+    def __init__(self, hp, save_dir, skip_data=False):
+        super().__init__(hp, save_dir, skip_data=skip_data)
 
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
@@ -557,18 +575,36 @@ if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
+    parser.add_argument('--inference', action='store_true')
+    parser.add_argument('--load_model_path', help='path to directory containing model to load for inference')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
 
     save_dir = os.path.join(RUNS_PATH, 'sketchrnn', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
-    experiments.save_run_data(save_dir, hp)
+
+    # If inference, load hparams
+    if opt.inference:
+        temp = hp.temperature  # store this because we will vary at inference
+        orig_hp = utils.load_file(os.path.join(opt.load_model_path, 'hp.json'))  # dict
+        for k, v in orig_hp.items():
+            if k != 'temperature':
+                setattr(hp, k, v)
+    else:
+        experiments.save_run_data(save_dir, hp)
+
 
     model = None
     if hp.model_type == 'vae':
-        model = SketchRNNVAEModel(hp, save_dir)
+        model = SketchRNNVAEModel(hp, save_dir, skip_data=opt.inference)
     elif hp.model_type == 'decodergmm':
-        model = SketchRNNDecoderGMMOnlyModel(hp, save_dir)
+        model = SketchRNNDecoderGMMOnlyModel(hp, save_dir, skip_data=opt.inference)
     elif hp.model_type == 'decoderlstm':
-        model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir)
+        model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir, skip_data=opt.inference)
     model = nn_utils.AccessibleDataParallel(model)
-    model.train_loop()
+
+    if opt.inference:
+        model.load_model(opt.load_model_path)
+        setattr(model.hp, 'temperature', temp)  # this may vary at inference time
+        model.save_imgs_inference_time(opt.load_model_path)
+    else:
+        model.train_loop()

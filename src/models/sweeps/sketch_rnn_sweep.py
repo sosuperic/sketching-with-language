@@ -5,6 +5,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname testsweep
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname categories
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname reproduce
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname drawings
 """
 
 import argparse
@@ -28,6 +29,21 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
         'vae'
     ],
 
+    'lr': [0.0001],
+}
+
+GRID_DRAW = {
+    'dataset': ['ndjson'],
+    'max_per_category': [
+        '70000 --categories pig',
+        '2000 --categories all',
+        '20000 --categories all',
+    ],
+    'enc_dim': [512],
+    'dec_dim': [2048],
+    'enc_num_layers': [1],
+    'use_categories_dec': [True],
+    'model_type': ['decodergmm'],
     'lr': [0.0001],
 }
 
@@ -82,7 +98,7 @@ if __name__ == "__main__":
     # print(base_cmd)
 
     # grid = GRID
-    grid = GRID_REPRODUCE
+    grid = GRID_DRAW
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
