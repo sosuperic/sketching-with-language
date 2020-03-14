@@ -44,6 +44,7 @@ GRID_DRAW = {
         # 'decodergmm --notes dataaug',
         'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
+    'notes': ['nodataaug'],
     'lr': [0.001, 0.0005, 0.0001],
 }
 

@@ -98,7 +98,7 @@ class NdjsonStrokeDataset(StrokeDataset):
         self.max_len = max_len
         self.max_per_category = max_per_category
         self.must_have_instruction_tree = must_have_instruction_tree
-        self.data_aug = dataset_split == 'train'
+        self.data_aug = False # dataset_split == 'train'
 
         if categories == 'all':
             self.categories = final_categories()
@@ -187,7 +187,7 @@ class NpzStrokeDataset(StrokeDataset):
         """
         self.dataset_split = dataset_split
         self.max_len = max_len
-        self.data_aug = dataset_split == 'train'
+        self.data_aug = False # dataset_split == 'train'
 
         # get categories
         self.categories = None

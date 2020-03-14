@@ -22,21 +22,21 @@ BASE_GRID = {
     'dec_dim': [2048],
     'categories_dim': [256],
     'lr': [
-        # 0.0005,
+        0.0005,
         0.0001  # should just keep this constant (and same as SketchRNN)
     ],
 
     'loss_match': [
-        # 'triplet',
-        'decode',
+        'triplet',
+        # 'decode',
     ],
     'max_per_category': [
         2000,
         # 20000,
     ],
     'instruction_set':  [
-        'toplevel --batch_size 32',
-        'toplevel_leaves --batch_size 32',
+        'toplevel --batch_size 16',
+        'toplevel_leaves --batch_size 16',
     ],
 }
 
