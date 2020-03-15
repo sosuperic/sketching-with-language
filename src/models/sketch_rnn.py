@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 
 from config import RUNS_PATH
 from src import utils
-from src.data_manager.quickdraw import save_strokes_as_img
+from src.data_manager.quickdraw import save_strokes_as_img, save_multiple_strokes_as_img
 from src.models.base.instruction_models import (ProgressionPairDataset)
 from src.models.base.stroke_models import (NdjsonStrokeDataset,
                                            NpzStrokeDataset,
@@ -164,6 +164,8 @@ class SketchRNNModel(TrainNN):
         Generate sequence
         """
         n = 0
+        gen_strokes = []
+        gt_strokes = []
         for i, batch in enumerate(data_loader):
             batch = self.preprocess_batch_from_data_loader(batch)
             strokes, stroke_lens, cats, cats_idx = batch
@@ -239,9 +241,23 @@ class SketchRNNModel(TrainNN):
             strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
             save_strokes_as_img(strokes_out, output_fp)
 
+            gen_strokes.append(sequence)
+            gt_strokes.append(strokes_out)
+
             n += 1
             if n == n_gens:
                 break
+
+        rowcol_size = 5
+        chunk_size = rowcol_size ** 2
+        for i in range(0, chunk_size, len(gen_strokes)):
+            output_fp = os.path.join(outputs_path, f'e{epoch}_gen{i}-{i+chunk_size}.jpg')
+            save_multiple_strokes_as_img(gen_strokes[i:i+chunk_size], output_fp)
+
+            output_fp = os.path.join(outputs_path, f'e{epoch}_gt{i}-{i+chunk_size}.jpg')
+            save_multiple_strokes_as_img(gt_strokes[i:i+chunk_size], output_fp)
+
+
 
     def sample_next_state(self, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q):
         """

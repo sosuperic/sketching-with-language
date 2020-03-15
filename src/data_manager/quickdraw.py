@@ -276,7 +276,37 @@ def save_strokes_as_img(sequence, output_fp):
     canvas.draw()
     pil_image = Image.frombytes('RGB', canvas.get_width_height(), canvas.tostring_rgb())
     pil_image.save(output_fp)
+    plt.axis('off')
     plt.close('all')
+
+def save_multiple_strokes_as_img(sequences, output_fp):
+    """
+    Similar to above, but uses subplot
+
+    Args:
+        sequences (list of [len, 3] np arrays)
+        output_fp (str)
+    """
+    rowcol_size = int(len(sequences) ** 0.5)
+    figsize = rowcol_size * 2
+    fig, axs = plt.subplots(rowcol_size, rowcol_size, figsize=(figsize, figsize), sharey=True)
+    for i, sequence in enumerate(sequences):
+        strokes = np.split(sequence, np.where(sequence[:, 2] == 1)[0] + 1)
+        row = int(i / rowcol_size)
+        col = i % rowcol_size
+        for s in strokes:
+            axs[row, col].plot(s[:, 0], -s[:, 1])
+
+    # Remove gridlines
+    for row in range(rowcol_size):
+        for col in range(rowcol_size):
+            axs[row,col].set_xticks([])
+            axs[row,col].set_yticks([])
+
+    canvas = plt.get_current_fig_manager().canvas
+    canvas.draw()
+    pil_image = Image.frombytes('RGB', canvas.get_width_height(), canvas.tostring_rgb())
+    pil_image.save(output_fp)
 
 def convert_stroke5_to_ndjson_seq(stroke5):
     """
