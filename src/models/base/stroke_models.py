@@ -113,6 +113,7 @@ class NdjsonStrokeDataset(StrokeDataset):
         n_cats = len(self.categories)
 
         start1 = time.time()
+        ns = 0
         for i, category in enumerate(self.categories):
             # print(f'Loading {category} {i+1}/{n_cats}')
             drawing_lines = ndjson_drawings(category, lazy=True)  # each line is a json of one drawing
@@ -137,11 +138,15 @@ class NdjsonStrokeDataset(StrokeDataset):
 
                 stroke3 = ndjson_to_stroke3(ndjson_strokes)  # convert to stroke3 format
                 sample_len = stroke3.shape[0] + 1  # + 1 because stroke5 appends 1 basically
+                if sample_len > max_len:
+                    ns += 1
+                    continue
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category,
                                   'id': id, 'ndjson_strokes': ndjson_strokes})
                 cat_n_drawings += 1
 
+        print('N skipped over max len: ', ns)
         print('Loading: ', time.time() - start1)
 
         start2 = time.time()
@@ -209,6 +214,8 @@ class NpzStrokeDataset(StrokeDataset):
             for i in range(n_samples):
                 stroke3 = category_data[i]
                 sample_len = stroke3.shape[0] + 1 # + 1 because stroke5 appends 1 basically
+                if sample_len > max_len:
+                    continue
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category})
 
