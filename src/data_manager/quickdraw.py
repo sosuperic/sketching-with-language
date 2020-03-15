@@ -308,6 +308,8 @@ def save_multiple_strokes_as_img(sequences, output_fp):
     pil_image = Image.frombytes('RGB', canvas.get_width_height(), canvas.tostring_rgb())
     pil_image.save(output_fp)
 
+    plt.close('all')
+
 def convert_stroke5_to_ndjson_seq(stroke5):
     """
     TODO: this is a WIP.

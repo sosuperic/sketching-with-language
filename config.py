@@ -60,6 +60,10 @@ LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'idx2c
 LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH = LABELED_PROGRESSION_PAIRS_PATH / 'cat2idx.pkl'
 
 
+# Retrieve and refine
+RETRIEVE_REFINE_PATH = QUICKDRAW_DATA_PATH / 'retrieve_refine'
+RETRIEVAL_SET_PATH = RETRIEVE_REFINE_PATH / 'retrieval_set'
+
 ##############################################################
 # (Current) best models, experiments, etc.
 ##############################################################
