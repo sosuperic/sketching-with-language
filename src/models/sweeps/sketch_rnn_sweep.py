@@ -16,17 +16,24 @@ CMD = 'PYTHONPATH=. python src/models/sketch_rnn.py'
 NGPUS_PER_RUN = 1
 
 GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
-    'dataset': ['ndjson'],  # they use npz dataset actually
-    'categories': ['pig', 'cat'],
-    'max_per_category': [70000],
-
+    'dataset': [
+        # 'ndjson --max_per_category 70000',
+        'npz'
+    ],
+    'categories': [
+        'pig',
+        # 'cat',
+    ],
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [False],
-    'model_type': ['decodergmm'],
-
-    'lr': [0.0001],
+    'model_type': [
+        'decodergmm --lr 0.0001 --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
+        'decodergmm --lr 0.0005 --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
+        'decodergmm --lr 0.001 --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
+        'decodergmm --lr 0.001 --use_layer_norm true --dropout 0.2 --rec_dropout 0.2',
+    ],
 }
 
 GRID_DRAW = {
@@ -100,7 +107,8 @@ if __name__ == "__main__":
     # print(base_cmd)
 
     # grid = GRID
-    grid = GRID_DRAW
+    grid = GRID_REPRODUCE
+    # grid = GRID_DRAW
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,

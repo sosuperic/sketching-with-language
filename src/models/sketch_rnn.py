@@ -113,6 +113,9 @@ class SketchRNNModel(TrainNN):
             ds = NdjsonStrokeDataset(categories, dataset_split, max_len=max_len, max_per_category=max_per_category,
                                      must_have_instruction_tree=True)  # must_have...=True for fair comparison with planning models
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+        elif self.hp.dataset == 'npz':
+            ds = NpzStrokeDataset(categories, dataset_split)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
         elif self.hp.dataset == 'progressionpair':
             # We are using the ProgressionPair dataset, which has segments annotated.
             # In this case, we aren't using the segments or the instructions. We are using the full strokes.

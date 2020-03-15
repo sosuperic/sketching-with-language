@@ -203,6 +203,10 @@ class NpzStrokeDataset(StrokeDataset):
         else:
             self.categories = [categories]
 
+        # I think this hack is needed because an older version of numpy was used for the npz files originally
+        np_load_old = np.load
+        np.load = lambda *a,**k: np_load_old(*a, allow_pickle=True, **k)  # modify default so allow_pickle=True
+
         # Load data
         full_data = []  # list of dicts
         self.max_len_in_data = 0
@@ -218,6 +222,8 @@ class NpzStrokeDataset(StrokeDataset):
                     continue
                 self.max_len_in_data = max(self.max_len_in_data, sample_len)
                 full_data.append({'stroke3': stroke3, 'category': category})
+
+        np.load = np_load_old  # restore just in case
 
         self.data = self.filter_and_clean_data(full_data)
         self.data = normalize_strokes(self.data, scale_factor=STROKE3_SCALE_FACTOR)
