@@ -18,6 +18,8 @@ from torch.utils.data import Dataset
 import torch.nn.functional as F
 import torchvision
 
+import haste_pytorch as haste
+
 from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_TRAIN_PATH, \
     LABELED_PROGRESSION_PAIRS_VALID_PATH, \
@@ -1047,7 +1049,8 @@ class InstructionDecoderLSTM(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim,
                  num_layers=1, dropout=0, batch_first=True,
-                 condition_on_hc=False, use_categories=False):
+                 condition_on_hc=False, use_categories=False,
+                 use_layer_norm=False, rec_dropout=0):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -1056,10 +1059,15 @@ class InstructionDecoderLSTM(nn.Module):
         self.batch_first = batch_first
         self.condition_on_hc = condition_on_hc
         self.use_categories = use_categories
+        self.use_layer_norm = use_layer_norm
+        self.rec_dropout = rec_dropout
 
         self.dropout_mod = nn.Dropout(dropout)
-        self.lstm = nn.LSTM(input_dim, hidden_dim,
-                            num_layers=num_layers, dropout=dropout, batch_first= batch_first)
+        if use_layer_norm:
+            self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+        else:
+            self.lstm = nn.LSTM(input_dim, hidden_dim,
+                                num_layers=num_layers, dropout=dropout, batch_first= batch_first)
 
     def forward(self, texts_emb, text_lens, hidden=None, cell=None,
                 token_embedding=None, category_embedding=None, categories=None,
@@ -1107,10 +1115,14 @@ class InstructionDecoderLSTM(nn.Module):
             inputs_emb = torch.cat([inputs_emb, mem_emb], dim=2)  # [len, bsz, ...]
 
         # decode
-        packed_inputs = nn.utils.rnn.pack_padded_sequence(inputs_emb, text_lens, enforce_sorted=False)
-        outputs, (hidden, cell) = self.lstm(packed_inputs, (hidden, cell))
-        outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs)
-        # [max_text_len + 2, bsz, dim]; h/c = [n_layers * n_directions, bsz, dim]
+        if self.use_layer_norm:
+            # Will have to mask out using text_lens later during loss
+            outputs, (hidden, cell) = self.lstm(inputs_emb, (hidden, cell))
+        else:
+            packed_inputs = nn.utils.rnn.pack_padded_sequence(inputs_emb, text_lens, enforce_sorted=False)
+            outputs, (hidden, cell) = self.lstm(packed_inputs, (hidden, cell))
+            outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs)
+            # [max_text_len + 2, bsz, dim]; h/c = [n_layers * n_directions, bsz, dim]
 
         if token_embedding is not None:
             outputs = torch.matmul(outputs, token_embedding.weight.t())  # [len, bsz, vocab]

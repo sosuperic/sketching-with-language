@@ -335,7 +335,7 @@ class StrokeEncoderCNN(nn.Module):
 class StrokeEncoderLSTM(nn.Module):
     def __init__(self,
                  input_dim, hidden_dim, num_layers=1, dropout=0, batch_first=False,
-                 use_categories=False, use_layer_norm=False):
+                 use_categories=False, use_layer_norm=False, rec_dropout=0):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -344,20 +344,19 @@ class StrokeEncoderLSTM(nn.Module):
         self.batch_first = batch_first
         self.use_categories = use_categories
         self.use_layer_norm = use_layer_norm
+        self.rec_dropout = rec_dropout
 
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
             if use_layer_norm:
-                self.lstm = LayerNormLSTM(hidden_dim, hidden_dim, bidirectional=True,
-                                    num_layers=num_layers)  # only batch second, no dropout
+                self.lstm = haste.LayerNormLSTM(input_size=hidden_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
             else:
                 self.lstm = nn.LSTM(hidden_dim, hidden_dim, bidirectional=True,
                                     num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         else:
             if use_layer_norm:
-                self.lstm = LayerNormLSTM(input_dim, hidden_dim, bidirectional=True,
-                                    num_layers=num_layers)  # only batch second, no dropout
+                self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
             else:
                 self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional=True,
                                     num_layers=num_layers, dropout=dropout, batch_first=batch_first)
@@ -387,8 +386,9 @@ class StrokeEncoderLSTM(nn.Module):
             strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
 
         if self.use_layer_norm:  # torchscript doesn't support packed sequence
-            init_states = (nn_utils.move_to_cuda(torch.zeros(self.num_layers * 2, bsz, self.hidden_dim)),
-                           nn_utils.move_to_cuda(torch.zeros(self.num_layers * 2, bsz, self.hidden_dim)))
+            nlayer_direc = 1 if self.use_layer_norm else self.num_layers * 2  # haste LayerNormLSTM only has unidirectional
+            init_states = (nn_utils.move_to_cuda(torch.zeros(nlayer_direc, bsz, self.hidden_dim)),
+                           nn_utils.move_to_cuda(torch.zeros(nlayer_direc, bsz, self.hidden_dim)))
             strokes_outputs, (hidden_, cell_) = self.lstm(strokes, init_states)  # layernorm lstm must pass in states
             # TODO: is this the proper way to mask / account for lengths?
             # At least in the strokes_to_instruction case, we just care about the last hidden states
@@ -405,9 +405,10 @@ class StrokeEncoderLSTM(nn.Module):
             strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
             strokes_outputs, _ = nn.utils.rnn.pad_packed_sequence(strokes_outputs)
 
-        # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
-        hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
-        cell = cell.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
+        if not self.use_layer_norm:  # haste LayerNormLSTM only has unidirectional
+            # Take mean along num_directions because decoder is unidirectional lstm (this is bidirectional)
+            hidden = hidden.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
+            cell = cell.view(self.num_layers, 2, bsz, self.hidden_dim).mean(dim=1)  # [layers, bsz, dim]
 
         return strokes_outputs, (hidden, cell)
 

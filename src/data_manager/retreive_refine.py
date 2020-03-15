@@ -80,7 +80,7 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
             best_out_no_drawing = []
             for d in best_out:
                 best_out_no_drawing.append({'score': float(d['score']), 'id': d['id'], 'text': d['text']})
-            out_dir = RETRIEVAL_SET_PATH / instruction / 'data' / f'{category}_nodrawing.json'
+            out_fp = RETRIEVAL_SET_PATH / instruction / 'data' / f'{category}_nodrawing.json'
             utils.save_file(best_out_no_drawing, out_fp)
 
             # Save drawings

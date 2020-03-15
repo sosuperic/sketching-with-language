@@ -11,6 +11,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug_mem
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname load_pretrained
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname layernorm
 """
 
 import argparse
@@ -117,6 +118,14 @@ GRID_MINI = {
     ],
 }
 
+GRID_LAYERNORM = {
+    'drawing_type': ['stroke'],
+    'model_type': ['lstm --n_enc_layers 1 --n_dec_layers 1 --use_layer_norm True'],
+    'dim': [512, 1024, 2048],
+    'lr': [0.001, 0.0005, 0.0001],
+    'dropout':  ['0.1 --rec_dropout 0.1', '0.3 --rec_dropout 0.3']
+}
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -128,7 +137,8 @@ if __name__ == "__main__":
     base_cmd = CMD + f' --groupname {args.groupname}'
 
     # grid = GRID
-    grid = GRID_MINI
+    # grid = GRID_MINI
+    grid = GRID_LAYERNORM
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,

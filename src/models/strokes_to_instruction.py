@@ -62,11 +62,12 @@ class HParams():
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
-        self.use_layer_norm = False   # currently only for lstm
+        self.use_layer_norm = False   # currently only for lstm  (when true, n_layers must be 1)
         self.condition_on_hc = False  # input to decoder also contains last hidden cell
         self.use_categories_enc = False
         self.use_categories_dec = True
         self.dropout = 0.2
+        self.rec_dropout = 0.2  # only with use_layer_norm=True
 
         # memory
         self.use_mem = False
@@ -128,7 +129,8 @@ class StrokesToInstructionModel(TrainNN):
                 elif hp.model_type == 'lstm':
                     self.enc = StrokeEncoderLSTM(
                         5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
-                        use_categories=hp.use_categories_enc, use_layer_norm=hp.use_layer_norm
+                        use_categories=hp.use_categories_enc,
+                        use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout
                     )
 
             if hp.use_mem:
@@ -144,7 +146,8 @@ class StrokesToInstructionModel(TrainNN):
                 dec_input_dim += hp.dim
             self.dec = InstructionDecoderLSTM(
                 dec_input_dim, hp.dim, num_layers=hp.n_dec_layers, dropout=hp.dropout, batch_first=False,
-                condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories_dec
+                condition_on_hc=hp.condition_on_hc, use_categories=hp.use_categories_dec,
+                use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout
             )
 
             self.models.extend([self.enc, self.dec])
@@ -245,17 +248,32 @@ class StrokesToInstructionModel(TrainNN):
             preprocessed.append(item)
         return preprocessed
 
-    def compute_loss(self, logits, tf_inputs, pad_id):
+    def compute_loss(self, logits, tf_inputs, pad_id, text_lens=None):
         """
         Args:
             logits: [len, bsz, vocab]
             tf_inputs: [len, bsz] ("teacher-forced inputs", inputs to decoder used to generate logits)
                 (text_indices_w_sos_eos)
+            pad_id (int)
+            text_lens (list of ints): used when use_layer_norm=True
+                The Haste LayerNormLSTM I'm using doesn't take packed sequences, so have to take care of masking here
         """
         logits = logits[:-1, :, :]    # last input that produced logits is EOS. Don't care about the EOS -> mapping
         targets = tf_inputs[1: :, :]  # remove first input (sos)
 
-        vocab_size = logits.size(-1)
+        max_len, bsz, vocab_size = logits.size()
+
+        # TODO: I think this can be removed. I think ignore_index takes care of things?
+        # We don't actualy need to mask things ourselves? Wait is the purpose of
+        # pack_padded_sequence just for a speedup then?
+        # if self.hp.use_layer_norm:
+        #     mask = nn_utils.move_to_cuda(torch.zeros(bsz, max_len))  # [len, bsz]
+        #     for i, tlen in enumerate(text_lens):
+        #         tlen -= 1  # removed one time step above
+        #         mask[i,:tlen] = 1
+        #     logits *= mask.unsqueeze(-1)
+        #       Actually, doesn't ignore_index take care of things?
+        # else:
         logits = logits.reshape(-1, vocab_size)
         targets = targets.reshape(-1)
         loss = F.cross_entropy(logits, targets, ignore_index=pad_id)
@@ -427,7 +445,7 @@ class StrokesToInstructionModel(TrainNN):
         logits, _ = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
                              token_embedding=self.token_embedding,
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
-        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID, text_lens=text_lens)
         result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         if self.hp.unlikelihood_loss:
@@ -472,7 +490,7 @@ class StrokesToInstructionModel(TrainNN):
         logits, _ = self.dec(texts_emb, text_lens, hidden=hidden, cell=cell,
                              token_embedding=self.token_embedding,
                              category_embedding=self.category_embedding, categories=cats_idx)  # [max_text_len + 2, bsz, vocab]; h/c
-        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID)
+        loss = self.compute_loss(logits, text_indices_w_sos_eos, PAD_ID, text_lens=text_lens)
         result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
         return result
