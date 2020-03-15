@@ -195,14 +195,14 @@ class StrokesToInstructionModel(TrainNN):
 
         self.scorers = [InstructionScorer('rouge')]
 
-    def load_enc_weights_from_autoencoder(self, dir):
+    def load_enc_weights_from_pretrained(self, dir):
         """
         Copy pretrained encoder weights to self.encoder.
 
         Args:
             dir: str
         """
-        print('Loading encoder weights from pretrained autoencoder: ', dir)
+        print('Loading encoder weights from pretrained: ', dir)
         fp = os.path.join(dir, 'model.pt')
         trained_state_dict = torch.load(fp)
         self_state_dict = self.state_dict()
@@ -664,7 +664,7 @@ if __name__ == '__main__':
     hp = HParams()
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
-    parser.add_argument('--load_autoencoder_dir', default=None, help='directory that contains pretrained autoencoder'
+    parser.add_argument('--load_pretrained', default=None, help='directory that contains pretrained model'
                         'from which we can load the encoder weights')
     parser.add_argument('--inference', action='store_true')
     parser.add_argument('--inference_split', default='valid', help='dataset split to perform inference on')
@@ -683,8 +683,8 @@ if __name__ == '__main__':
         model = StrokesToInstructionModel(hp, save_dir)
         experiments.save_run_data(save_dir, hp)
 
-        if opt.load_autoencoder_dir:
-            model.load_enc_weights_from_autoencoder(opt.load_autoencoder_dir)
+        if opt.load_pretrained:
+            model.load_enc_weights_from_pretrained(opt.load_pretrained)
 
         model.train_loop()
 

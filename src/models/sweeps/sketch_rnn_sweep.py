@@ -32,9 +32,10 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
 GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
-        '70000 --categories pig',
+        # '70000 --categories pig',
         # '2000 --categories all',
         # '20000 --categories all',
+        '70000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
@@ -45,7 +46,7 @@ GRID_DRAW = {
         'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
     'notes': ['nodataaug'],
-    'lr': [0.001, 0.0005, 0.0001],
+    'lr': [0.0001],
 }
 
 GRID = {

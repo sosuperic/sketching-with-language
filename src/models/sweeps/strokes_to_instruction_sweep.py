@@ -10,6 +10,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname imagesweep_textaug_rankimgs4
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug_mem
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname load_pretrained
 """
 
 import argparse
@@ -109,7 +110,11 @@ GRID_MINI = {
     'drawing_type': ['stroke'],
     'model_type': ['lstm'],
     'dim': [256],
-    'lr': [0.0001],
+    'lr': [0.0001, 0.00005],
+    'load_pretrained': [
+        'runs/contrastive_drawing_encoder/Mar13_2020/firstsweep/dim_256-lr_0.0005-max_per_category_7000-model_type_lstm-n_enc_layers_4/ --notes 7k',
+        'runs/contrastive_drawing_encoder/Mar13_2020/firstsweep/dim_256-lr_0.0005-max_per_category_70000-model_type_lstm-n_enc_layers_4/ --notes 70k',
+    ],
 }
 
 

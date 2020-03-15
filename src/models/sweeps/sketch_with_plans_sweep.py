@@ -27,7 +27,7 @@ BASE_GRID = {
     ],
 
     'loss_match': [
-        'triplet --enc_dim 512',
+        'triplet --enc_dim 2048',
         # 'decode',
     ],
     'max_per_category': [
@@ -35,8 +35,8 @@ BASE_GRID = {
         # 20000,
     ],
     'instruction_set':  [
-        'toplevel --batch_size 16',
-        'toplevel_leaves --batch_size 16',
+        'toplevel --batch_size 8',
+        'toplevel_leaves --batch_size 8',
     ],
 }
 

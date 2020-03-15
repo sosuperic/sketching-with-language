@@ -359,11 +359,13 @@ class SketchRNNModel(TrainNN):
     ##############################################################################
     def save_imgs_inference_time(self, model_dir):
         n_gens = 25
-        loader = self.get_data_loader('train', 1, self.hp.categories, self.hp.max_len, n_gens, False)
+        loader = self.get_data_loader('train', 1, self.hp.categories, self.hp.max_len, n_gens, True)
         outputs_path = os.path.join(opt.load_model_path, 'inference', str(self.hp.temperature))
         os.makedirs(outputs_path, exist_ok=True)
         print('Saving images to: ', outputs_path)
-        self.generate_and_save(loader, 'dummy', n_gens, outputs_path=outputs_path)
+        torch.backends.cudnn.benchmark = True # Optimizes cudnn
+        with torch.no_grad():
+            self.generate_and_save(loader, 'dummy', n_gens, outputs_path=outputs_path)
 
 
 ##############################################################################

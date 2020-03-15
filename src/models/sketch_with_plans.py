@@ -51,7 +51,8 @@ class HParams(SketchRNNHParams):
         self.use_categories_dec = True
         self.cond_instructions = 'match'  # 'match'
         self.categories_dim = 256
-        self.loss_match = 'decode' # 'triplet', 'decode'
+        self.loss_match = 'triplet' # 'triplet', 'decode'
+        self.enc_num_layers = 1
         self.enc_dim = 512 # only used with loss_match=triplet
 
 class SketchRNNWithPlans(SketchRNNModel):
