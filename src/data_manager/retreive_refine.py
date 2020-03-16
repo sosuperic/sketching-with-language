@@ -1,6 +1,4 @@
 """
-
-
 Current problem: Selecting toplevel instruction with highest s2i may not
 be great. For example, instructions for lobster don't even include claw...
 
@@ -15,8 +13,23 @@ import os
 from pprint import pprint as pp
 
 from config import RETRIEVAL_SET_PATH, BEST_SEG_NDJSON_PATH
-from src.data_manager.quickdraw import ndjson_drawings, save_multiple_strokes_as_img, ndjson_to_stroke3
+from src.data_manager.quickdraw import ndjson_drawings, \
+    save_multiple_strokes_as_img, ndjson_to_stroke3, \
+    save_strokes_as_img
 import src.utils as utils
+
+def save_img(cat, id, cat_drawings, id_to_idx):
+    # for debugging purposes
+    """
+    cat = 'lobster'
+    cat_drawings = ndjson_drawings(cat)
+    id_to_idx = {d['key_id']: idx for idx, d in enumerate(cat_drawings)}
+    id = fn.replace('.json', '')
+    """
+    stroke3 = ndjson_to_stroke3(cat_drawings[id_to_idx[id]]['drawing'])
+    stroke3[:,0] = np.cumsum(stroke3[:,0])
+    stroke3[:,1] = np.cumsum(stroke3[:,1])
+    save_strokes_as_img(stroke3, f'{cat}_{id}.jpg')
 
 def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
     """
@@ -29,7 +42,9 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
     """
 
     # Walk over instruction trees
-    for root, dirs, fns in os.walk(BEST_SEG_NDJSON_PATH):
+    seg_tree_path = BEST_SEG_NDJSON_PATH
+    seg_tree_path = 'data/quickdraw/segmentations/greedy_parsing/progressionpair/Feb18_2020/strokes_to_instruction/S2IimgsFeb13/'
+    for root, dirs, fns in os.walk(seg_tree_path):
         pqueue = []
         category = os.path.basename(root)
 
@@ -39,6 +54,7 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
                 fp = os.path.join(root, fn)
                 seg_tree = utils.load_file(fp)
                 drawing_id = fn.replace('.json', '')
+                # drawing_id = fn.replace('.json', '').split('_')[1]  # for progressio pair?
 
                 if instruction == 'toplevel_s2iprob':
                     text = seg_tree[0]['text']
@@ -46,7 +62,7 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
                 heapq.heappush(
                     # cat_to_pqueue[category],
                     pqueue,
-                    (seg_tree[0]['score'], drawing_id, text)
+                    (seg_tree[0]['score'], drawing_id, text, seg_tree)
                 )
                 # n += 1
                 # if n == 250:
@@ -64,7 +80,7 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
 
             # save best
             best_out = []
-            for score, id, text in best:
+            for score, id, text, seg_tree in best:
                 stroke3 = ndjson_to_stroke3(cat_drawings[id_to_idx[id]]['drawing'])
                 out = {
                     'score': score,
@@ -73,6 +89,12 @@ def create_retrieval_set(N=200, instruction='toplevel_s2iprob'):
                     'stroke3': stroke3
                 }
                 best_out.append(out)
+
+            # id = best_out[1]['id']
+            # save_img(category, id, cat_drawings, id_to_idx)
+            # pp(best[1][3])
+            # import pdb; pdb.set_trace()
+
             out_fp = RETRIEVAL_SET_PATH / instruction / 'data' / f'{category}.pkl'
             utils.save_file(best_out, out_fp)
 

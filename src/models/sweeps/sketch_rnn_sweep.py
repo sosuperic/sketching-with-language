@@ -6,6 +6,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname categories
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname reproduce
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname drawings
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname nolayernorm_2kper
 """
 
 import argparse
@@ -40,20 +41,19 @@ GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
         # '70000 --categories pig',
-        # '2000 --categories all',
+        '2000 --categories all',
         # '20000 --categories all',
-        '70000 --categories all',
+        # '70000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [True],
     'model_type': [
-        # 'decodergmm --notes dataaug',
-        'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        'decodergmm',
+        # 'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
-    'notes': ['nodataaug'],
-    'lr': [0.0001],
+    'lr': [0.0005],
 }
 
 GRID = {
@@ -107,8 +107,8 @@ if __name__ == "__main__":
     # print(base_cmd)
 
     # grid = GRID
-    grid = GRID_REPRODUCE
-    # grid = GRID_DRAW
+    # grid = GRID_REPRODUCE
+    grid = GRID_DRAW
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
