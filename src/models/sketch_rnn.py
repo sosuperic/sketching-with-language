@@ -59,7 +59,7 @@ class HParams():
         self.model_type = 'decodergmm'  # 'vae', 'decodergmm', 'decoderlstm'
         self.use_layer_norm = False
         self.rec_dropout = 0.1  # only with use_layer_norm=True
-        self.use_categories_dec = False
+        self.use_categories_dec = True
         self.categories_dim = 256
         self.enc_dim = 512  # 512
         self.dec_dim = 512  # 2048

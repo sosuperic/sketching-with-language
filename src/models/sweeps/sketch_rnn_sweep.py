@@ -7,6 +7,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname reproduce
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname drawings
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname nolayernorm_2kper
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_pig
 """
 
 import argparse
@@ -40,8 +41,8 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
 GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
-        # '70000 --categories pig',
-        '2000 --categories all',
+        '70000 --categories pig',
+        # '2000 --categories all',
         # '20000 --categories all',
         # '70000 --categories all',
     ],
@@ -50,10 +51,10 @@ GRID_DRAW = {
     'enc_num_layers': [1],
     'use_categories_dec': [True],
     'model_type': [
-        'decodergmm',
-        # 'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        # 'decodergmm',
+        'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
-    'lr': [0.0005],
+    'lr': [0.0001],
 }
 
 GRID = {
@@ -113,5 +114,4 @@ if __name__ == "__main__":
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
                     free_gpu_max_mem=0.67,
-                    gpus=[6,7],
                     email_groupname=args.email_groupname)

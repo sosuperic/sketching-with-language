@@ -142,6 +142,14 @@ def final_categories():
     categories = [c.strip() for c in categories]
     return categories
 
+def build_category_index_nodata():
+    categories = final_categories()
+    categories = sorted(categories)
+    idx2cat = {i: cat for i, cat in enumerate(categories)}
+    cat2idx = {cat: i for i, cat in idx2cat.items()}
+
+    return idx2cat, cat2idx
+
 def build_category_index(data):
     """
     Returns mappings from index to category and vice versa.
