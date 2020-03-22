@@ -44,20 +44,20 @@ GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
         # '70000 --categories pig',
-        '2000 --categories all',
-        '20000 --categories all',
-        # '70000 --categories all',
+        # '2000 --categories all',
+        # '20000 --categories all',
+        '70000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [True],
     'model_type': [
-        'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
-        # 'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        # 'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
+        'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
-    'lr': [0.0005, 0.0001],
-    'batch_size': [256],
+    'lr': [0.0001],
+    'batch_size': [64],
 }
 
 if __name__ == "__main__":

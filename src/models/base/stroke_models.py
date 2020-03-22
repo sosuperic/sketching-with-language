@@ -476,11 +476,23 @@ class StrokeEncoderTransformer(nn.Module):
 ##############################################################################
 
 class SketchRNNVAEEncoder(nn.Module):
-    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=0.0):
+    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=0.0, use_layer_norm=False, rec_dropout=0.0):
         super().__init__()
+        self.input_dim = input_dim
         self.enc_dim = enc_dim
+        self.enc_num_layers = enc_num_layers
+        self.z_dim = z_dim
+        self.dropout = dropout
+        self.use_layer_norm = use_layer_norm
+        self.rec_dropout = rec_dropout
 
-        self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
+        if use_layer_norm:
+            self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
+            self.bidirectional = False
+        else:
+            self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
+            self.bidirectional = True
+
         # Create mu and sigma by passing lstm's last output into fc layer (Eq. 2)
         self.fc_mu = nn.Linear(2 * enc_dim, z_dim)  # 2 for bidirectional
         self.fc_sigma = nn.Linear(2 * enc_dim, z_dim)
@@ -499,10 +511,10 @@ class SketchRNNVAEEncoder(nn.Module):
         bsz = strokes.size(1)
 
         # Initialize hidden state and cell state with zeros on first forward pass
-        num_directions = 2 if self.lstm.bidirectional else 1
+        num_directions = 2 if self.bidirectional else 1
         if hidden_cell is None:
-            hidden = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
-            cell = torch.zeros(self.lstm.num_layers * num_directions, bsz, self.enc_dim)
+            hidden = torch.zeros(self.enc_num_layers * num_directions, bsz, self.enc_dim)
+            cell = torch.zeros(self.enc_num_layers * num_directions, bsz, self.enc_dim)
             hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 

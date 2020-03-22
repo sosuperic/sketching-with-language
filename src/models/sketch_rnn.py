@@ -514,7 +514,8 @@ class SketchRNNVAEModel(SketchRNNModel):
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
         self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
-        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M, dropout=hp.dropout)
+        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M, dropout=hp.dropout,
+            use_layer_norm=self.hp.use_layer_norm, rec_dropout=self.hp.rec_dropout)
         self.models.extend([self.enc, self.fc_z_to_hc, self.dec])
         if USE_CUDA:
             for model in self.models:
