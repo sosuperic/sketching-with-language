@@ -44,12 +44,12 @@ class HParams():
         # Data
         self.dataset = 'ndjson'  # 'progressionpair' or 'ndjson'
         self.max_len = 200
-        self.max_per_category = 2500
+        self.max_per_category = 2000
         self.categories = 'all'  # used with dataset='ndjson', comma separated categories or 'all'
 
         # Training
         self.batch_size = 64  # 100
-        self.lr = 0.001  # 0.0001 when enc_dim=512, dec_dim=2048
+        self.lr = 0.0001  # 0.0001 when enc_dim=512, dec_dim=2048
         self.lr_decay = 0.9999
         self.min_lr = 0.00001  #
         self.grad_clip = 1.0
@@ -57,12 +57,12 @@ class HParams():
 
         # Model
         self.model_type = 'decodergmm'  # 'vae', 'decodergmm', 'decoderlstm'
-        self.use_layer_norm = False
+        self.use_layer_norm = True
         self.rec_dropout = 0.1  # only with use_layer_norm=True
         self.use_categories_dec = True
         self.categories_dim = 256
         self.enc_dim = 512  # 512
-        self.dec_dim = 512  # 2048
+        self.dec_dim = 2048  # 2048
         self.enc_num_layers = 1  # 2
         self.z_dim = 128  # dimension of z for VAE
         self.M = 20  # number of mixtures
@@ -624,7 +624,9 @@ if __name__ == "__main__":
         model = SketchRNNDecoderGMMOnlyModel(hp, save_dir, skip_data=opt.inference)
     elif hp.model_type == 'decoderlstm':
         model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir, skip_data=opt.inference)
+    # print("Let's use", torch.cuda.device_count(), "GPUs!")
     model = nn_utils.AccessibleDataParallel(model)
+    # model.cuda()
 
     if opt.inference:
         model.load_model(opt.load_model_path)

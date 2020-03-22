@@ -8,6 +8,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname drawings
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname nolayernorm_2kper
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_pig
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_all70k
 """
 
 import argparse
@@ -41,10 +42,10 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
 GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
-        '70000 --categories pig',
+        # '70000 --categories pig',
         # '2000 --categories all',
         # '20000 --categories all',
-        # '70000 --categories all',
+        '70000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
@@ -55,42 +56,7 @@ GRID_DRAW = {
         'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
     'lr': [0.0001],
-}
-
-GRID = {
-    # Data
-    'dataset': [
-        'ndjson'
-    ],
-    'max_per_category': [
-        # 250,
-        2500,
-        # 25000,
-    ],
-    # 'categories': [
-    #     'all',
-    # ],
-    # Training
-    'lr': [
-        0.0005,
-        0.0001
-    ],
-    # Model
-    'model_type': ['decodergmm'],
-    'enc_dim': [
-        '256 --dec_dim 256',
-        '512 --dec_dim 512',
-        # '1024 --dec_dim 1024',
-        # '2048 --dec_dim 2048'
-    ],
-    'use_categories_dec': [
-        'true',
-        # 'false',
-    ],
-    'categories_dim': [
-        128,
-        256,
-    ],
+    'batch_size': [256],
 }
 
 if __name__ == "__main__":
@@ -113,5 +79,5 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    free_gpu_max_mem=0.67,
+                    free_gpu_max_mem=0.5,
                     email_groupname=args.email_groupname)
