@@ -112,7 +112,7 @@ class SketchRNNWithPlans(SketchRNNModel):
                                                          prob_threshold=self.hp.prob_threshold)
             loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
-        elif self.hp.instruction_set == 'stack':
+        elif self.hp.instruction_set in ['stack', 'stack_leaves']:
             ds = SketchWithPlansConditionSegmentsDataset(dataset=hp.dataset,
                                                          max_len=max_len,
                                                          max_per_category=hp.max_per_category,
@@ -163,7 +163,7 @@ class SketchRNNWithPlans(SketchRNNModel):
         #
         # Encode instructions, decode
         #
-        if self.hp.instruction_set == 'stack':
+        if self.hp.instruction_set in ['stack', 'stack_leaves']:
             # text_indices: [max_seq_len, bsz, max_instruction_len], # text_lens: [max_seq_len, bsz]
 
             # decoder's hidden states are "matched" with language representations

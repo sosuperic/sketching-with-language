@@ -854,7 +854,7 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
                  max_len=200,
                  max_per_category=250,
                  dataset_split='train',
-                 instruction_set='stack',
+                 instruction_set='stack',  # 'stack' or 'stack_leaves'
                  prob_threshold=0.0,
                  ):
         super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
@@ -948,12 +948,12 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
             # corresponding part in drawing.
             stroke = strokes[i]
             pen_up = np.where(stroke[:,3] == 1)[0].tolist()  # use this to
-            pen_up = [0] + pen_up
+            pen_up = ([0] + pen_up) if (pen_up[0] != 0) else pen_up  # first element could already be 0
 
             # keep track of which segment we're currently in. There are as many
             # stacks as there are segments.
             cur_seg_idx = 0
-            for j in range(len(stroke)):
+            for j in range(len(stroke) -1 ):  # -1 because last point is just the final [0,0,0,0,1]
                 cur_seg_end = pen_up[cur_seg_idx + 1]
                 if (j > cur_seg_end):
                     cur_seg_idx += 1
@@ -991,7 +991,11 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
         for i, subplan in enumerate(plan):
             # add this subplan to all relevant stacks
             for left in range(subplan['left'], subplan['right']):
-                stacks[(left, left+1)].append(subplan['text'])
+                if self.instruction_set == 'stack_leaves':  # only add if
+                    if (subplan['right'] - subplan['left']) == 1:  # leaf
+                       stacks[(left, left+1)].append(subplan['text'])
+                else:
+                    stacks[(left, left+1)].append(subplan['text'])
 
         return stacks
 
