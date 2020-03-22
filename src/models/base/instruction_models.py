@@ -29,7 +29,8 @@ from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_IDX2CAT_PATH, \
     LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH, \
     BEST_SEG_NDJSON_PATH, BEST_SEG_PROGRESSION_PAIRS_PATH, \
-    PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH
+    PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, \
+    VAEZ_PATH
 from src import utils
 from src.data_manager.quickdraw import build_category_index, \
     normalize_strokes, stroke3_to_stroke5
@@ -794,6 +795,72 @@ class SketchWithPlansDataset(Dataset):
 
     def __len__(self):
         return len(self.ds.data)
+
+class InstructionToVAEzDataset(SketchWithPlansDataset):
+    def __init__(self,
+                 dataset='ndjson',
+                 max_len=200,
+                 max_per_category=250,
+                 dataset_split='train',
+                 instruction_set='toplevel',
+                 prob_threshold=0.0,
+                 ):
+        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
+                         dataset_split=dataset_split, instruction_set=instruction_set,
+                         prob_threshold=prob_threshold)
+
+    def __getitem__(self, idx):
+        stroke5, stroke_len, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
+
+        # Get instruction comprised of leaf instructions
+        text = ''
+        text_indices = []
+        for subplan in plan[1:]:
+            if (subplan['right'] - subplan['left']) == 1:  # leaf
+                # TODO: ideally we should have a different separator token...
+                text += ' SOS ' + subplan['text']
+                text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+        text = text.lstrip()  # get rid of leading space
+
+        # Get the z for this drawing
+        drawing_id = self.ds.data[idx]['id']
+        fp = VAEz_path / cat / f'{drawing_id}.pkl'
+        vae_z = utils.load_file(fp)
+
+        return text, text_indices, cat, cat_idx, vae_z
+
+    @staticmethod
+    def collate_fn(batch):
+        """
+        Method to passed into a DataLoader that defines how to combine samples in a batch
+
+        Note: I wrote my own collate_fn in order to handle variable lengths. The StrokeDataset
+        uses the default collate_fn because each drawing is padded to some maximum length (this is
+        how Magenta did it as well).
+
+
+        Args:
+            batch: list of samples, one sample is returned from __getitem__(idx)
+        """
+        texts, texts_indices, cats, cats_idx, vae_zs = zip(*batch)
+        bsz = len(batch)
+
+        # Create array of text indices, zeros for padding
+        text_lens = [len(t) for t in texts_indices]
+        max_text_len = max(text_lens)
+        batch_text_indices = np.zeros((bsz, max_text_len))
+        for i, text_indices in enumerate(texts_indices):
+            l = len(text_indices)
+            batch_text_indices[i,:l] = text_indices
+
+
+        # Convert to Tensors
+        batch_text_indices = torch.LongTensor(batch_text_indices)
+        cats_idx = torch.LongTensor(cats_idx)
+        vae_zs = torch.FloatTensor(np.stack(vae_zs))  # [bsz, z_dim]
+
+        return texts, text_lens, batch_text_indices, cats, cats_idx, vae_zs
+
 
 class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
     """
