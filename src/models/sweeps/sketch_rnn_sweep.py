@@ -9,6 +9,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname nolayernorm_2kper
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_pig
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_all70k
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname gmmln_allvaryk
 """
 
 import argparse
@@ -43,19 +44,19 @@ GRID_DRAW = {
     'dataset': ['ndjson'],
     'max_per_category': [
         # '70000 --categories pig',
-        # '2000 --categories all',
-        # '20000 --categories all',
-        '70000 --categories all',
+        '2000 --categories all',
+        '20000 --categories all',
+        # '70000 --categories all',
     ],
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
     'use_categories_dec': [True],
     'model_type': [
-        # 'decodergmm',
-        'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
+        # 'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
     ],
-    'lr': [0.0001],
+    'lr': [0.0005, 0.0001],
     'batch_size': [256],
 }
 
@@ -66,14 +67,8 @@ if __name__ == "__main__":
                         help='Sent in email when sweep is completed.')
     args = parser.parse_args()
 
-    groupname = args.groupname
-    if groupname is None:
-        # Assumes one dataset and one max_per_category at a time right now
-        groupname = f"{GRID['dataset'][0]}_{GRID['max_per_category'][0]}per"
-    base_cmd = CMD + f' --groupname {groupname}'
-    # print(base_cmd)
+    base_cmd = CMD + f' --groupname {args.groupname}'
 
-    # grid = GRID
     # grid = GRID_REPRODUCE
     grid = GRID_DRAW
 

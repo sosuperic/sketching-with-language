@@ -37,11 +37,12 @@ class HParams():
         self.lr = 0.0001
 
         # Model
-        self.categories_dim = 256
+        self.enc_dim = 512
         self.enc_num_layers = 1
         self.dropout = 0.1
 
         # Keep this fixed
+        self.categories_dim = 256
         self.enc_dim = 128  # has to be same as z_dim
 
 class InstructionToVAEzModel(TrainNN):
