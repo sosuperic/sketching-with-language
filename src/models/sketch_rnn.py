@@ -594,12 +594,46 @@ class SketchRNNVAEModel(SketchRNNModel):
         LKL = wKL * eta_step * torch.max(LKL, KL_min)
         return LKL
 
+    def save_vaez_inference_time(self, model_dir):
+        """
+        Loop over all ndjson data and save the encoded z's for each.
+
+        Args:
+            model_dir (str): directory of the trained model we are using
+        """
+        torch.backends.cudnn.benchmark = True # Optimizes cudnn
+        with torch.no_grad():
+            for split in ['train', 'valid', 'test']:
+                bsz = 128
+                loader = self.get_data_loader(split, bsz, self.hp.categories, self.hp.max_len, self.hp.max_per_category, False)
+
+                for bidx, batch in enumerate(loader):
+                    # encode drawing and get z
+                    batch = self.preprocess_batch_from_data_loader(batch)
+                    max_len, cur_bsz, _ = strokes.size()
+                    strokes, stroke_lens, cats, cats_idx = batch
+                    z, _, _ = self.enc(strokes)  # z: [bsz, 128]
+
+                    for i in range(cur_bsz):
+                        # get index of this drawing within the dataset (loader has shuffle=False so we can do this)
+                        idx = bidx * bsz + i
+                        drawing_id = loader.dataset.full_data[idx]['id']
+
+                        # save numpy version of z
+                        out_dir = os.path.join(model_dir, 'inference_vaez', cats[i])
+                        os.makedirs(out_dir, exist_ok=True)
+                        out_fp = os.path.join(out_dir, f'{drawing_id}.pkl')
+
+                        z_np = z.cpu().numpy()
+                        utils.save_file(z, out_fp)
+
 
 if __name__ == "__main__":
     hp = HParams()
     hp, run_name, parser = experiments.create_argparse_and_update_hp(hp)
     parser.add_argument('--groupname', default='debug', help='name of subdir to save runs')
     parser.add_argument('--inference', action='store_true')
+    parser.add_argument('--inference_vaez', action='store_true')
     parser.add_argument('--load_model_path', help='path to directory containing model to load for inference')
     opt = parser.parse_args()
     nn_utils.setup_seeds()
@@ -632,5 +666,8 @@ if __name__ == "__main__":
         model.load_model(opt.load_model_path)
         setattr(model.hp, 'temperature', temp)  # this may vary at inference time
         model.save_imgs_inference_time(opt.load_model_path)
+    elif opt.inference_vaez:
+        model.load_model(opt.load_model_path)
+        model.save_vaez_inference_time(opt.load_model_path)
     else:
         model.train_loop()
