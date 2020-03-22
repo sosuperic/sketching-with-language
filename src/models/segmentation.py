@@ -171,7 +171,7 @@ class SegmentationModel(object):
                     continue
                 print(f'{split}: {category}')
                 # ds = NdjsonStrokeDataset(category, split)
-                ds = NdjsonStrokeDataset(category, split, max_per_category=3000)
+                ds = NdjsonStrokeDataset(category, split, max_per_category=self.hp.max_per_category)
                 loader = DataLoader(ds, batch_size=1, shuffle=False)
                 n_segd = 0
                 for i, sample in enumerate(loader):
@@ -590,9 +590,12 @@ if __name__ == '__main__':
     if opt.groupname is not None:
         save_dir = save_dir / opt.groupname
 
+    from pathlib import Path
+    save_dir = Path('/media/lipicaner/echu/hierarchical_learning/data/quickdraw/segmentations/greedy_parsing/ndjson/Feb20_2020/strokes_to_instruction/strokebasedS2I')
+
     # TODO: we should probably 1) set decoding hparams (e.g. greedy, etc.), 2) save the hp
     # utils.save_file(vars(hp), save_dir / 'hp.json')
-    experiments.save_run_data(save_dir, hp,  ask_if_exists=False)
+    # experiments.save_run_data(save_dir, hp,  ask_if_exists=False)
     # ask_if_exists=False because sweep calls it with different categories, but all saved to same directory
 
     # Init model and segment

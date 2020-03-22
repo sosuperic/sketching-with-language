@@ -729,6 +729,7 @@ class SketchWithPlansDataset(Dataset):
             instruction_set (str):
                 'toplevel': only use instruction generated for entire drawing
                 'toplevel_leaves': use toplevel and all leaf instructions
+                'leaves': use only leaves
             prob_threshold (float): used to prune instruction trees
         """
         # TODO: pass in categories
@@ -828,6 +829,16 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                     # TODO: ideally we should have a different separator token...
                     text += ' SOS ' + subplan['text']
                     text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+
+        elif self.instruction_set == 'leaves':
+            text = ''
+            text_indices = []
+            for subplan in plan[1:]:
+                if (subplan['right'] - subplan['left']) == 1:  # leaf
+                    # TODO: ideally we should have a different separator token...
+                    text += ' SOS ' + subplan['text']
+                    text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+            text = text.lstrip()  # get rid of leading space
 
         return (stroke5, stroke_len, text, text_indices, cat, cat_idx, url)
 

@@ -26,7 +26,7 @@ GRID = {
     # Ndjson data
     'categories': final_categories(),
     'max_per_category': [
-        2750,
+        70000,
     ],
 }
 
@@ -43,4 +43,5 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, GRID, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    gpus=[4,5,6,7],
                     email_groupname=args.email_groupname)

@@ -5,6 +5,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --instruction_set toplevel
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --groupname stack_segs --instruction_set stack
     PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --groupname decode
+    PYTHONPATH=. python src/models/sweeps/sketch_with_plans_sweep.py --groupname leaves
 """
 
 
@@ -35,8 +36,7 @@ BASE_GRID = {
         # 20000,
     ],
     'instruction_set':  [
-        'toplevel --batch_size 8',
-        'toplevel_leaves --batch_size 8',
+        'leaves --batch_size 8',
     ],
 }
 

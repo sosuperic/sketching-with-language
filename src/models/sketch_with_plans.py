@@ -43,7 +43,7 @@ class HParams(SketchRNNHParams):
         self.prob_threshold = 0.0  # prune trees
 
         # Model
-        self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'stack'
+        self.instruction_set = 'toplevel'  # 'toplevel_leaves',  'leaves', 'stack'
         self.dec_dim = 2048
         self.lr = 0.0001
 
@@ -103,7 +103,7 @@ class SketchRNNWithPlans(SketchRNNModel):
             categories (str
             shuffle (bool)
         """
-        if self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
+        if self.hp.instruction_set in ['toplevel', 'toplevel_leaves', 'leaves']:
             ds = SketchWithPlansConditionEntireDrawingDataset(dataset=hp.dataset,
                                                               max_len=max_len,
                                                               max_per_category=hp.max_per_category,
@@ -227,7 +227,7 @@ class SketchRNNWithPlans(SketchRNNModel):
 
             # TODO: check if text_indices is correct
 
-        elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves']:
+        elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves', 'leaves']:
             outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
             outputs = outputs.mean(dim=0)  # [bsz, dec_dim]
 
