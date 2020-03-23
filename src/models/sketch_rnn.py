@@ -156,7 +156,7 @@ class SketchRNNModel(TrainNN):
         self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
-        if self.hp.model_type == 'decodergmm':
+        if self.hp.model_type in ['vae', 'decodergmm']:
             self.generate_and_save(data_loader, epoch, 25, outputs_path=outputs_path)
 
     ##############################################################################
@@ -195,14 +195,19 @@ class SketchRNNModel(TrainNN):
             seq_y = []  # delta-y
             seq_pen = []  # pen-down
             for _ in range(max_len):
-                if self.hp.model_type == 'vae':  # input is last state, z, and hidden_cell
-                    input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
+                if self.hp.model_type in ['vae', 'decodergmm']:
+                    if self.hp.model_type == 'vae':  # input is last state, z, and hidden_cell
+                        input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
 
-                elif self.hp.model_type == 'decodergmm':  # input is last state and hidden_cell
-                    input = s   # [1, bsz (1), 5]
-                    if self.hp.use_categories_dec:
+                    elif self.hp.model_type == 'decodergmm':  # input is last state and hidden_cell
+                        input = s   # [1, bsz (1), 5]
+
+                    if self.hp.use_categories_dec \
+                        and hasattr(self, 'category_embedding'):
+                        # hack because VAE was trained with use_categories_dec=True but didn't actually have a category embedding
                         cat_embs = self.category_embedding(cats_idx)  # [bsz (1), cat_dim]
-                        input = torch.cat([input, cat_embs.unsqueeze(0)], dim=2)  # [1, 1, cat_dim + 5]
+                        input = torch.cat([input, cat_embs.unsqueeze(0)], dim=2)  # [1, 1, dim]
+                        # dim = 5 + cat_dim if decodergmm, 5 + z_dim + cat_dim if vae
                     outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
                         self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
                     hidden_cell = (hidden, cell)  # for next timie step
@@ -512,10 +517,20 @@ class SketchRNNVAEModel(SketchRNNModel):
         super().__init__(hp, save_dir, skip_data=skip_data)
 
         # Model
-        self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim, dropout=hp.dropout)
+        self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim,dropout=hp.dropout,
+            use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout)
         self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
-        self.dec = SketchRNNDecoderGMM(hp.z_dim + 5, hp.dec_dim, hp.M, dropout=hp.dropout,
+
+        # Model
+        inp_dim = 5 + hp.z_dim
+        self.category_embedding = None
+        if hp.use_categories_dec:
+            self.category_embedding = nn.Embedding(35, self.hp.categories_dim)
+            self.models.append(self.category_embedding)
+            inp_dim += hp.categories_dim
+        self.dec = SketchRNNDecoderGMM(inp_dim, hp.dec_dim, hp.M, dropout=hp.dropout,
             use_layer_norm=self.hp.use_layer_norm, rec_dropout=self.hp.rec_dropout)
+
         self.models.extend([self.enc, self.fc_z_to_hc, self.dec])
         if USE_CUDA:
             for model in self.models:
@@ -545,7 +560,12 @@ class SketchRNNVAEModel(SketchRNNModel):
         sos = nn_utils.move_to_cuda(sos)
         inputs_init = torch.cat([sos, strokes], 0)  # add sos at the begining of the strokes; [max_len + 1, bsz, 5]
         z_stack = torch.stack([z] * (max_len + 1), dim=0)  # expand z to concat with inputs; [max_len + 1, bsz, z_dim]
-        dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, z_dim + 5]
+        dec_inputs = torch.cat([inputs_init, z_stack], 2)  # each input is stroke + z; [max_len + 1, bsz, 5 + z_dim]
+
+        if self.hp.use_categories_dec:
+            cat_embs = self.category_embedding(cats_idx)  # [bsz, cat_dim]
+            cat_embs = cat_embs.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, cat_dim]
+            dec_inputs = torch.cat([dec_inputs, cat_embs], dim=2)  # [max_len+1, bsz, 5 + z_dim + cat_dim]
 
         # init hidden and cell states is tanh(fc(z)) (Page 3)
         hidden, cell = torch.split(torch.tanh(self.fc_z_to_hc(z)), self.hp.dec_dim, 1)
@@ -554,7 +574,7 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         # Decode
         _, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True,
-                                                                     hidden_cell=hidden_cell)
+                                                                        hidden_cell=hidden_cell)
 
         # Calculate losses
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)

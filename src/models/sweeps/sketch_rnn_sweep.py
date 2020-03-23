@@ -51,12 +51,12 @@ GRID_DRAW = {
     'enc_dim': [512],
     'dec_dim': [2048],
     'enc_num_layers': [1],
-    'use_categories_dec': [True],
     'model_type': [
-        # 'decodergmm --use_layer_norm true --dropout 0.1 --rec_dropout 0.1',
-        'vae --use_layer_norm true --dropout 0.1 --rec_dropout 0.1'
+        # 'decodergmm --use_layer_norm true --use_categories_dec true',
+        'vae --use_layer_norm true --use_categories_dec false'
     ],
-    'lr': [0.0001],
+    'notes': ['enchasln'],
+    'lr': [0.0005, 0.0001],
     'batch_size': [64],
 }
 

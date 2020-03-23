@@ -24,7 +24,6 @@ from src.data_manager.quickdraw import normalize_strokes, stroke3_to_stroke5, bu
 from src.models.core.transformer_utils import *
 from src.models.core import nn_utils
 # from src.models.core.custom_lstms import script_lnlstm, LSTMState
-from src.models.core.layernormlstm import LayerNormLSTM
 import src.models.core.resnet_with_cbam as resnet_with_cbam
 
 ##############################################################################
@@ -476,11 +475,11 @@ class StrokeEncoderTransformer(nn.Module):
 ##############################################################################
 
 class SketchRNNVAEEncoder(nn.Module):
-    def __init__(self, input_dim, enc_dim, enc_num_layers, z_dim, dropout=0.0, use_layer_norm=False, rec_dropout=0.0):
+    def __init__(self, input_dim, enc_dim, num_layers, z_dim, dropout=0.0, use_layer_norm=False, rec_dropout=0.0):
         super().__init__()
         self.input_dim = input_dim
         self.enc_dim = enc_dim
-        self.enc_num_layers = enc_num_layers
+        self.num_layers = num_layers
         self.z_dim = z_dim
         self.dropout = dropout
         self.use_layer_norm = use_layer_norm
@@ -490,12 +489,13 @@ class SketchRNNVAEEncoder(nn.Module):
             self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
             self.bidirectional = False
         else:
-            self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=enc_num_layers, dropout=dropout, bidirectional=True)
+            self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=num_layers, dropout=dropout, bidirectional=True)
             self.bidirectional = True
 
         # Create mu and sigma by passing lstm's last output into fc layer (Eq. 2)
-        self.fc_mu = nn.Linear(2 * enc_dim, z_dim)  # 2 for bidirectional
-        self.fc_sigma = nn.Linear(2 * enc_dim, z_dim)
+        fc_inp_dim = 2 * enc_dim if self.bidirectional else enc_dim
+        self.fc_mu = nn.Linear(fc_inp_dim, z_dim)
+        self.fc_sigma = nn.Linear(fc_inp_dim, z_dim)
 
     def forward(self, strokes, hidden_cell=None):
         """
@@ -513,8 +513,8 @@ class SketchRNNVAEEncoder(nn.Module):
         # Initialize hidden state and cell state with zeros on first forward pass
         num_directions = 2 if self.bidirectional else 1
         if hidden_cell is None:
-            hidden = torch.zeros(self.enc_num_layers * num_directions, bsz, self.enc_dim)
-            cell = torch.zeros(self.enc_num_layers * num_directions, bsz, self.enc_dim)
+            hidden = torch.zeros(self.num_layers * num_directions, bsz, self.enc_dim)
+            cell = torch.zeros(self.num_layers * num_directions, bsz, self.enc_dim)
             hidden, cell = nn_utils.move_to_cuda(hidden), nn_utils.move_to_cuda(cell)
             hidden_cell = (hidden, cell)
 
@@ -522,7 +522,7 @@ class SketchRNNVAEEncoder(nn.Module):
         # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
         _, (hidden, cell) = self.lstm(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
         # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
-        last_hidden = hidden.view(self.lstm.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
+        last_hidden = hidden.view(self.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
         # [num_directions, bsz, hsz]
         last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
 
@@ -569,7 +569,6 @@ class SketchRNNDecoderGMM(nn.Module):
 
         if use_layer_norm:
             self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=dec_dim, zoneout=dropout, dropout=rec_dropout)
-            # self.lstm = LayerNormLSTM(input_dim, dec_dim, num_layers=self.num_layers, rec_dropout=rec_dropout)
         else:
             self.lstm = nn.LSTM(input_dim, dec_dim, num_layers=self.num_layers, dropout=dropout)
         # x_i = [S_{i-1}, z], [h_i; c_i] = forward(x_i, [h_{i-1}; c_{i-1}])     # Eq. 4
