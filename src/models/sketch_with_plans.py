@@ -47,6 +47,10 @@ class HParams(SketchRNNHParams):
         self.dec_dim = 2048
         self.lr = 0.0001
 
+        self.use_layer_norm = False
+        self.dropout = 0.1
+        self.rec_dropout = 0.1
+
         # do not change these
         self.use_categories_dec = True
         self.cond_instructions = 'match'  # 'match'
@@ -73,8 +77,8 @@ class SketchRNNWithPlans(SketchRNNModel):
             self.category_embedding = nn.Embedding(35, 	hp.categories_dim)
             self.models.append(self.category_embedding)
         dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
-        self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M)  # Method 1 (see one_forward_pass, i.e. decinputs)
-
+        self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M,
+            dropout=hp.dropout, use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout)
         self.models.extend([self.text_embedding,  self.dec])
 
         # For shaping representation loss, want to decode into instructions
