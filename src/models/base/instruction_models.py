@@ -1109,11 +1109,11 @@ class InstructionEncoderTransformer(nn.Module):
 
         text_embs = text_embedding(text_indices)  # [len, bsz, dim]
 
-        # if self.use_categories:
-        #     cats_emb =  category_embedding(categories)  # [bsz, dim]
-        #     cats_emb = self.dropout_mod(cats_emb)
-        #     instructions = torch.cat([instructions, cats_emb.repeat(instructions.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
-        #     instructions = self.instruction_cat_fc(instructions)  # [len, bsz, hidden]
+        if self.use_categories:
+            cats_emb =  category_embedding(categories)  # [bsz, dim]
+            cats_emb = self.dropout_mod(cats_emb)
+            instructions = torch.cat([instructions, cats_emb.repeat(instructions.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
+            instructions = self.instruction_cat_fc(instructions)  # [len, bsz, hidden]
 
         instructions_pad_mask, _, _ = transformer_utils.create_transformer_padding_masks(src_lens=text_lens)
         memory = self.enc(text_embs, src_key_padding_mask=instructions_pad_mask)  # [len, bsz, dim]
