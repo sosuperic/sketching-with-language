@@ -518,8 +518,7 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim,dropout=hp.dropout,
-            use_layer_norm=self.hp.use_layer_norm, rec_dropout=hp.rec_dropout)
-            # use_layer_norm=False, rec_dropout=hp.rec_dropout)
+                                       use_layer_norm=False)
         self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
 
         # Model
