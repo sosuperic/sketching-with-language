@@ -518,7 +518,8 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         # Model
         self.enc = SketchRNNVAEEncoder(5, hp.enc_dim, hp.enc_num_layers, hp.z_dim,dropout=hp.dropout,
-            use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout)
+            use_layer_norm=self.hp.use_layer_norm, rec_dropout=hp.rec_dropout)
+            # use_layer_norm=False, rec_dropout=hp.rec_dropout)
         self.fc_z_to_hc = nn.Linear(hp.z_dim, 2 * hp.dec_dim)  # 2: 1 for hidden, 1 for cell
 
         # Model
@@ -623,6 +624,7 @@ class SketchRNNVAEModel(SketchRNNModel):
             model_dir (str): directory of the trained model we are using
         """
         torch.backends.cudnn.benchmark = True # Optimizes cudnn
+        print('Saving to: ', os.path.join(model_dir, 'inference_vaez'))
         with torch.no_grad():
             for split in ['train', 'valid', 'test']:
                 bsz = 128
@@ -631,14 +633,14 @@ class SketchRNNVAEModel(SketchRNNModel):
                 for bidx, batch in enumerate(loader):
                     # encode drawing and get z
                     batch = self.preprocess_batch_from_data_loader(batch)
-                    max_len, cur_bsz, _ = strokes.size()
                     strokes, stroke_lens, cats, cats_idx = batch
+                    max_len, cur_bsz, _ = strokes.size()
                     z, _, _ = self.enc(strokes)  # z: [bsz, 128]
 
                     for i in range(cur_bsz):
                         # get index of this drawing within the dataset (loader has shuffle=False so we can do this)
                         idx = bidx * bsz + i
-                        drawing_id = loader.dataset.full_data[idx]['id']
+                        drawing_id = loader.dataset.data[idx]['id']
 
                         # save numpy version of z
                         out_dir = os.path.join(model_dir, 'inference_vaez', cats[i])
@@ -662,8 +664,9 @@ if __name__ == "__main__":
     save_dir = os.path.join(RUNS_PATH, 'sketchrnn', datetime.today().strftime('%b%d_%Y'), opt.groupname, run_name)
 
     # If inference, load hparams
-    if opt.inference:
+    if opt.inference or opt.inference_vaez:
         temp = hp.temperature  # store this because we will vary at inference
+        max_per_category = hp.max_per_category
         orig_hp = utils.load_file(os.path.join(opt.load_model_path, 'hp.json'))  # dict
         for k, v in orig_hp.items():
             if k != 'temperature':
@@ -673,22 +676,28 @@ if __name__ == "__main__":
 
 
     model = None
+    skip_data = opt.inference or opt.inference_vaez
     if hp.model_type == 'vae':
-        model = SketchRNNVAEModel(hp, save_dir, skip_data=opt.inference)
+        model = SketchRNNVAEModel(hp, save_dir, skip_data=skip_data)
     elif hp.model_type == 'decodergmm':
-        model = SketchRNNDecoderGMMOnlyModel(hp, save_dir, skip_data=opt.inference)
+        model = SketchRNNDecoderGMMOnlyModel(hp, save_dir, skip_data=skip_data)
     elif hp.model_type == 'decoderlstm':
-        model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir, skip_data=opt.inference)
+        model = SketchRNNDecoderLSTMOnlyModel(hp, save_dir, skip_data=skip_data)
     # print("Let's use", torch.cuda.device_count(), "GPUs!")
     model = nn_utils.AccessibleDataParallel(model)
     # model.cuda()
 
     if opt.inference:
+        print('Loading model')
         model.load_model(opt.load_model_path)
+        print('Model loaded')
         setattr(model.hp, 'temperature', temp)  # this may vary at inference time
         model.save_imgs_inference_time(opt.load_model_path)
     elif opt.inference_vaez:
+        print('Loading model')
         model.load_model(opt.load_model_path)
+        print('Model loaded')
+        setattr(model.hp, 'max_per_category', max_per_category)  # this may vary at inference time
         model.save_vaez_inference_time(opt.load_model_path)
     else:
         model.train_loop()
