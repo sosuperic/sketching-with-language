@@ -153,7 +153,7 @@ class SketchRNNModel(TrainNN):
     #
     def pre_forward_train_hook(self):
         # update eta for LKL
-        self.eta_step = 1 - (1 - self.hp.eta_min) * self.hp.R
+        self.eta_step = 1 - (1 - self.eta_step) * self.hp.R
 
     def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
         if self.hp.model_type in ['vae', 'decodergmm']:
@@ -578,13 +578,16 @@ class SketchRNNVAEModel(SketchRNNModel):
 
         # Calculate losses
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
-        loss_KL = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
+        loss_KL_final, loss_KL_thresh, loss_KL  = self.kullback_leibler_loss(sigma_hat, mu, self.hp.KL_min, self.hp.wKL, self.eta_step)
         loss_R = self.dec.reconstruction_loss(mask,
                                               dx, dy, p,
                                               pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
                                               q)
-        loss = loss_KL + loss_R
-        result = {'loss': loss, 'loss_KL': loss_KL, 'loss_R': loss_R}
+        loss = loss_KL_final + loss_R
+        result = {'loss': loss, 'loss_R': loss_R,
+                  'loss_KL_final': loss_KL_final, 'loss_KL_thresh': loss_KL_thresh, 'loss_KL': loss_KL,
+                  'loss_KL_eta': torch.Tensor([self.eta_step]) # "loss" for logging purposes; convert to Tensor because .item() is called on each value
+                  }
 
         return result
 
@@ -612,8 +615,9 @@ class SketchRNNVAEModel(SketchRNNModel):
         KL_min = nn_utils.move_to_cuda(KL_min)
         KL_min = KL_min.detach()
 
-        LKL = wKL * eta_step * torch.max(LKL, KL_min)
-        return LKL
+        LKL_thresh = torch.max(LKL, KL_min)
+        LKL_final = wKL * eta_step * LKL_thresh
+        return LKL_final, LKL_thresh, LKL
 
     def save_vaez_inference_time(self, model_dir):
         """
