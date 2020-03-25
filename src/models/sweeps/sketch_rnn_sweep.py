@@ -10,6 +10,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_pig
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_all70k
     PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname gmmln_allvaryk
+    PYTHONPATH=. python src/models/sweeps/sketch_rnn_sweep.py --groupname vae_onecat
 """
 
 import argparse
@@ -41,7 +42,10 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
 }
 
 GRID_DRAW = {
-    'dataset': ['ndjson', 'npz'],
+    'dataset': [
+        'ndjson',
+        'npz',
+    ],
     'max_per_category': [
         '70000 --categories pig',
         # '2000 --categories all',
@@ -55,9 +59,9 @@ GRID_DRAW = {
         # 'decodergmm --use_layer_norm true --use_categories_dec true',
         'vae --use_layer_norm true --use_categories_dec false'
     ],
-    'notes': ['KLfix'],
+    'notes': ['encln_KLfix'],
     'lr': [0.0001],
-    'batch_size': [100],
+    'batch_size': [64],
 }
 
 if __name__ == "__main__":

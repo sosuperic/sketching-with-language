@@ -486,7 +486,9 @@ class SketchRNNVAEEncoder(nn.Module):
         self.rec_dropout = rec_dropout
 
         if use_layer_norm:
-            self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
+            self.lstm_f = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
+            self.lstm_b = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
+            # self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=enc_dim, zoneout=dropout, dropout=rec_dropout)
             self.bidirectional = False
         else:
             self.lstm = nn.LSTM(input_dim, enc_dim, num_layers=num_layers, dropout=dropout, bidirectional=True)
@@ -520,11 +522,26 @@ class SketchRNNVAEEncoder(nn.Module):
 
         # Pass inputs, hidden, and cell into encoder's lstm
         # http://pytorch.org/docs/master/nn.html#torch.nn.LSTM
-        _, (hidden, cell) = self.lstm(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
-        # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
-        last_hidden = hidden.view(self.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
-        # [num_directions, bsz, hsz]
-        last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+
+        if self.use_layer_norm:
+
+            _, (hidden_f, cell_f) = self.lstm_f(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
+            last_hidden_f = hidden_f.view(self.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]  # [num_directions, bsz, hsz]
+            last_hidden_f = last_hidden_f.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+
+            strokes_b = torch.flip(strokes, [0])
+            _, (hidden_b, cell_b) = self.lstm_b(strokes_b, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
+            last_hidden_b = hidden_b.view(self.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]  # [num_directions, bsz, hsz]
+            last_hidden_b = last_hidden_b.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+
+            last_hidden = torch.stack([last_hidden_f, last_hidden_b]).mean(dim=0)
+
+        else:
+            _, (hidden, cell) = self.lstm(strokes, hidden_cell)  # h and c: [n_layers * n_directions, bsz, enc_dim]
+            # TODO: seems throw a CUDNN error without the float... but shouldn't it be float already?
+            last_hidden = hidden.view(self.num_layers, num_directions, bsz, self.enc_dim)[-1, :, :, :]
+            # [num_directions, bsz, hsz]
+            last_hidden = last_hidden.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
 
         # Get mu and sigma from hidden
         mu = self.fc_mu(last_hidden)  # [bsz, z_dim]
