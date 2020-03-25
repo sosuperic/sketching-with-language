@@ -44,10 +44,20 @@ GRID_REPRODUCE = {  # try to approximately reproduce results of sketchrnn paper
 GRID_DRAW = {
     'dataset': [
         'ndjson',
-        'npz',
     ],
     'max_per_category': [
-        '70000 --categories pig',
+        # '70000 --categories bat',
+        # '70000 --categories bear',
+        # '70000 --categories bird',
+        # '70000 --categories camel',
+
+        # '70000 --categories cat',
+        # '70000 --categories cow',
+
+        # '70000 --categories crab',
+        '70000 --categories crocodile',
+
+        # '70000 --categories pig',
         # '2000 --categories all',
         # '20000 --categories all',
         # '70000 --categories all',

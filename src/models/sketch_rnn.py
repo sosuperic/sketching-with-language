@@ -671,9 +671,13 @@ if __name__ == "__main__":
     if opt.inference or opt.inference_vaez:
         temp = hp.temperature  # store this because we will vary at inference
         max_per_category = hp.max_per_category
+        categories = hp.categories
+        batch_size = hp.batch_size
+
+        # overwrite hparmas with original hparmas
         orig_hp = utils.load_file(os.path.join(opt.load_model_path, 'hp.json'))  # dict
         for k, v in orig_hp.items():
-            if k != 'temperature':
+            if k not in ['temperature', 'categories', 'max_per_category', 'batch_size']:
                 setattr(hp, k, v)
     else:
         experiments.save_run_data(save_dir, hp)
@@ -701,7 +705,9 @@ if __name__ == "__main__":
         print('Loading model')
         model.load_model(opt.load_model_path)
         print('Model loaded')
+        setattr(model.hp, 'categories', categories)  # this may vary at inference time
         setattr(model.hp, 'max_per_category', max_per_category)  # this may vary at inference time
+        setattr(model.hp, 'batch_size', batch_size)  # this may vary at inference time
         model.save_vaez_inference_time(opt.load_model_path)
     else:
         model.train_loop()
