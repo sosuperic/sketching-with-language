@@ -235,8 +235,8 @@ class SketchRNNModel(TrainNN):
             sample_y = np.cumsum(seq_y, 0)
             sample_pen = np.array(seq_pen)
             sequence = np.stack([sample_x, sample_y, sample_pen]).T
-            output_fp = os.path.join(outputs_path, f'e{epoch}-gen{n}.jpg')
-            save_strokes_as_img(sequence, output_fp)
+            # output_fp = os.path.join(outputs_path, f'e{epoch}-gen{n}.jpg')
+            # save_strokes_as_img(sequence, output_fp)
 
             # Save original as well
             output_fp = os.path.join(outputs_path, f'e{epoch}-gt{n}.jpg')
@@ -247,7 +247,7 @@ class SketchRNNModel(TrainNN):
             strokes_y = np.cumsum(strokes_y.cpu().numpy())
             strokes_pen = strokes[:, 0, 3].cpu().numpy()
             strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
-            save_strokes_as_img(strokes_out, output_fp)
+            # save_strokes_as_img(strokes_out, output_fp)
 
             gen_strokes.append(sequence)
             gt_strokes.append(strokes_out)
