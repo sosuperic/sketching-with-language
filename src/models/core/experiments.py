@@ -39,7 +39,7 @@ def get_available_GPUs(max_mem=0.33):
     """
     Return list of ints (gpu ids)
     """
-    return GPUtil.getAvailable(order='memory', limit=16, maxLoad=0.33, maxMemory=max_mem, includeNan=False)
+    return GPUtil.getAvailable(order='memory', limit=16, maxLoad=1.0, maxMemory=max_mem, includeNan=False)
 
 def send_email(subject, text):
     email_data = load_file('.email_config.json')

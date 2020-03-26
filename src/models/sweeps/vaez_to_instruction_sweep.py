@@ -17,7 +17,7 @@ BASE_GRID = {
     ],
     'lr': [
         0.0005,
-        0.0001,
+        # 0.0001,
     ],
     'enc_num_layers': [
         '0',                # use z directly
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     base_cmd = CMD + f' --groupname {args.groupname}'
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
-                    prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    prequeue_sleep_nmin=0, check_queue_every_nmin=0,
                     email_groupname=args.email_groupname,
                     gpus=[5],
-                    free_gpu_max_mem=0.3)
+                    free_gpu_max_mem=0.8)

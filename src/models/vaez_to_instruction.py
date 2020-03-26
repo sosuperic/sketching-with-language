@@ -102,6 +102,9 @@ class VAEzToInstructionModel(TrainNN):
         for model in self.models:
             model.cuda()
 
+        # Optimizer
+        self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
+
         # For Eval
         self.scorers = [InstructionScorer('rouge'), InstructionScorer('bleu')]
 
@@ -138,7 +141,6 @@ class VAEzToInstructionModel(TrainNN):
         loss = self.compute_loss(logits, text_indices, PAD_ID, text_lens=text_lens)
         result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
-        # import pdb; pdb.set_trace()
         return result
 
 
