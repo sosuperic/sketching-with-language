@@ -18,9 +18,10 @@ from torch.utils.data import DataLoader
 from config import RUNS_PATH
 from src import utils
 from src.models.base.instruction_models import InstructionVAEzDataset, \
-    InstructionDecoderLSTM, PAD_ID
+    InstructionDecoderLSTM, PAD_ID, SOS_ID, EOS_ID
 from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import TrainNN
+from src.eval.strokes_to_instruction import InstructionScorer
 
 USE_CUDA = torch.cuda.is_available()
 
@@ -58,6 +59,11 @@ class HParams():
         self.categories_dim = 256
         self.z_dim = 128
 
+        # inference
+        self.decode_method = 'greedy'  # 'sample', 'greedy'
+        self.tau = 1.0  # sampling text
+        self.k = 5      # sampling text
+
 class VAEzToInstructionModel(TrainNN):
     """
     """
@@ -65,7 +71,7 @@ class VAEzToInstructionModel(TrainNN):
         super().__init__(hp, save_dir)
         self.tr_loader = self.get_data_loader('train', True)
         self.val_loader = self.get_data_loader('valid', False)
-        self.end_epoch_loader = None
+        self.end_epoch_loader = self.get_data_loader('valid', False)
 
         # Model
         if hp.enc_num_layers == 0:
@@ -92,8 +98,12 @@ class VAEzToInstructionModel(TrainNN):
                 use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout
             )
 
-        for model in [self.text_embedding, self.category_embedding, self.enc, self.dec]:
+        self.models = [self.text_embedding, self.category_embedding, self.enc, self.dec]
+        for model in self.models:
             model.cuda()
+
+        # For Eval
+        self.scorers = [InstructionScorer('rouge'), InstructionScorer('bleu')]
 
     def get_data_loader(self, dataset_split, shuffle):
         ds = InstructionVAEzDataset(dataset_split=dataset_split,
@@ -118,7 +128,6 @@ class VAEzToInstructionModel(TrainNN):
         z_emb = z_emb.unsqueeze(0)  # [1, bsz, enc_dim]
         hidden = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
         cell = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
-
         # Decode
         texts_emb = self.text_embedding(text_indices)  # [max_text_len, bsz, text_dim]
 
@@ -153,6 +162,102 @@ class VAEzToInstructionModel(TrainNN):
         loss = F.cross_entropy(logits, targets, ignore_index=pad_id)
 
         return loss
+
+    ####################################################################
+    #
+    # INFERENCE
+    #
+    ####################################################################
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
+        """
+        Args:
+            data_loader: DataLoader
+            epoch: int
+            outputs_path: str
+            writer: Tensorboard Writer
+        """
+        for model in self.models:
+            model.eval()
+
+        with torch.no_grad():
+            # Generate texts on validation set
+            inference = self.inference_loop(data_loader, writer=writer, epoch=epoch)
+            out_fp = os.path.join(outputs_path, 'samples_e{}.json'.format(epoch))
+            utils.save_file(inference, out_fp, verbose=True)
+
+    def inference_loop(self, loader, writer=None, epoch=None):
+        """
+        Args:
+            loader: DataLoader
+            writer: Tensorboard writer (used during validation)
+            epoch: int (used for writer)
+
+        Returns: list of dicts
+        """
+        inference = []
+        for i, batch in enumerate(loader):
+            texts, text_lens, text_indices, cats, cats_idx, vae_zs = batch
+            decoded_probs, decoded_ids, decoded_texts = self.inference_pass(vae_zs, cats_idx)
+
+            for j, instruction in enumerate(texts):
+                gt, gen = instruction, decoded_texts[j]
+
+                # construct results
+                result = {
+                    'ground_truth': gt,
+                    'generated': gen,
+                    'category': cats[j],
+                }
+                for scorer in self.scorers:
+                    for name, value in scorer.score(gt, gen).items():
+                        result[name] = value
+                        if writer:
+                            writer.add_scalar('inference/{}'.format(name), value, epoch * self.val_loader.__len__() + i)
+                inference.append(result)
+
+                # log
+                text = 'Ground truth: {}  \n  \nGenerated: {}'.format(
+                    instruction, decoded_texts[j])
+                if writer:
+                    writer.add_text('inference/sample', text, epoch * self.val_loader.__len__() + i)
+
+        return inference
+
+    def inference_pass(self, vae_zs, cats_idx):
+        """
+
+        Args:
+            vae_zs: [bsz, z_dim]
+            cats_idx: [bsz] LongTensor
+
+        Returns:
+            decoded_probs: [bsz, max_len, vocab]
+            decoded_ids: [bsz, max_len]
+            decoded_texts: list of strs
+        """
+        bsz = vae_zs.size(0)
+
+        # Get hidden and cell by encoding z
+        z_emb = self.enc(vae_zs)  # [bsz, enc_dim]
+        z_emb = z_emb.unsqueeze(0)  # [1, bsz, enc_dim]
+        hidden = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
+        cell = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
+
+        # Create init input
+        init_ids = nn_utils.move_to_cuda(torch.LongTensor([SOS_ID] * bsz).unsqueeze(1))  # [bsz, 1]
+        init_ids.transpose_(0, 1)  # [1, bsz]
+
+        decoded_probs, decoded_ids, decoded_texts = self.dec.generate(
+            self.text_embedding,
+            category_embedding=self.category_embedding, categories=cats_idx,
+            init_ids=init_ids, hidden=hidden, cell=cell,
+            pad_id=PAD_ID, eos_id=EOS_ID, max_len=200,  # TODO: set max_len to max_len on data
+            decode_method=self.hp.decode_method, tau=self.hp.tau, k=self.hp.k,
+            idx2token=self.tr_loader.dataset.idx2token
+        )
+
+        return decoded_probs, decoded_ids, decoded_texts
+
 
 if __name__ == "__main__":
     hp = HParams()

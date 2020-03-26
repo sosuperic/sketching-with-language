@@ -745,6 +745,7 @@ class SketchWithPlansDataset(Dataset):
         self.prob_threshold = prob_threshold
 
         self.token2idx = utils.load_file(LABELED_PROGRESSION_PAIRS_TOKEN2IDX_PATH)
+        self.idx2token = utils.load_file(LABELED_PROGRESSION_PAIRS_IDX2TOKEN_PATH)
         self.vocab_size = len(self.token2idx)
 
         if dataset == 'progressionpair':
