@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from config import RUNS_PATH
 from src import utils
 # from src.data_manager.quickdraw import build_category_index_nodata
-from src.models.base.instruction_models import InstructionToVAEzDataset, InstructionEncoderTransformer
+from src.models.base.instruction_models import InstructionVAEzDataset, InstructionEncoderTransformer
 from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import TrainNN
 
@@ -64,9 +64,9 @@ class InstructionToVAEzModel(TrainNN):
             model.cuda()
 
     def get_data_loader(self, dataset_split, batch_size, max_per_category, shuffle):
-        ds = InstructionToVAEzDataset(dataset_split=dataset_split, max_per_category=max_per_category)
+        ds = InstructionVAEzDataset(dataset_split=dataset_split, max_per_category=max_per_category)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                            collate_fn=InstructionToVAEzDataset.collate_fn)
+                            collate_fn=InstructionVAEzDataset.collate_fn)
         return loader
 
     def one_forward_pass(self, batch):

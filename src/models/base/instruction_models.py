@@ -30,7 +30,7 @@ from config import LABELED_PROGRESSION_PAIRS_DATA_PATH, \
     LABELED_PROGRESSION_PAIRS_CAT2IDX_PATH, \
     BEST_SEG_NDJSON_PATH, BEST_SEG_PROGRESSION_PAIRS_PATH, \
     PRECURRENTPOST_DATAWITHANNOTATIONS_PATH, PRECURRENTPOST_DATAWITHANNOTATIONS_SPLITS_PATH, \
-    VAEZ_PATH
+    VAEz_PATH
 from src import utils
 from src.data_manager.quickdraw import build_category_index, \
     normalize_strokes, stroke3_to_stroke5
@@ -715,6 +715,7 @@ class SketchWithPlansDataset(Dataset):
     def __init__(self,
                  dataset='progressionpair',
                  max_len=200,
+                 categories='all',
                  max_per_category=250,  # used with dataset='ndjson'
                  dataset_split='train',
                  instruction_set='toplevel',
@@ -737,6 +738,7 @@ class SketchWithPlansDataset(Dataset):
 
         self.dataset = dataset
         self.max_len = max_len
+        self.categories = categories
         self.max_per_category = max_per_category
         self.dataset_split = dataset_split
         self.instruction_set = instruction_set
@@ -751,7 +753,7 @@ class SketchWithPlansDataset(Dataset):
             self.plans_dir = BEST_SEG_PROGRESSION_PAIRS_PATH / dataset_split
             self.id_to_plan = self.load_progression_pair_plans(self.plans_dir)
         elif dataset == 'ndjson':
-            self.ds = NdjsonStrokeDataset('all', dataset_split,
+            self.ds = NdjsonStrokeDataset(categories, dataset_split,
                                           max_per_category=max_per_category, max_len=max_len, must_have_instruction_tree=True)
             # compared to progressionpair, we don't pre-load the plans because that would be too much memory
             # also, the directory is in a different format (no dataset_split)
@@ -796,16 +798,18 @@ class SketchWithPlansDataset(Dataset):
     def __len__(self):
         return len(self.ds.data)
 
-class InstructionToVAEzDataset(SketchWithPlansDataset):
+class InstructionVAEzDataset(SketchWithPlansDataset):
     def __init__(self,
                  dataset='ndjson',
                  max_len=200,
+                 categories='pig',
                  max_per_category=250,
                  dataset_split='train',
                  instruction_set='toplevel',
                  prob_threshold=0.0,
                  ):
-        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
+        super().__init__(dataset=dataset, max_len=max_len,
+                         categories=categories, max_per_category=max_per_category,
                          dataset_split=dataset_split, instruction_set=instruction_set,
                          prob_threshold=prob_threshold)
 
@@ -815,17 +819,20 @@ class InstructionToVAEzDataset(SketchWithPlansDataset):
         # Get instruction comprised of leaf instructions
         text = ''
         text_indices = []
-        for subplan in plan[1:]:
+        for subplan in plan:
             if (subplan['right'] - subplan['left']) == 1:  # leaf
                 # TODO: ideally we should have a different separator token...
                 text += ' SOS ' + subplan['text']
                 text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+        text += ' EOS'
+        text_indices += [EOS_ID]
         text = text.lstrip()  # get rid of leading space
 
         # Get the z for this drawing
         drawing_id = self.ds.data[idx]['id']
-        fp = VAEz_path / cat / f'{drawing_id}.pkl'
-        vae_z = utils.load_file(fp)
+        fp = os.path.join(VAEz_PATH.format(cat, cat), f'{drawing_id}.pkl')
+        vae_z = utils.load_file(fp)  # numpy
+        vae_z = torch.FloatTensor(vae_z)
 
         return text, text_indices, cat, cat_idx, vae_z
 
@@ -841,6 +848,14 @@ class InstructionToVAEzDataset(SketchWithPlansDataset):
 
         Args:
             batch: list of samples, one sample is returned from __getitem__(idx)
+
+        Returns:
+            texts: list of length bsz of strs
+            text_lens: list of ints
+            batch_text_indices: [max_len, bsz] LongTensor
+            cats: list of strs
+            cats_idx: [bsz] LongTensor
+            vae_zs: [bsz, z_dim] FloatTensor
         """
         texts, texts_indices, cats, cats_idx, vae_zs = zip(*batch)
         bsz = len(batch)
@@ -853,11 +868,15 @@ class InstructionToVAEzDataset(SketchWithPlansDataset):
             l = len(text_indices)
             batch_text_indices[i,:l] = text_indices
 
-
         # Convert to Tensors
         batch_text_indices = torch.LongTensor(batch_text_indices)
         cats_idx = torch.LongTensor(cats_idx)
-        vae_zs = torch.FloatTensor(np.stack(vae_zs))  # [bsz, z_dim]
+        vae_zs = torch.stack(vae_zs) # [bsz, z_dim]
+
+        batch_text_indices = batch_text_indices.transpose(0,1)  # [max_len, bsz]  # decoder expects this format
+        batch_text_indices = nn_utils.move_to_cuda(batch_text_indices)
+        cats_idx = nn_utils.move_to_cuda(cats_idx)
+        vae_zs = nn_utils.move_to_cuda(vae_zs)
 
         return texts, text_lens, batch_text_indices, cats, cats_idx, vae_zs
 

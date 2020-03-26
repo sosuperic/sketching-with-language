@@ -631,8 +631,7 @@ class SketchRNNVAEModel(SketchRNNModel):
         print('Saving to: ', os.path.join(model_dir, 'inference_vaez'))
         with torch.no_grad():
             for split in ['train', 'valid', 'test']:
-                bsz = 128
-                loader = self.get_data_loader(split, bsz, self.hp.categories, self.hp.max_len, self.hp.max_per_category, False)
+                loader = self.get_data_loader(split, self.hp.batch_size, self.hp.categories, self.hp.max_len, self.hp.max_per_category, False)
 
                 for bidx, batch in enumerate(loader):
                     # encode drawing and get z
@@ -640,19 +639,20 @@ class SketchRNNVAEModel(SketchRNNModel):
                     strokes, stroke_lens, cats, cats_idx = batch
                     max_len, cur_bsz, _ = strokes.size()
                     z, _, _ = self.enc(strokes)  # z: [bsz, 128]
+                    z_np = z.cpu().numpy()
 
                     for i in range(cur_bsz):
                         # get index of this drawing within the dataset (loader has shuffle=False so we can do this)
-                        idx = bidx * bsz + i
-                        drawing_id = loader.dataset.data[idx]['id']
+                        global_idx = bidx * self.hp.batch_size + i
+                        drawing_id = loader.dataset.data[global_idx]['id']
 
                         # save numpy version of z
                         out_dir = os.path.join(model_dir, 'inference_vaez', cats[i])
                         os.makedirs(out_dir, exist_ok=True)
                         out_fp = os.path.join(out_dir, f'{drawing_id}.pkl')
 
-                        z_np = z.cpu().numpy()
-                        utils.save_file(z, out_fp)
+                        cur_z_np = z_np[i]
+                        utils.save_file(cur_z_np, out_fp)
 
 
 if __name__ == "__main__":

@@ -79,4 +79,4 @@ BEST_INSTRUCTION_TO_STROKES_PATH = 'runs/instruction_to_strokes/Dec17_2019/cond_
 BEST_SEG_NDJSON_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/ndjson/Feb20_2020/strokes_to_instruction/strokebasedS2I'
 BEST_SEG_PROGRESSION_PAIRS_PATH = SEGMENTATIONS_PATH / 'greedy_parsing/progressionpair/nov26_2019/strokes_to_instruction'
 
-VAEZ_PATH = Path('runs/sketchrnn/Mar22_2020/vae_all70k/batch_size_256-categories_all-dataset_ndjson-dec_dim_2048-dropout_0.1-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_vae-rec_dropout_0.1-use_categories_dec_True-use_layer_norm_True/inference_vaez/')
+VAEz_PATH = 'runs/sketchrnn/Mar25_2020/vae_onecat/encln_KLfix-batch_size_64-categories_{}-dataset_ndjson-dec_dim_2048-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_vae-use_categories_dec_False-use_layer_norm_True/inference_vaez/{}/'
