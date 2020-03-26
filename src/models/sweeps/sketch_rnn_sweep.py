@@ -55,7 +55,14 @@ GRID_DRAW = {
         # '70000 --categories cow',
 
         # '70000 --categories crab',
-        '70000 --categories crocodile',
+        # '70000 --categories crocodile',
+        # '70000 --categories dog',
+        # '70000 --categories duck',
+        #  '70000 --categories elephant',
+        #  '70000 --categories flamingo',
+        #  '70000 --categories frog',
+        #  '70000 --categories giraffe',
+         '70000 --categories hedgehog',
 
         # '70000 --categories pig',
         # '2000 --categories all',

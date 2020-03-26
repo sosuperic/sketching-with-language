@@ -43,19 +43,18 @@ class HParams():
         self.max_epochs = 100
 
         # Model
-        self.enc_dim = 256
-        self.enc_num_layers = 3
-        self.dec_dim = 256
+        self.enc_dim = 256  # this is the decoder hidden dimension (which is also equal to text embedding dim)
+        self.enc_num_layers = 3  # if 0, then just use the z directly (i.e. enc_dim = z_dim)
         self.dec_num_layers = 4
         self.use_categories_dec = True
 
         self.dropout = 0.1
-        # TODO: InstructionDecoderLSTM doesn't use HasteLayerNorm. Until then, this has to be False
+        # TODO: I need to investigate InstructionDecoderLSTM's layernorm. It has been false mostly.
         self.use_layer_norm = False
         self.rec_dropout = 0.1
 
         # Keep this fixed
-        self.text_dim = 256
+        # self.text_dim = 256
         self.categories_dim = 256
         self.z_dim = 128
 
@@ -69,20 +68,26 @@ class VAEzToInstructionModel(TrainNN):
         self.end_epoch_loader = None
 
         # Model
-        self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.text_dim)
+        if hp.enc_num_layers == 0:
+            hp.enc_dim = hp.z_dim
+
+        text_dim = hp.enc_dim  # text dim must be same as decoder's hidden dimension because it gets directly mapped
+        self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, text_dim)
         self.category_embedding = nn.Embedding(35, 	hp.categories_dim)
 
         # "Encoder" (feed forward that takes z as input)
-        self.enc = nn.Sequential()
-        self.enc.add_module('fc_0', nn.Linear(hp.z_dim, hp.enc_dim))
-        for i in range(hp.enc_num_layers - 1):
-            self.enc.add_module('relu_{}'.format(i+1), nn.ReLU())
-            self.enc.add_module('fc_{}'.format(i+1), nn.Linear(hp.enc_dim, hp.enc_dim))
+        self.enc = nn.Sequential(nn.Identity())
+        if hp.enc_num_layers > 0:
+            self.enc.add_module('fc_0', nn.Linear(hp.z_dim, hp.enc_dim))
+            for i in range(hp.enc_num_layers - 1):  # only if it's >= 2
+                self.enc.add_module('relu_{}'.format(i+1), nn.ReLU())
+                self.enc.add_module('fc_{}'.format(i+1), nn.Linear(hp.enc_dim, hp.enc_dim))
 
         # Decoder
-        dec_input_dim = hp.text_dim + hp.categories_dim
+        dec_input_dim = text_dim + hp.categories_dim
         self.dec = InstructionDecoderLSTM(
-                dec_input_dim, hp.dec_dim, num_layers=hp.dec_num_layers, dropout=hp.dropout, batch_first=False,
+                dec_input_dim, hp.enc_dim,
+                num_layers=hp.dec_num_layers, dropout=hp.dropout, batch_first=False,
                 use_categories=hp.use_categories_dec,
                 use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout
             )
@@ -114,9 +119,9 @@ class VAEzToInstructionModel(TrainNN):
         hidden = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
         cell = z_emb.repeat(self.dec.num_layers, 1, 1)  # [dec_num_layers, bsz, enc_dim]
 
-
         # Decode
         texts_emb = self.text_embedding(text_indices)  # [max_text_len, bsz, text_dim]
+
         logits, _ = self.dec(texts_emb, text_lens,
                              hidden=hidden, cell=cell,
                              token_embedding=self.text_embedding,
@@ -124,6 +129,7 @@ class VAEzToInstructionModel(TrainNN):
         loss = self.compute_loss(logits, text_indices, PAD_ID, text_lens=text_lens)
         result = {'loss': loss, 'loss_decode': loss.clone().detach()}
 
+        # import pdb; pdb.set_trace()
         return result
 
 
