@@ -53,11 +53,11 @@ class HParams(SketchRNNHParams):
 
         # do not change these
         self.use_categories_dec = True
-        self.cond_instructions = 'match'  # 'match'
+        self.cond_instructions = 'match'  # 'match', 'decinputs'
         self.categories_dim = 256
-        self.loss_match = 'triplet' # 'triplet', 'decode'
+        self.loss_match = 'triplet' # when cond_instructions==match, 'triplet', 'decode'
         self.enc_num_layers = 1
-        self.enc_dim = 512 # only used with loss_match=triplet
+        self.enc_dim = 512 # only used with loss_match=triplet or cond_instructions=decinputs
 
 class SketchRNNWithPlans(SketchRNNModel):
     """"
@@ -69,29 +69,43 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         self.end_epoch_loader = None  # TODO: not generating yet, need to refactor that
 
+        #
         # Model
-        self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.enc_dim)
+        #
 
+        # text and category embeddings
+        self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.enc_dim)
+        self.models.append(self.text_embedding)
         self.category_embedding = None
         if hp.use_categories_dec:
             self.category_embedding = nn.Embedding(35, 	hp.categories_dim)
             self.models.append(self.category_embedding)
-        dec_input_dim = (5 + hp.categories_dim) if self.category_embedding else 5
+
+        # decoder
+        dec_input_dim = 5
+        if self.category_embedding:
+            dec_input_dim += hp.categories_dim
+        if self.cond_instructions == 'decinputs':
+            dec_input_dim += hp.enc_dim
         self.dec = SketchRNNDecoderGMM(dec_input_dim, hp.dec_dim, hp.M,
             dropout=hp.dropout, use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout)
-        self.models.extend([self.text_embedding,  self.dec])
+        self.models.append([self.dec])
 
         # For shaping representation loss, want to decode into instructions
-        if hp.loss_match == 'triplet':
-            self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
-            self.fc_dec = nn.Linear(hp.dec_dim, hp.enc_dim)  # project decoder hidden states to enc hidden states
-            self.models.extend([self.enc, self.fc_dec])
-        elif hp.loss_match == 'decode':
-            ins_hid_dim = hp.enc_dim  # Note: this has to be because there's no fc_out layer. I just multiply by token embedding directly to get outputs
-            self.ins_dec = InstructionDecoderLSTM(
-                hp.enc_dim + hp.categories_dim, ins_hid_dim, num_layers=4, dropout=0.1, batch_first=False,
-                condition_on_hc=False, use_categories=True)
-            self.models.extend([self.ins_dec])
+        if hp.cond_instructions == 'decinputs':
+            self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)
+            self.models.append(self.enc)
+        elif hp.cond_instructions == 'match':
+            if hp.loss_match == 'triplet':
+                self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=False)  # TODO: should this be a hparam
+                self.fc_dec = nn.Linear(hp.dec_dim, hp.enc_dim)  # project decoder hidden states to enc hidden states
+                self.models.extend([self.enc, self.fc_dec])
+            elif hp.loss_match == 'decode':
+                ins_hid_dim = hp.enc_dim  # Note: this has to be because there's no fc_out layer. I just multiply by token embedding directly to get outputs
+                self.ins_dec = InstructionDecoderLSTM(
+                    hp.enc_dim + hp.categories_dim, ins_hid_dim, num_layers=4, dropout=0.1, batch_first=False,
+                    condition_on_hc=False, use_categories=True)
+                self.models.extend([self.ins_dec])
 
         if USE_CUDA:
             for model in self.models:
@@ -232,44 +246,63 @@ class SketchRNNWithPlans(SketchRNNModel):
             # TODO: check if text_indices is correct
 
         elif self.hp.instruction_set in ['toplevel', 'toplevel_leaves', 'leaves']:
-            outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
-            outputs = outputs.mean(dim=0)  # [bsz, dec_dim]
-
             # triplet loss
-            if self.hp.loss_match == 'triplet':
+            if self.hp.cond_instructions == 'decinputs':  # concatenate instruction embedding to every time step
                 # Encode instructions
                 # text_indices: [len, bsz], text_lens: [bsz]
                 instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
                                 category_embedding=None, categories=cats_idx)  # [bsz, enc_dim]
-                outputs = self.fc_dec(outputs)  # [bsz, enc_dim]
 
-                pos = (outputs - instructions_emb) ** 2  # [bsz, enc_dim]
-                instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, enc_dim]
-                neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, enc_dim]
-                loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
-                loss_match = max(torch.tensor(0.0), loss_match)
-            elif self.hp.loss_match == 'decode':
-                hidden = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
-                cell = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
+                # decode
+                instructions_emb = instructions_emb.unsqueeze(0)  #  [1, bsz, dim]
+                instructions_emb = instructions_emb.repeat(dec_inputs.size(0), 1, 1)  # [max_len + 1, bsz, dim]
+                dec_inputs = torch.cat([dec_inputs, instructions_emb], dim=2)  # [max_len + 1, bsz, inp_dim]
+                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)
 
-                # Decode
-                texts_emb = self.text_embedding(text_indices)  # [len, bsz, dim]
-                logits, texts_hidden = self.ins_dec(texts_emb, text_lens, hidden=hidden, cell=cell,
-                                                    token_embedding=self.text_embedding,
-                                                    category_embedding=self.category_embedding, categories=cats_idx)
-                loss_match = self.compute_dec_loss(logits, text_indices)
+            elif self.hp.cond_instructions == 'match':  # match decoder's hidden representations to encoded language
+                # decode
+                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, _, _ = self.dec(dec_inputs, output_all=True)  # outputs: [max_seq_len, bsz, dim]
+                outputs = outputs.mean(dim=0)  # [bsz, dec_dim]
+
+                if self.hp.loss_match == 'triplet':
+                    # Encode instructions
+                    # text_indices: [len, bsz], text_lens: [bsz]
+                    instructions_emb = self.enc(text_indices, text_lens, self.text_embedding,
+                                    category_embedding=None, categories=cats_idx)  # [bsz, enc_dim]
+                    outputs = self.fc_dec(outputs)  # [bsz, enc_dim]
+
+                    pos = (outputs - instructions_emb) ** 2  # [bsz, enc_dim]
+                    instructions_emb_shuffled = instructions_emb[torch.randperm(bsz), :]  # [bsz, enc_dim]
+                    neg = (outputs - instructions_emb_shuffled) ** 2  # [bsz, enc_dim]
+                    loss_match = (pos - neg).mean() + torch.tensor(0.1).to(pos.device)  # positive - negative + alpha
+                    loss_match = max(torch.tensor(0.0), loss_match)
+                elif self.hp.loss_match == 'decode':
+                    hidden = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
+                    cell = nn_utils.move_to_cuda(torch.zeros(self.ins_dec.num_layers, bsz, self.ins_dec.hidden_dim))
+
+                    # Decode
+                    texts_emb = self.text_embedding(text_indices)  # [len, bsz, dim]
+                    logits, texts_hidden = self.ins_dec(texts_emb, text_lens, hidden=hidden, cell=cell,
+                                                        token_embedding=self.text_embedding,
+                                                        category_embedding=self.category_embedding, categories=cats_idx)
+                    loss_match = self.compute_dec_loss(logits, text_indices)
 
         #
-        # Calculate losses
+        # Calculate reconstruction and final loss
         #
         mask, dx, dy, p = self.dec.make_target(strokes, stroke_lens, self.hp.M)
 
         loss_R = self.dec.reconstruction_loss(mask,
-                                            dx, dy, p,
-                                            pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
-                                            q)
-        loss = loss_R + loss_match
-        result = {'loss': loss, 'loss_R': loss_R, 'loss_match': loss_match}
+                                              dx, dy, p,
+                                              pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy,
+                                              q)
+
+        if self.hp.cond_instructions == 'decinputs':
+            loss = loss_R
+            result = {'loss': loss, 'loss_R': loss_R}
+        elif self.hp.cond_instructions == 'match':
+            loss = loss_R = loss_match
+            result = {'loss': loss, 'loss_R': loss_R, 'loss_match': loss_match}
 
         if ((loss != loss).any() or (loss == float('inf')).any() or (loss == float('-inf')).any()):
             raise Exception('Nan in SketchRNnDecoderGMMOnly forward pass')
