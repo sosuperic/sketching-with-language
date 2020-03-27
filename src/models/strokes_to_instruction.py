@@ -59,6 +59,7 @@ class HParams():
 
         # Model
         self.dim = 256
+        self.enc_dim = -1  # if not given, then equal to dim
         self.n_enc_layers = 4
         self.n_dec_layers = 4
         self.model_type = 'lstm'  # 'lstm', 'transformer_lstm', 'cnn_lstm'
@@ -99,6 +100,12 @@ class StrokesToInstructionModel(TrainNN):
         #
         # Model
         #
+        hp.enc_dim = hp.dim if (hp.enc_dim == -1) else hp.enc_dim
+        if hp.use_layer_norm:
+            # layer norm enc lstm is 1 layer, so h and c get split up
+            # to initialize decoder
+            assert hp.enc_dim == hp.dim * hp.n_dec_layers
+
         self.token_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.dim)
         self.models.append(self.token_embedding)
         self.category_embedding = None
@@ -118,17 +125,17 @@ class StrokesToInstructionModel(TrainNN):
 
                 # encoders may be different
                 if hp.model_type == 'cnn_lstm':
-                    self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.dim, dropout=hp.dropout,
+                    self.enc = StrokeEncoderCNN(n_feat_maps=hp.dim, input_dim=5, emb_dim=hp.enc_dim, dropout=hp.dropout,
                                                 use_categories=hp.use_categories_enc)
                     # raise NotImplementedError('use_categories_enc=true not implemented for CNN encoder')
                 elif hp.model_type == 'transformer_lstm':
                     self.enc = StrokeEncoderTransformer(
-                        5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
+                        5, hp.enc_dim, num_layers=hp.n_enc_layers, dropout=hp.dropout,
                         use_categories=hp.use_categories_enc,
                     )
                 elif hp.model_type == 'lstm':
                     self.enc = StrokeEncoderLSTM(
-                        5, hp.dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
+                        5, hp.enc_dim, num_layers=hp.n_enc_layers, dropout=hp.dropout, batch_first=False,
                         use_categories=hp.use_categories_enc,
                         use_layer_norm=hp.use_layer_norm, rec_dropout=hp.rec_dropout
                     )
@@ -482,7 +489,8 @@ class StrokesToInstructionModel(TrainNN):
 
         # Encode strokes
         _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                     category_embedding=self.category_embedding, categories=cats_idx)
+                                     category_embedding=self.category_embedding, categories=cats_idx,
+                                     split_hc=self.hp.n_dec_layers)
         # [bsz, max_stroke_len, dim]; h/c = [n_layers, bsz, dim]
 
         # Decode
@@ -601,7 +609,8 @@ class StrokesToInstructionModel(TrainNN):
 
                 elif self.hp.model_type == 'lstm':
                     _, (hidden, cell) = self.enc(strokes, stroke_lens,
-                                                category_embedding=self.category_embedding, categories=cats_idx)
+                                                category_embedding=self.category_embedding, categories=cats_idx,
+                                                split_hc=self.hp.n_dec_layers)
                     # [max_stroke_len, bsz, dim]; h/c = [layers * direc, bsz, dim]
 
             # Create init input

@@ -1165,11 +1165,12 @@ class InstructionDecoderLSTM(nn.Module):
         self.rec_dropout = rec_dropout
 
         self.dropout_mod = nn.Dropout(dropout)
-        if use_layer_norm:
-            self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
-        else:
-            self.lstm = nn.LSTM(input_dim, hidden_dim,
-                                num_layers=num_layers, dropout=dropout, batch_first= batch_first)
+        # if use_layer_norm:
+        #     self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+        # else:
+        # TODO: no layernorm in decoder yet (changing implementation)
+        self.lstm = nn.LSTM(input_dim, hidden_dim,
+                            num_layers=num_layers, dropout=dropout, batch_first= batch_first)
 
     def forward(self, texts_emb, text_lens, hidden=None, cell=None,
                 token_embedding=None, category_embedding=None, categories=None,

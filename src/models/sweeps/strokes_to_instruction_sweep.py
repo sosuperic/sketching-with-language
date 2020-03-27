@@ -12,6 +12,7 @@ Usage:
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname stroke_textaug
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname load_pretrained
     PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname layernorm
+    PYTHONPATH=. python src/models/sweeps/strokes_to_instruction_sweep.py --groupname enc_hastelayernorm
 """
 
 import argparse
@@ -119,11 +120,21 @@ GRID_MINI = {
 }
 
 GRID_LAYERNORM = {
-    'drawing_type': ['stroke'],
-    'model_type': ['lstm --n_enc_layers 1 --n_dec_layers 1 --use_layer_norm True'],
-    'dim': [512, 1024, 2048],
-    'lr': [0.001, 0.0005, 0.0001],
-    'dropout':  ['0.1 --rec_dropout 0.1', '0.3 --rec_dropout 0.3']
+    # best on bigsweep, keep this the same
+    'n_dec_layers': [4],
+    'dim': [256],
+    'lr': [0.0005],
+    # layernorm
+    'n_enc_layers': [1],  # hastelayernorm cannot have stacked lstm
+    'enc_dim': [
+        1024,
+    ],
+    'use_layer_norm': ['true'],
+    'rec_dropout': [
+        0.2,
+        0.4,
+    ],
+    'notes': ['encln']
 }
 
 
@@ -142,4 +153,5 @@ if __name__ == "__main__":
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
-                    email_groupname=args.email_groupname, free_gpu_max_mem=0.4)
+                    gpus=[7],
+                    email_groupname=args.email_groupname, free_gpu_max_mem=0.8)

@@ -345,29 +345,40 @@ class StrokeEncoderLSTM(nn.Module):
         self.use_layer_norm = use_layer_norm
         self.rec_dropout = rec_dropout
 
+        if use_layer_norm:
+            assert num_layers == 1
+
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
             self.stroke_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
             if use_layer_norm:
-                self.lstm = haste.LayerNormLSTM(input_size=hidden_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+                self.lstm_f = haste.LayerNormLSTM(input_size=hidden_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+                self.lstm_b = haste.LayerNormLSTM(input_size=hidden_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
             else:
                 self.lstm = nn.LSTM(hidden_dim, hidden_dim, bidirectional=True,
                                     num_layers=num_layers, dropout=dropout, batch_first=batch_first)
         else:
             if use_layer_norm:
-                self.lstm = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+                self.lstm_f = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
+                self.lstm_b = haste.LayerNormLSTM(input_size=input_dim, hidden_size=hidden_dim, zoneout=dropout, dropout=rec_dropout)
             else:
                 self.lstm = nn.LSTM(input_dim, hidden_dim, bidirectional=True,
                                     num_layers=num_layers, dropout=dropout, batch_first=batch_first)
 
     def forward(self, strokes, stroke_lens,
-                category_embedding=None, categories=None):
+                category_embedding=None, categories=None,
+                split_hc=None):
         """
         Args:
             strokes:  [max_stroke_len, bsz, input_dim]
             stroke_lens: list of ints, length max_stroke_len
             category_embedding: nn.Embedding(n_categories, dim)
             categories: [bsz] LongTensor
+            split_hc: int
+                - if encoding is being used for a stacked lstm decoder, and we are using layernorm
+                  (the haste implementation only has 1 layer lstm's), then we need to split the
+                  h and c this many times so that it can be used directly by the decoder
+
 
         Returns:
             strokes_outputs: [max_stroke_len, bsz, num_directions (2) * dim]
@@ -384,21 +395,37 @@ class StrokeEncoderLSTM(nn.Module):
             strokes = torch.cat([strokes, cats_emb.repeat(strokes.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
             strokes = self.stroke_cat_fc(strokes)  # [len, bsz, hidden]
 
-        if self.use_layer_norm:  # torchscript doesn't support packed sequence
-            nlayer_direc = 1 if self.use_layer_norm else self.num_layers * 2  # haste LayerNormLSTM only has unidirectional
-            init_states = (nn_utils.move_to_cuda(torch.zeros(nlayer_direc, bsz, self.hidden_dim)),
-                           nn_utils.move_to_cuda(torch.zeros(nlayer_direc, bsz, self.hidden_dim)))
-            strokes_outputs, (hidden_, cell_) = self.lstm(strokes, init_states)  # layernorm lstm must pass in states
-            # TODO: is this the proper way to mask / account for lengths?
-            # At least in the strokes_to_instruction case, we just care about the last hidden states
-            # Note: the following is a little different from the non-layernorm version. In that case,
-            # 1) hiddens and cells are distinct
-            # 2) hidden and cells at each layer are returned (here it's repeated, outputs is only the last layer)
-            hidden = [strokes_outputs[stroke_lens[i]-1, i, :] for i in range(bsz)]  # bsz length list, items are [dim]
-            hidden = torch.stack(hidden, dim=0)  # [bsz, dim]
-            hidden = hidden.repeat(self.num_layers, 1, 1)  # [num_layers, bsz, dim]
-            cell = hidden.clone()
+        if self.use_layer_norm:
+            # actually self.num_layers must equal 1, so the viewing is sort of pointless
+            strokes_outputs_f, (hidden_f, cell_f) = self.lstm_f(strokes)  # h and c: [n_layers * n_directions, bsz, hsz]
+            last_hidden_f = hidden_f.view(self.num_layers, 1, bsz, self.hidden_dim)[-1, :, :, :]  # [num_directions (1), bsz, hsz]
+            last_hidden_f = last_hidden_f.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+            last_cell_f = cell_f.view(self.num_layers, 1, bsz, self.hidden_dim)[-1, :, :, :]  # [num_directions (1), bsz, hsz]
+            last_cell_f = last_cell_f.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
 
+            strokes_b = torch.flip(strokes, [0])
+            strokes_outputs_b, (hidden_b, cell_b) = self.lstm_b(strokes_b)  # h and c: [n_layers * n_directions, bsz, hsz]
+            last_hidden_b = hidden_b.view(self.num_layers, 1, bsz, self.hidden_dim)[-1, :, :, :]  # [num_directions (1), bsz, hsz]
+            last_hidden_b = last_hidden_b.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+            last_cell_b = cell_b.view(self.num_layers, 1, bsz, self.hidden_dim)[-1, :, :, :]  # [num_directions (1), bsz, hsz]
+            last_cell_b = last_cell_b.transpose(0, 1).reshape(bsz, -1)  # [bsz, num_directions * hsz]
+
+            strokes_outputs = torch.cat([strokes_outputs_f, strokes_outputs_b], dim=2)  # [max_stroke_len, bsz, num_directions (2) * dim]
+            hidden = torch.stack([last_hidden_f, last_hidden_b]).mean(dim=0)  # [1, bsz, dim]
+            cell = torch.stack([last_cell_f, last_cell_b]).mean(dim=0)  # [1, bsz, dim]
+
+            # get into shape for decoder
+            if split_hc:
+                hidden = hidden.squeeze()  # [bsz, dim]
+                cell = cell.squeeze()  # [bsz, dim]
+                split_dim = int(hidden.size(1) / split_hc)
+                hidden = torch.split(hidden, split_dim, dim=1)  # list of [bsz, split_dim]
+                cell = torch.split(cell, split_dim, dim=1)  # list of [bsz, split_dim]
+                hidden = torch.stack(hidden)  # [n_splits (n_dec_layers), bsz, split_dim (dec_dim)]
+                cell = torch.stack(cell)  # [n_splits (n_dec_layers), bsz, split_dim (dec_dim)]
+
+                if (hidden != hidden).any():
+                    import pdb; pdb.set_trace()
         else:
             packed_strokes = nn.utils.rnn.pack_padded_sequence(strokes, stroke_lens, enforce_sorted=False)
             strokes_outputs, (hidden, cell) = self.lstm(packed_strokes)
