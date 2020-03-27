@@ -15,12 +15,13 @@ BASE_GRID = {
     'dataset': ['ndjson --max_per_category 65000'],
     'batch_size': [32],
     'enc_num_layers': [
-        '4 --enc_dim 512',
-        '2 --enc_dim 512',
-        '1 --enc_dim 512',
+        '4 --enc_dim 256',
+        # '1 --enc_dim 512',
     ],
+    'loss': ['triplet'],
     'lr': [
-        0.0001,
+        # 0.0001,
+        0.00005,
     ],
 }
 
@@ -39,5 +40,5 @@ if __name__ == "__main__":
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=0, check_queue_every_nmin=0,
                     email_groupname=args.email_groupname,
-                    gpus=[4,5],
+                    gpus=[6],
                     free_gpu_max_mem=0.85)
