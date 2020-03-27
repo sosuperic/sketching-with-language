@@ -813,6 +813,7 @@ class InstructionVAEzDataset(SketchWithPlansDataset):
                          categories=categories, max_per_category=max_per_category,
                          dataset_split=dataset_split, instruction_set=instruction_set,
                          prob_threshold=prob_threshold)
+        print('InstructionVAEzDataset categories: ', categories)
 
     def __getitem__(self, idx):
         stroke5, stroke_len, cat, cat_idx, url, plan = self.get_underlying_ds_item(idx)
@@ -1095,12 +1096,13 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
 class InstructionEncoderTransformer(nn.Module):
     def __init__(self,
                  hidden_dim, num_layers=1, dropout=0,
-                 use_categories=False):
+                 use_categories=False, categories_dim=None):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.dropout = dropout
         self.use_categories = use_categories
+        self.categories_dim = categories_dim
 
         enc_layer = nn.TransformerEncoderLayer(
             hidden_dim, 2, dim_feedforward=hidden_dim * 4, dropout=dropout, activation='gelu'
@@ -1109,7 +1111,7 @@ class InstructionEncoderTransformer(nn.Module):
 
         if use_categories:
             self.dropout_mod = nn.Dropout(dropout)
-            self.instruction_cat_fc = nn.Linear(input_dim + hidden_dim, hidden_dim)
+            self.instruction_cat_fc = nn.Linear(hidden_dim + categories_dim, hidden_dim)
 
     def forward(self,
                 text_indices, text_lens, text_embedding,
@@ -1132,8 +1134,8 @@ class InstructionEncoderTransformer(nn.Module):
         if self.use_categories:
             cats_emb =  category_embedding(categories)  # [bsz, dim]
             cats_emb = self.dropout_mod(cats_emb)
-            instructions = torch.cat([instructions, cats_emb.repeat(instructions.size(0), 1, 1)], dim=2)  # [len, bsz, input+hidden]
-            instructions = self.instruction_cat_fc(instructions)  # [len, bsz, hidden]
+            text_embs = torch.cat([text_embs, cats_emb.repeat(text_embs.size(0), 1, 1)], dim=2)  # [len, bsz, dim+cat_dim]
+            text_embs = self.instruction_cat_fc(text_embs)  # [len, bsz, dim]
 
         instructions_pad_mask, _, _ = transformer_utils.create_transformer_padding_masks(src_lens=text_lens)
         memory = self.enc(text_embs, src_key_padding_mask=instructions_pad_mask)  # [len, bsz, dim]

@@ -1,6 +1,6 @@
 """
 Usage:
-    PYTHONPATH=. python src/models/sweeps/instruction_to_vaez_sweep.py --groupname firstsweep
+    PYTHONPATH=. python src/models/sweeps/instruction_to_vaez_sweep.py --groupname pig_firstsweep
 """
 
 import argparse
@@ -12,13 +12,16 @@ CMD = 'PYTHONPATH=. python src/models/instruction_to_vaez.py'
 NGPUS_PER_RUN = 1
 
 BASE_GRID = {
-    'dataset': ['ndjson'],
+    'dataset': ['ndjson --max_per_category 65000'],
+    'batch_size': [32],
     'enc_num_layers': [
-        '1 --enc_dim 1024',
         '4 --enc_dim 512',
-        '4 --enc_dim 256',
+        '2 --enc_dim 512',
+        '1 --enc_dim 512',
     ],
-    'lr': [0.0005, 0.0001],
+    'lr': [
+        0.0001,
+    ],
 }
 
 
@@ -34,6 +37,7 @@ if __name__ == "__main__":
     base_cmd = CMD + f' --groupname {args.groupname}'
 
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
-                    prequeue_sleep_nmin=10, check_queue_every_nmin=10,
+                    prequeue_sleep_nmin=0, check_queue_every_nmin=0,
                     email_groupname=args.email_groupname,
-                    free_gpu_max_mem=0.3)
+                    gpus=[4,5],
+                    free_gpu_max_mem=0.85)

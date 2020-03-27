@@ -31,19 +31,25 @@ class HParams():
 
         # Data and training
         self.dataset = 'ndjson'   # 'progressionpair' or 'ndjson'
+        self.categories = 'pig'
         self.max_per_category = 70000
         self.prob_threshold = 0.0  # prune trees
-        self.batch_size = 128
+        self.batch_size = 64
+
         self.lr = 0.0001
+        self.lr_decay = 0.9999
+        self.min_lr = 0.00001
+        self.grad_clip = 1.0
+        self.max_epochs = 100
 
         # Model
-        self.enc_dim = 512
-        self.enc_num_layers = 1
+        self.enc_dim = 256
+        self.enc_num_layers = 4
         self.dropout = 0.1
 
         # Keep this fixed
         self.categories_dim = 256
-        self.enc_dim = 128  # has to be same as z_dim
+        self.z_dim = 128
 
 class InstructionToVAEzModel(TrainNN):
     """
@@ -51,21 +57,27 @@ class InstructionToVAEzModel(TrainNN):
     """
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir)
-        self.tr_loader = self.get_data_loader('train', hp.batch_size, hp.max_per_category, True)
-        self.val_loader = self.get_data_loader('valid', hp.batch_size, hp.max_per_category, False)
+        self.tr_loader = self.get_data_loader('train', True)
+        self.val_loader = self.get_data_loader('valid', False)
         self.end_epoch_loader = None
 
         # Model
         self.text_embedding = nn.Embedding(self.tr_loader.dataset.vocab_size, hp.enc_dim)
         self.category_embedding = nn.Embedding(35, 	hp.categories_dim)
-        self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout, use_categories=True)
+        self.enc = InstructionEncoderTransformer(hp.enc_dim, hp.enc_num_layers, hp.dropout,
+            use_categories=True, categories_dim=hp.categories_dim)
+        self.fc_enc_to_zdim = nn.Linear(hp.enc_dim, hp.z_dim)
 
-        for model in [self.text_embedding, self.category_embedding, self.enc]:
+        for model in [self.text_embedding, self.category_embedding, self.enc, self.fc_enc_to_zdim]:
             model.cuda()
 
-    def get_data_loader(self, dataset_split, batch_size, max_per_category, shuffle):
-        ds = InstructionVAEzDataset(dataset_split=dataset_split, max_per_category=max_per_category)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+        # Optimizer
+        self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
+
+    def get_data_loader(self, dataset_split, shuffle):
+        ds = InstructionVAEzDataset(dataset_split=dataset_split,
+                                    categories=self.hp.categories, max_per_category=self.hp.max_per_category)
+        loader = DataLoader(ds, batch_size=self.hp.batch_size, shuffle=shuffle,
                             collate_fn=InstructionVAEzDataset.collate_fn)
         return loader
 
@@ -79,9 +91,10 @@ class InstructionToVAEzModel(TrainNN):
         Returns:
             dict where 'loss': float Tensor must exist
         """
-        texts, text_lens, batch_text_indices, cats, cats_idx, vae_zs = batch
-        instruction_embs = self.enc(texts, text_lens, self.text_embedding,
+        texts, text_lens, text_indices, cats, cats_idx, vae_zs = batch
+        instruction_embs = self.enc(text_indices, text_lens, self.text_embedding,
                                     category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, enc_dim]
+        instruction_embs = self.fc_enc_to_zdim(instruction_embs)  # [bsz, z_dim]
         loss = F.mse_loss(instruction_embs, vae_zs)
         result = {'loss': loss}
 

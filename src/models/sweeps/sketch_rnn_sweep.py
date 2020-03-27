@@ -63,7 +63,8 @@ GRID_DRAW = {
         #  '70000 --categories frog',
         #  '70000 --categories giraffe',
         #  '70000 --categories hedgehog',
-        '70000 --categories horse',
+        # '70000 --categories horse',
+        '70000 --categories kangaroo',
 
         # '70000 --categories pig',
         # '2000 --categories all',
@@ -97,5 +98,5 @@ if __name__ == "__main__":
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
                     free_gpu_max_mem=0.8,
-                    gpus=[4],
+                    gpus=[5],
                     email_groupname=args.email_groupname)
