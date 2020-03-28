@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 
 from config import RUNS_PATH
 from src import utils
+from src.data_manager.quickdraw import save_strokes_as_img, save_multiple_strokes_as_img
 from src.models.core import experiments, nn_utils
 from src.models.core.train_nn import TrainNN
 from src.models.base.instruction_models import ProgressionPairDataset, \
@@ -69,9 +70,9 @@ class SketchRNNWithPlans(SketchRNNModel):
     def __init__(self, hp, save_dir):
         super().__init__(hp, save_dir, skip_data=True)
 
-        self.tr_loader = self.get_data_loader('train', True)
-        self.val_loader = self.get_data_loader('valid', False)
-        self.end_epoch_loader = None  # TODO: not generating yet, need to refactor that
+        self.tr_loader = self.get_data_loader('train', True, self.hp.batch_size)
+        self.val_loader = self.get_data_loader('valid', False, self.hp.batch_size)
+        self.end_epoch_loader = self.get_data_loader('valid', False, batch_size=1)
 
         #
         # Model
@@ -119,7 +120,7 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         self.optimizers.append(optim.Adam(self.parameters(), hp.lr))
 
-    def get_data_loader(self, dataset_split, shuffle):
+    def get_data_loader(self, dataset_split, shuffle, batch_size):
         """
         Args:
             dataset_split (str): 'train', 'valid', 'test'
@@ -133,7 +134,7 @@ class SketchRNNWithPlans(SketchRNNModel):
                                                               dataset_split=dataset_split,
                                                               instruction_set=self.hp.instruction_set,
                                                               prob_threshold=self.hp.prob_threshold)
-            loader = DataLoader(ds, batch_size=self.hp.batch_size, shuffle=shuffle,
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=ProgressionPairDataset.collate_fn)
         elif self.hp.instruction_set in ['stack', 'stack_leaves']:
             ds = SketchWithPlansConditionSegmentsDataset(dataset=self.hp.dataset,
@@ -143,7 +144,7 @@ class SketchRNNWithPlans(SketchRNNModel):
                                                          dataset_split=dataset_split,
                                                          instruction_set=self.hp.instruction_set,
                                                          prob_threshold=self.hp.prob_threshold)
-            loader = DataLoader(ds, batch_size=self.hp.batch_size, shuffle=shuffle,
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                                 collate_fn=partial(SketchWithPlansConditionSegmentsDataset.collate_fn, token2idx=ds.token2idx))
         return loader
 
@@ -336,13 +337,121 @@ class SketchRNNWithPlans(SketchRNNModel):
 
         return loss
 
-    def generate_and_save(self, data_loader, epoch, n_gens=1, outputs_path=None):
-        # TODO: need to overwrite this. SketchRNN's generate_and_save() unpacks a batch from
-        # a dataset that returns 4 values. The SketchWithPlansDataset returns 8 values. The
-        # encoding of the instructions is different too. Need to refactor that bit to work
-        # with both.
-        pass
+    ##############################################################################
+    # Generate
+    ##############################################################################
+    def end_of_epoch_hook(self, data_loader, epoch, outputs_path=None, writer=None):
+          # match not implemented / tested yet
+        if (self.hp.cond_instructions == 'decinputs') and \
+            (self.hp.instruction_set in ['toplevel', 'toplevel_leaves', 'leaves']):
+            self.generate_and_save(data_loader, epoch, 25, outputs_path=outputs_path)
 
+    def generate_and_save(self, data_loader, epoch, n_gens, outputs_path=None):
+        """
+        Generate and save drawings
+        """
+        n = 0
+        gen_strokes = []
+        gt_strokes = []
+        gt_texts = []
+        for i, batch in enumerate(data_loader):
+            batch = self.preprocess_batch_from_data_loader(batch)
+            strokes, stroke_lens, texts, text_lens, text_indices, cats, cats_idx, urls = batch
+
+            max_len, bsz, _ = strokes.size()
+
+            if self.hp.cond_instructions == 'decinputs':
+                # Encode instructions
+                # text_indices: [len, bsz], text_lens: [bsz]
+                instructions_emb = self.enc(
+                    text_indices, text_lens, self.text_embedding,
+                    category_embedding=self.category_embedding, categories=cats_idx)  # [bsz, enc_dim]
+                z = instructions_emb
+
+            hidden_cell = (nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)),
+                            nn_utils.move_to_cuda(torch.zeros(1, bsz, self.hp.dec_dim)))
+
+            # initialize state with start of sequence stroke-5 stroke
+            sos = torch.stack([torch.Tensor([0, 0, 1, 0, 0])] * bsz).unsqueeze(0)  # [1 (len), bsz, 5 (stroke-5)]
+            sos = nn_utils.move_to_cuda(sos)
+
+            # generate until end of sequence or maximum sequence length
+            s = sos
+            seq_x = []  # delta-x
+            seq_y = []  # delta-y
+            seq_pen = []  # pen-down
+            for _ in range(max_len):
+                if self.hp.cond_instructions == 'decinputs':  # input is last state, z, and hidden_cell
+                    input = torch.cat([s, z.unsqueeze(0)], dim=2)  # [1 (len), 1 (bsz), input_dim (5) + z_dim (128)]
+
+                elif self.hp.cond_instructions == 'match':  # input is last state and hidden_cell
+                    input = s   # [1, bsz (1), 5]
+
+                if self.hp.use_categories_dec \
+                    and hasattr(self, 'category_embedding'):
+                    # hack because VAE was trained with use_categories_dec=True but didn't actually have a category embedding
+                    cat_embs = self.category_embedding(cats_idx)  # [bsz (1), cat_dim]
+                    input = torch.cat([input, cat_embs.unsqueeze(0)], dim=2)  # [1, 1, dim]
+                    # dim = 5 + cat_dim if decodergmm, 5 + z_dim + cat_dim if vae
+
+                outputs, pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q, hidden, cell = \
+                    self.dec(input, stroke_lens=stroke_lens, output_all=False, hidden_cell=hidden_cell)
+                hidden_cell = (hidden, cell)  # for next timee step
+                # sample next state
+                s, dx, dy, pen_up, eos = self.sample_next_state(pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy, q)
+
+                seq_x.append(dx)
+                seq_y.append(dy)
+                seq_pen.append(pen_up)
+
+                if eos:  # done drawing
+                    break
+
+            # get in format to draw image
+            # Cumulative sum because seq_x and seq_y are deltas, so get x (or y) at each stroke
+            sample_x = np.cumsum(seq_x, 0)
+            sample_y = np.cumsum(seq_y, 0)
+            sample_pen = np.array(seq_pen)
+            sequence = np.stack([sample_x, sample_y, sample_pen]).T
+            # output_fp = os.path.join(outputs_path, f'e{epoch}-gen{n}.jpg')
+            # save_strokes_as_img(sequence, output_fp)
+
+            # Save original as well
+            output_fp = os.path.join(outputs_path, f'e{epoch}-gt{n}.jpg')
+            strokes_x = strokes[:, 0,
+                        0]  # first 0 for x because sample_next_state etc. only using 0-th batch item; 2nd 0 for dx
+            strokes_y = strokes[:, 0, 1]  # 1 for dy
+            strokes_x = np.cumsum(strokes_x.cpu().numpy())
+            strokes_y = np.cumsum(strokes_y.cpu().numpy())
+            strokes_pen = strokes[:, 0, 3].cpu().numpy()
+            strokes_out = np.stack([strokes_x, strokes_y, strokes_pen]).T
+            # save_strokes_as_img(strokes_out, output_fp)
+
+            gen_strokes.append(sequence)
+            gt_strokes.append(strokes_out)
+            gt_texts.append(texts[0])  # 0 because batch size is 1
+
+            n += 1
+            if n == n_gens:
+                break
+
+        # save grid drawings
+        rowcol_size = 5
+        chunk_size = rowcol_size ** 2
+        for i in range(0, chunk_size, len(gen_strokes)):
+            output_fp = os.path.join(outputs_path, f'e{epoch}_gen{i}-{i+chunk_size}.jpg')
+            save_multiple_strokes_as_img(gen_strokes[i:i+chunk_size], output_fp)
+
+            output_fp = os.path.join(outputs_path, f'e{epoch}_gt{i}-{i+chunk_size}.jpg')
+            save_multiple_strokes_as_img(gt_strokes[i:i+chunk_size], output_fp)
+
+            # save texts
+            output_fp = os.path.join(outputs_path, f'e{epoch}_texts{i}-{i+chunk_size}.json')
+            utils.save_file(gt_texts[i:i+chunk_size], output_fp)
+
+    ##############################################################################
+    # Load
+    ##############################################################################
     def load_enc_and_catemb_from_pretrained(self, dir):
         """
         Copy pretrained encoder and category embedding weights. They must
