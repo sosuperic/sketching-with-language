@@ -893,12 +893,14 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
     def __init__(self,
                  dataset='ndjson',
                  max_len=200,
+                 categories='all',
                  max_per_category=250,
                  dataset_split='train',
                  instruction_set='toplevel',
                  prob_threshold=0.0
                  ):
-        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
+        super().__init__(dataset=dataset, max_len=max_len,
+                         categories=categories, max_per_category=max_per_category,
                          dataset_split=dataset_split, instruction_set=instruction_set,
                          prob_threshold=prob_threshold)
 
@@ -908,6 +910,8 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
         if self.instruction_set == 'toplevel':
             text = plan[0]['text']  # 0 = toplevel instruction
             text_indices = map_sentence_to_index(text, self.token2idx)
+            text += ' EOS'
+            text_indices += [EOS_ID]
 
         elif self.instruction_set == 'toplevel_leaves':
             text = plan[0]['text']
@@ -917,6 +921,8 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                     # TODO: ideally we should have a different separator token...
                     text += ' SOS ' + subplan['text']
                     text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+            text += ' EOS'
+            text_indices += [EOS_ID]
 
         elif self.instruction_set == 'leaves':
             text = ''
@@ -926,6 +932,8 @@ class SketchWithPlansConditionEntireDrawingDataset(SketchWithPlansDataset):
                     # TODO: ideally we should have a different separator token...
                     text += ' SOS ' + subplan['text']
                     text_indices += [SOS_ID] + map_sentence_to_index(subplan['text'], self.token2idx)
+            text += ' EOS'
+            text_indices += [EOS_ID]
             text = text.lstrip()  # get rid of leading space
 
         return (stroke5, stroke_len, text, text_indices, cat, cat_idx, url)
@@ -940,12 +948,14 @@ class SketchWithPlansConditionSegmentsDataset(SketchWithPlansDataset):
     def __init__(self,
                  dataset='ndjson',
                  max_len=200,
+                 categories='all',
                  max_per_category=250,
                  dataset_split='train',
                  instruction_set='stack',  # 'stack' or 'stack_leaves'
                  prob_threshold=0.0,
                  ):
-        super().__init__(dataset=dataset, max_len=max_len, max_per_category=max_per_category,
+        super().__init__(dataset=dataset, max_len=max_len,
+                         categories=categories, max_per_category=max_per_category,
                          dataset_split=dataset_split, instruction_set=instruction_set,
                          prob_threshold=prob_threshold)
 

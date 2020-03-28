@@ -43,8 +43,8 @@ class HParams():
         self.max_epochs = 100
 
         # Model
-        self.enc_dim = 256
-        self.enc_num_layers = 4
+        self.enc_dim = 512
+        self.enc_num_layers = 1
         self.dropout = 0.1
         self.loss = 'triplet'  # 'triplet', 'mse'
 

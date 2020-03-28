@@ -21,20 +21,24 @@ CUDA_VISIBLE_DEVICES={} PYTHONPATH=. python src/models/sketch_rnn.py --inference
 --load_model_path=runs/sketchrnn/Mar25_2020/vae_onecat/encln_KLfix-batch_size_64-categories_{}-dataset_ndjson-dec_dim_2048-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_vae-use_categories_dec_False-use_layer_norm_True/
 """
 
+BASE_DIR = 'runs/sketchrnn/Mar25_2020/vae_onecat/encln_KLfix-batch_size_64-categories_{}-dataset_ndjson-dec_dim_2048-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_vae-use_categories_dec_False-use_layer_norm_True/'
+
 def save_zs(gpu=6):
 
     cats = final_categories()
     processes = []
     for cat in cats:
         cmd = CMD.format(gpu, cat, cat)
-        print(cmd)
+        base_dir = BASE_DIR.format(cat)
+
+        if not os.path.exists(base_dir):
+            continue
 
         # Currently, skip if directly to hold outputs already exists
-        out_dir = os.path.join(
-            'runs/sketchrnn/Mar25_2020/vae_onecat/encln_KLfix-batch_size_64-categories_{}-dataset_ndjson-dec_dim_2048-enc_dim_512-enc_num_layers_1-lr_0.0001-max_per_category_70000-model_type_vae-use_categories_dec_False-use_layer_norm_True/',
-            'inference_vaez/{}'.format(cat))
+        print(cmd)
+        out_dir = os.path.join(base_dir, 'inference_vaez/{}'.format(cat))
         if os.path.exists(out_dir):
-            print('Files already exist at: ', dir)
+            print('Skipping because files already exist at: ', out_dir)
             continue
 
         # Call command
