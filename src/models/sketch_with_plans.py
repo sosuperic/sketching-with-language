@@ -48,7 +48,7 @@ class HParams(SketchRNNHParams):
         self.dec_dim = 2048
         self.lr = 0.0001
 
-        self.use_layer_norm = False
+        self.use_layer_norm = True
         self.dropout = 0.1
         self.rec_dropout = 0.1
 

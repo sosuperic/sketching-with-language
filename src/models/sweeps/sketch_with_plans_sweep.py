@@ -26,6 +26,7 @@ BASE_GRID = {
         # 'pig --max_per_category 70000',
         'pig --max_per_category 69000',
     ],
+    'use_layer_norm': [True],
     'cond_instructions': [
         'decinputs',
         # 'match --loss_match triplet --enc_dim 2048',
@@ -42,7 +43,7 @@ BASE_GRID = {
     'batch_size': [64],
     'lr': [
         0.0005,
-        # 0.0001,
+        0.0001,
     ],
 }
 
@@ -61,5 +62,5 @@ if __name__ == "__main__":
     run_param_sweep(base_cmd, grid, ngpus_per_run=NGPUS_PER_RUN,
                     prequeue_sleep_nmin=10, check_queue_every_nmin=10,
                     email_groupname=args.email_groupname,
-                    gpus=[4],
+                    gpus=[4,5],
                     free_gpu_max_mem=0.7)
