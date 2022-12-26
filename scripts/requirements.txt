@@ -10,7 +10,7 @@ spacy==2.2.3
 tensorboard==2.1.0
 torch==1.4.0
 torchvision==0.5.0
-wheel==0.33.6
+wheel==0.38.1
 hiplot==0.1.4
 # app
 Jinja2==2.10.3
